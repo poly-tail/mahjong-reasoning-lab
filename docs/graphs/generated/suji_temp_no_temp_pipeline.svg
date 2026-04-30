@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="520" viewBox="0 0 1480 520" role="img" aria-labelledby="title desc">
+  <title id="title">suji パイプライン</title>
+  <desc id="desc">suppressor から remain と tile danger へ至る全体フロー。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3d5a80"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .phase1 { fill: #eef6ff; stroke: #2b6cb0; stroke-width: 2; rx: 16; ry: 16; }
+      .phase2 { fill: #f0fff4; stroke: #2f855a; stroke-width: 2; rx: 16; ry: 16; }
+      .phase3 { fill: #fffaf0; stroke: #c05621; stroke-width: 2; rx: 16; ry: 16; }
+      .phase4 { fill: #fff5f5; stroke: #c53030; stroke-width: 2; rx: 16; ry: 16; }
+      .phase5 { fill: #f7f5ff; stroke: #6b46c1; stroke-width: 2; rx: 16; ry: 16; }
+      .label { font: 700 24px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #102a43; }
+      .body { font: 500 18px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #243b53; }
+      .small { font: 500 16px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #486581; }
+      .arrow { stroke: #3d5a80; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .caption { font: 700 18px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #1f2937; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1480" height="520"/>
+
+  <rect class="phase1" x="40" y="170" width="180" height="120"/>
+  <text class="label" x="130" y="212" text-anchor="middle">Phase 1</text>
+  <text class="body" x="130" y="246" text-anchor="middle">suppressor から</text>
+  <text class="body" x="130" y="272" text-anchor="middle">6 本 line を</text>
+  <text class="body" x="130" y="298" text-anchor="middle">0 / 1 判定</text>
+
+  <rect class="phase2" x="280" y="170" width="190" height="120"/>
+  <text class="label" x="375" y="212" text-anchor="middle">Phase 2</text>
+  <text class="body" x="375" y="246" text-anchor="middle">matagi count</text>
+  <text class="body" x="375" y="272" text-anchor="middle">1.0 / 0.5 / 0.3</text>
+  <text class="small" x="375" y="298" text-anchor="middle">一部 0.7 softening</text>
+
+  <rect class="phase3" x="530" y="145" width="250" height="170"/>
+  <text class="label" x="655" y="188" text-anchor="middle">Phase 3</text>
+  <text class="body" x="655" y="220" text-anchor="middle">chi</text>
+  <text class="body" x="655" y="246" text-anchor="middle">inside -&gt; outside</text>
+  <text class="body" x="655" y="272" text-anchor="middle">latest tedashi urasuji</text>
+  <text class="body" x="655" y="298" text-anchor="middle">low-remain long-think</text>
+
+  <rect class="phase4" x="840" y="170" width="170" height="120"/>
+  <text class="label" x="925" y="212" text-anchor="middle">Phase 4</text>
+  <text class="body" x="925" y="246" text-anchor="middle">lag 補正</text>
+  <text class="small" x="925" y="272" text-anchor="middle">neighbor line のみ</text>
+
+  <rect class="phase5" x="1070" y="90" width="180" height="110"/>
+  <text class="label" x="1160" y="132" text-anchor="middle">final line</text>
+  <text class="body" x="1160" y="166" text-anchor="middle">line_weights</text>
+
+  <rect class="phase5" x="1070" y="250" width="180" height="110"/>
+  <text class="label" x="1160" y="292" text-anchor="middle">endpoint 配分</text>
+  <text class="body" x="1160" y="326" text-anchor="middle">tile_weights_34</text>
+
+  <rect class="phase5" x="1310" y="70" width="130" height="90"/>
+  <text class="label" x="1375" y="112" text-anchor="middle">remain</text>
+  <text class="body" x="1375" y="138" text-anchor="middle">総和</text>
+
+  <rect class="phase5" x="1290" y="240" width="170" height="130"/>
+  <text class="label" x="1375" y="282" text-anchor="middle">tile danger %</text>
+  <text class="body" x="1375" y="316" text-anchor="middle">base musuji</text>
+  <text class="body" x="1375" y="342" text-anchor="middle">+ visible concentration</text>
+
+  <path class="arrow" d="M 220 230 L 280 230"/>
+  <path class="arrow" d="M 470 230 L 530 230"/>
+  <path class="arrow" d="M 780 230 L 840 230"/>
+  <path class="arrow" d="M 1010 230 L 1070 145"/>
+  <path class="arrow" d="M 1010 230 L 1070 305"/>
+  <path class="arrow" d="M 1250 145 L 1310 115"/>
+  <path class="arrow" d="M 1250 305 L 1290 305"/>
+
+  <text class="caption" x="740" y="430" text-anchor="middle">temp / no-temp の差は Phase 1 の入口だけ。以後の補正段数は共通。</text>
+</svg>

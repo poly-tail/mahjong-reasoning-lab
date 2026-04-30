@@ -1,0 +1,4 @@
+﻿agari_id,kyoku_id,hanchan_id,go_type,go_type_hex,room_class_code,room_class_label,kyoku_info,agari_epoch_s,winner_rel_seat,winner_name,from_rel_seat,from_name,is_tsumo,winning_tile_136,winning_tile_37_text,deal_in_discard_id,deal_in_round_discard_index,estimated_danger_percent,danger_estimate_source
+20260410105309_0100_agari_064,20260410105309_0100,20260410105309,9,0009,joukyuu,上級卓,0100,1775786355,1,かずきかずき,0,パシフィック,0,44,3p,20260410105309_0100_055,55,22.4,self_pre_discard_hand
+20260410105309_0101_agari_174,20260410105309_0101,20260410105309,9,0009,joukyuu,上級卓,0101,1775786515,2,マタギ,3,セイジ,0,84,4s,20260410105309_0101_037,37,17.5,synthetic_tile
+20260410105309_0200_agari_246,20260410105309_0200,20260410105309,9,0009,joukyuu,上級卓,0200,1775786615,2,マタギ,0,パシフィック,0,124,5z,20260410105309_0200_022,22,2.0,self_pre_discard_hand

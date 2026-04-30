@@ -1,0 +1,10 @@
+# Minimal repo-local Codex defaults.
+# Keep environment-specific approval, sandbox, and model policy adjustable per team.
+
+project_doc_fallback_filenames = ["AGENTS.md"]
+
+developer_instructions = """
+Read AGENTS.md first.
+Use scripts/ or Makefile targets when a repeatable command already exists.
+Treat docs/graphs/generated as local artifacts and update docs/graphs/src instead of editing SVG by hand.
+"""

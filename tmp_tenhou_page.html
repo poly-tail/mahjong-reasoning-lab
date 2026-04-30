@@ -1,0 +1,81 @@
+﻿<!DOCTYPE html>
+<html><head>
+<title>天鳳 / Web版</title>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<meta name="format-detection" content="telephone=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+</head><body>
+
+<script>
+if (location.search.match(/^\?log=\d+gm\-[0-9a-f]+\-0001\-[0-9a-f]+/)) location.replace("https://ron2.jp/3/"+location.search);
+function iswb(){
+	if (navigator.platform!="Win32") return false;
+	if (navigator.appName!="Microsoft Internet Explorer") return false;
+	try{return window.external && window.external.startGame;}catch(e){} // Sleipnir1.66はこれで取らないとエラーになる 
+	return false;
+}
+if (!iswb() && location.protocol=="http:") location.replace(location.href.replace(/http:/, "https:"));
+//else if (localStorage["lsmt"]===undefined) location.replace("http://tenhou.net/3/localstoragemigration/lsmt.html"+location.search);
+
+function loadScript(src,cb){
+	var e=document.createElement('script');
+	e.src=src;
+	if (cb) e.onload=cb;
+	document.getElementsByTagName("head")[0].appendChild(e);
+}
+var path=location.pathname.split("/").slice(-3).join("/");
+if (iswb()){
+	location.replace("/0/swf"+location.search);
+}else if (window.location.search=="?powersave"){
+	document.documentElement.style.height=document.body.style.height="100%";
+	document.write("<style>*{font-size:20pt;}BUTTON{border:solid 1px #000;padding:2em;border-radius:0.6em;}</style>"+
+		"<table width=100% height=100%><tr><td align=center valign=middle>"+
+		"<div style=\"font-family:cwTeX-Q-Kai-T;font-size:400%;\">天鳳</div>"+
+		"POWER SAVING<br>"+
+		"<br>"+
+		"<button onclick=\"history.back();\">BACK</button>"+
+		"</td></tr></table>");
+}else if (window.location.search=="?setting"){
+	var c=localStorage;
+	var s="";
+	s+="<style>BUTTON{border:solid 1px #000;padding:2em;border-radius:0.6em;}</style>"+
+		"LOCAL STORAGE<br>"+
+		"<table cellpadding=4 cellspacing=0 border=1>";
+	for(var i in c) s+="<tr>"+
+		"<td>"+  i +"</td>"+
+		"<td>"+c[i]+"</td>"+
+		"<td><button onclick=\"localStorage.removeItem('"+i+"');location.reload();\">DEL</button></td>"+
+		"</tr>";
+	s+="</table><button onclick=\"history.back();\">CLOSE</button>";
+	document.write(s);
+}else if (!window.WebSocket && navigator.userAgent.indexOf("Googlebot")==-1){
+	document.write(
+		"<center><br><br><br>"+
+		"動作に必要な機能が見つかりません<br>"+
+		"Couldn't find the required components to start<br>"+
+		"<br>"+
+		"<a href=\"https://www.google.co.jp/chrome/\">Google Chrome</a>ブラウザ(推奨)から開くことが来ます。<br>"+
+		"We recommend you use the <a href=\"https://www.google.co.jp/chrome/\">Google Chrome</a> browser.<br>" +
+		"<br>"+
+		"<b><a href=\"/0/swf"+location.search+"\">Flash版で開く</a></b><br>"+
+		"<br>"+
+		"WebSocket not available<br>"+navigator.userAgent+"</center>");
+}else{
+	var e=document.body.style;
+	e.color="#FFF";
+	e.background="#000";
+	e.padding=0;
+	e.margin=0;
+	var e=document.createElement("META");
+	e.name="viewport"
+	e.content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, minimal-ui";
+	document.getElementsByTagName("HEAD")[0].appendChild(e);
+	//document.write("<scr"+"ipt src=\"/ads/eventinfo.js\"></scr"+"ipt>");
+	loadScript("/ads/eventinfo.js");
+	//document.write("<scr"+"ipt src=\"/3/latest.js\"></scr"+"ipt>");
+	loadScript("/3/latest.js");
+}
+</script>
+
+</body></html>

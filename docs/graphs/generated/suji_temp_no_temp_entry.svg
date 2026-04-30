@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
+  <title id="title">temp と no-temp の入口差</title>
+  <desc id="desc">temporary visible suppressor を suppressor 集合へ入れるかどうかの差を示す図。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#406080"/>
+    </marker>
+    <style>
+      .bg { fill: #f7fafc; }
+      .panel { fill: #ffffff; stroke: #27445d; stroke-width: 2; rx: 16; ry: 16; }
+      .panel-blue { fill: #eef6ff; stroke: #2b6cb0; stroke-width: 2; rx: 16; ry: 16; }
+      .panel-green { fill: #eefbf4; stroke: #2f855a; stroke-width: 2; rx: 16; ry: 16; }
+      .panel-red { fill: #fff4f4; stroke: #c05656; stroke-width: 2; rx: 16; ry: 16; }
+      .label { font: 700 26px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #102a43; }
+      .body { font: 500 19px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #243b53; }
+      .small { font: 500 17px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #486581; }
+      .arrow { stroke: #406080; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .caption { font: 700 18px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #1f2937; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1280" height="520"/>
+
+  <rect class="panel" x="60" y="160" width="240" height="110"/>
+  <text class="label" x="180" y="205" text-anchor="middle">入力</text>
+  <text class="body" x="180" y="240" text-anchor="middle">round_state</text>
+  <text class="body" x="180" y="266" text-anchor="middle">target seat</text>
+
+  <rect class="panel" x="360" y="160" width="280" height="110"/>
+  <text class="label" x="500" y="205" text-anchor="middle">共通 suppressor</text>
+  <text class="body" x="500" y="240" text-anchor="middle">persistent suppressor</text>
+  <text class="body" x="500" y="266" text-anchor="middle">riichi visible suppressor</text>
+
+  <rect class="panel-blue" x="730" y="90" width="260" height="140"/>
+  <text class="label" x="860" y="135" text-anchor="middle">temp あり</text>
+  <text class="body" x="860" y="172" text-anchor="middle">共通 suppressor</text>
+  <text class="body" x="860" y="198" text-anchor="middle">+</text>
+  <text class="body" x="860" y="224" text-anchor="middle">temporary visible suppressor</text>
+
+  <rect class="panel-green" x="730" y="280" width="260" height="140"/>
+  <text class="label" x="860" y="325" text-anchor="middle">no-temp</text>
+  <text class="body" x="860" y="362" text-anchor="middle">共通 suppressor のみ</text>
+  <text class="small" x="860" y="390" text-anchor="middle">temporary visible suppressor は入れない</text>
+
+  <rect class="panel-red" x="1060" y="160" width="180" height="110"/>
+  <text class="label" x="1150" y="205" text-anchor="middle">Phase 1</text>
+  <text class="body" x="1150" y="240" text-anchor="middle">6 本 line を</text>
+  <text class="body" x="1150" y="266" text-anchor="middle">0 / 1 判定</text>
+
+  <path class="arrow" d="M 300 215 L 360 215"/>
+  <path class="arrow" d="M 640 215 L 730 160"/>
+  <path class="arrow" d="M 640 215 L 730 350"/>
+  <path class="arrow" d="M 990 160 L 1060 215"/>
+  <path class="arrow" d="M 990 350 L 1060 215"/>
+
+  <text class="caption" x="684" y="150" text-anchor="middle">矢印の違いはここだけ</text>
+  <text class="caption" x="640" y="472" text-anchor="middle">temp / no-temp の差は「temporary visible suppressor を suppressor 集合へ入れるかどうか」だけ</text>
+</svg>

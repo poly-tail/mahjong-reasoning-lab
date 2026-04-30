@@ -1,0 +1,12 @@
+storage_state_path: .secrets/naga_state.json
+sleep_seconds: 0.8
+rank_points:
+  - 75
+  - 30
+  - 0
+  - -105
+output:
+  raw_dir: out/raw
+  csv_dir: out/csv
+  logs_dir: out/logs
+

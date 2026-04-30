@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="760" viewBox="0 0 1480 760" role="img" aria-labelledby="title desc">
+  <title id="title">Phase 3 補正</title>
+  <desc id="desc">chi、inside outside、urasuji、low remain long think の掛け順と代表係数。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#425466"/>
+    </marker>
+    <style>
+      .bg { fill: #fbfdff; }
+      .center { fill: #eef2ff; stroke: #4c51bf; stroke-width: 2; rx: 16; ry: 16; }
+      .chi { fill: #fff7ed; stroke: #c05621; stroke-width: 2; rx: 16; ry: 16; }
+      .io { fill: #eefcf6; stroke: #2f855a; stroke-width: 2; rx: 16; ry: 16; }
+      .ura { fill: #fff5f5; stroke: #c53030; stroke-width: 2; rx: 16; ry: 16; }
+      .low { fill: #f7fafc; stroke: #2d3748; stroke-width: 2; rx: 16; ry: 16; }
+      .label { font: 700 24px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #102a43; }
+      .body { font: 500 18px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #243b53; }
+      .small { font: 500 16px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #486581; }
+      .arrow { stroke: #425466; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .caption { font: 700 18px 'Yu Gothic UI', 'Segoe UI', sans-serif; fill: #1f2937; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1480" height="760"/>
+
+  <rect class="center" x="590" y="300" width="300" height="150"/>
+  <text class="label" x="740" y="345" text-anchor="middle">Phase 3 の対象</text>
+  <text class="body" x="740" y="380" text-anchor="middle">Phase 2 でまだ &gt; 0 の line</text>
+  <text class="body" x="740" y="406" text-anchor="middle">にだけ factor を掛ける</text>
+
+  <rect class="chi" x="110" y="80" width="290" height="150"/>
+  <text class="label" x="255" y="125" text-anchor="middle">chi 補正</text>
+  <text class="body" x="255" y="160" text-anchor="middle">kanchan chi: x0.5</text>
+  <text class="body" x="255" y="186" text-anchor="middle">penchan chi: x0.5</text>
+  <text class="body" x="255" y="212" text-anchor="middle">ryanmen chi: x0.6</text>
+
+  <rect class="io" x="1080" y="80" width="290" height="150"/>
+  <text class="label" x="1225" y="125" text-anchor="middle">inside -&gt; outside</text>
+  <text class="body" x="1225" y="160" text-anchor="middle">同色 tedashi が</text>
+  <text class="body" x="1225" y="186" text-anchor="middle">inner から outer へ</text>
+  <text class="body" x="1225" y="212" text-anchor="middle">中寄り 1 本を x0.7</text>
+
+  <rect class="ura" x="90" y="530" width="330" height="150"/>
+  <text class="label" x="255" y="575" text-anchor="middle">latest tedashi urasuji</text>
+  <text class="body" x="255" y="610" text-anchor="middle">基本: x0.75</text>
+  <text class="body" x="255" y="636" text-anchor="middle">2見え等で x0.65 / x0.60</text>
+
+  <rect class="low" x="1050" y="530" width="350" height="150"/>
+  <text class="label" x="1225" y="575" text-anchor="middle">low remain + long-think</text>
+  <text class="body" x="1225" y="610" text-anchor="middle">remain &lt;= 16</text>
+  <text class="body" x="1225" y="636" text-anchor="middle">tsumogiri かつ think &gt;= 2500ms</text>
+  <text class="body" x="1225" y="662" text-anchor="middle">inside-&gt;outside 系へ x0.7</text>
+
+  <path class="arrow" d="M 400 230 L 620 315"/>
+  <path class="arrow" d="M 1080 230 L 860 315"/>
+  <path class="arrow" d="M 420 605 L 620 420"/>
+  <path class="arrow" d="M 1050 605 L 860 420"/>
+
+  <rect class="center" x="590" y="560" width="300" height="110"/>
+  <text class="label" x="740" y="602" text-anchor="middle">結果</text>
+  <text class="body" x="740" y="636" text-anchor="middle">line ごとに factor を累積</text>
+
+  <path class="arrow" d="M 740 450 L 740 560"/>
+  <text class="caption" x="740" y="715" text-anchor="middle">補正は掛け算で累積し、0 に落ちた line は復活しない</text>
+</svg>

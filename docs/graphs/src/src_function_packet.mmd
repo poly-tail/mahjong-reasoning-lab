@@ -1,0 +1,41 @@
+graph TD
+    packet_wrapper["互換入口 packet_capture.run_and_capture()"]
+    run_capture["capture.tshark_capture.run_and_capture()"]
+    run_test["capture.pcap_replay.run_test_capture()"]
+    init_db["capture.storage.initialize_db()"]
+    build_cmd["build_tshark_command()"]
+    build_pcap_cmd["build_pcap_tshark_command()"]
+    parse_line["parse_tshark_output_line()"]
+    split_line["split_tshark_line()"]
+    extract_fragments["extract_tag_fragments()"]
+    parse_fragment["parse_fragment()"]
+    parse_tag["parse_tag_fragment()"]
+    parse_reinit["parse_reinit()"]
+    parse_n["parse_n()"]
+    parse_discard["parse_discard()"]
+    decode_meld["decode_meld()"]
+    persist_event["persist_event()"]
+    discard_analysis["_discard_analysis_columns()"]
+    find_waits["find_tenpai_wait_tiles_34_from_tiles_136()"]
+    add_discard["SutehaiTracker.add_discard()"]
+
+    packet_wrapper --> run_capture
+    run_capture --> init_db
+    run_capture --> build_cmd
+    run_capture --> parse_line
+    run_test --> init_db
+    run_test --> build_pcap_cmd
+    run_test --> parse_line
+    parse_line --> split_line
+    parse_line --> extract_fragments
+    parse_line --> parse_fragment
+    parse_line --> persist_event
+    parse_fragment --> parse_tag
+    parse_fragment --> parse_reinit
+    parse_fragment --> parse_n
+    parse_fragment --> parse_discard
+    parse_reinit --> decode_meld
+    parse_n --> decode_meld
+    parse_discard --> add_discard
+    persist_event --> discard_analysis
+    discard_analysis --> find_waits

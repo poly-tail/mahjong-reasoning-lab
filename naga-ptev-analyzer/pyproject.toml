@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "naga-ptev-analyzer"
+version = "0.1.0"
+description = "Local NAGA dan-pt analyzer using the user's own authenticated browser session."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+  "keyring>=25.6",
+  "playwright>=1.50",
+  "pandas>=2.2",
+  "pydantic>=2.7",
+  "typer>=0.12",
+  "rich>=13.7",
+  "streamlit>=1.40",
+  "plotly>=5.24",
+  "matplotlib>=3.9",
+  "PyYAML>=6.0",
+  "pytest>=8.0",
+  "scikit-learn>=1.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/naga_ptev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

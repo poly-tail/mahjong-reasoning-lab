@@ -1,0 +1,65 @@
+graph TD
+    tenhou_wrapper["互換入口 tenhou_hojo.main()"]
+    app_main["app.main.main()"]
+    window_cfg["app.window.configure_window()"]
+    init_img["ui.table_renderer.initialize_image()"]
+    bridge_server["TenhouUiBridgeServer.start()"]
+    bridge_client["TenhouUiBridgeClient"]
+    visible_hand["build_live_visible_hand_state()"]
+    mock_branch["--mock 指定"]
+    test_branch["--test 指定"]
+    live_branch["live capture"]
+    get_mock_inputs["get_mock_inputs()"]
+    build_mock["build_mock_tracker()"]
+    add_discard["SutehaiTracker.add_discard()"]
+    build_visible["build_live_visible_tile_summary()"]
+    build_danger["build_live_hand_danger_metrics()"]
+    build_panel["build_live_opponent_suji_panel_summaries()"]
+    reco_service["HandRecommendationService"]
+    logic_danger["danger_suji.build_hand_tile_suji_danger_metrics()"]
+    logic_panel["danger_suji.build_all_opponent_suji_panel_summaries()"]
+    start_capture["start_capture_thread()"]
+    run_test["run_test_capture()"]
+    run_capture["run_and_capture()"]
+    create_canvas["create_canvas()"]
+    open_layout["open_layout_tuning_window()"]
+    close_window["handle_window_close()"]
+    visible_summary["collect_visible_tile_summary()"]
+    bridge_doc["Tenhou UI Bridge 文書"]
+    bridge_mock["run_mock_server()"]
+    bridge_probe["tenhou_ui_bridge_probe.main()"]
+
+    tenhou_wrapper --> app_main
+    app_main --> window_cfg
+    app_main --> init_img
+    app_main --> bridge_server
+    app_main --> bridge_client
+    app_main --> visible_hand
+    app_main --> mock_branch
+    app_main --> test_branch
+    app_main --> live_branch
+    mock_branch --> get_mock_inputs
+    mock_branch --> build_mock
+    build_mock --> add_discard
+    app_main --> reco_service
+    app_main --> build_visible
+    build_visible --> visible_summary
+    app_main --> build_danger
+    build_danger --> build_visible
+    build_danger --> logic_danger
+    app_main --> build_panel
+    build_panel --> build_visible
+    build_panel --> logic_panel
+    test_branch --> start_capture
+    start_capture --> run_test
+    live_branch --> start_capture
+    start_capture --> run_capture
+    app_main --> create_canvas
+    create_canvas --> visible_summary
+    create_canvas --> reco_service
+    create_canvas --> open_layout
+    create_canvas --> close_window
+    bridge_client --> visible_hand
+    app_main -.設計の正本.-> bridge_doc
+    bridge_mock -.モック検証.-> bridge_doc
+    bridge_probe -.疎通確認.-> bridge_doc

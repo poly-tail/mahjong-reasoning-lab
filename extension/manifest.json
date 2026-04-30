@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Tenhou UI Bridge",
+  "version": "0.1.0",
+  "description": "Local visualizer -> MV3 bridge -> Tenhou UI executor",
+  "permissions": ["tabs", "storage", "scripting"],
+  "host_permissions": [
+    "https://tenhou.net/*",
+    "https://ron2.jp/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://tenhou.net/*",
+        "https://ron2.jp/*",
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": ["content-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://tenhou.net/*",
+        "https://ron2.jp/*",
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": ["main-ui-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

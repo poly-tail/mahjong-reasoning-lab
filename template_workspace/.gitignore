@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+
+# Node
+node_modules/
+
+# Build artifacts
+build/
+dist/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local outputs
+logs/*.log
+analysis_output/*
+!analysis_output/README.md
+
+# Generated graphs
+docs/graphs/generated/*.svg
+!docs/graphs/generated/README.md

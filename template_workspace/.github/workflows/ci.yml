@@ -1,0 +1,34 @@
+name: template-workspace-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12"]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: template_workspace
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Validate workspace structure
+        run: python scripts/validate_workspace.py
+
+      - name: Run unit tests
+        run: python -B -m unittest discover -s tests/unit -p "test_*.py"
+
+      - name: Dry-run graph rendering
+        run: python scripts/render_docs_graphs.py --dry-run

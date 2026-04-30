@@ -1,0 +1,85 @@
+{
+  "layout_schema_version": 2,
+  "horizontal_panel_width": 719,
+  "horizontal_panel_height": 109,
+  "vertical_panel_width": 138,
+  "vertical_panel_height": 540,
+  "detail_panel_width": 220,
+  "detail_panel_gap": 20,
+  "detail_panel_top": 40,
+  "main_left_margin": 12,
+  "panel_table_gap": 80,
+  "side_panels_top": 64,
+  "top_panel_top": 8,
+  "right_panel_margin": 0,
+  "bottom_panel_margin": 10,
+  "hand_panel_gap": 12,
+  "hand_bottom_margin": 18,
+  "discard_tile_scale": 1.0,
+  "top_bottom_discard_width": 180,
+  "top_bottom_discard_height": 117,
+  "side_discard_width": 90,
+  "side_discard_height": 180,
+  "meld_tile_scale": 0.7,
+  "top_bottom_meld_height": 55,
+  "side_meld_width": 72,
+  "side_meld_height": 180,
+  "top_meld_width": 900,
+  "bottom_meld_width": 900,
+  "panel_summary_top": 17,
+  "top_summary_ratio": 0.62,
+  "top_alert_ratio": 0.74,
+  "side_summary_ratio": 0.56,
+  "side_alert_ratio": 0.63,
+  "panel_tile_rank_scale": 0.24,
+  "top_tile_rank_row_gap": 0,
+  "side_tile_rank_row_gap": 0,
+  "hand_response_button_offset_x": 18,
+  "hand_response_button_offset_y": 0,
+  "component_offsets": {
+    "player_toimen": [
+      -2,
+      -3
+    ],
+    "player_kamicha": [
+      -6,
+      28
+    ],
+    "player_shimocha": [
+      3,
+      27
+    ],
+    "discard_toimen": [
+      0,
+      83
+    ],
+    "discard_kamicha": [
+      0,
+      83
+    ],
+    "discard_shimocha": [
+      0,
+      83
+    ],
+    "discard_jicha": [
+      0,
+      0
+    ],
+    "meld_toimen": [
+      3,
+      82
+    ],
+    "meld_kamicha": [
+      0,
+      83
+    ],
+    "meld_shimocha": [
+      0,
+      83
+    ],
+    "meld_jicha": [
+      0,
+      0
+    ]
+  }
+}

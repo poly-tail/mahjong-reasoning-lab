@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tenhou UI Bridge Mock</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Consolas, "Segoe UI", sans-serif;
+      background: #101820;
+      color: #e5edf7;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      box-sizing: border-box;
+      padding: 16px;
+      background: #16202c;
+      border-right: 1px solid #2d3b4f;
+    }
+
+    .sidebar h1,
+    .sidebar h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+
+    .sidebar p,
+    .sidebar li {
+      color: #b9c6d8;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .sidebar ul {
+      margin: 8px 0 16px 18px;
+      padding: 0;
+    }
+
+    .status-box,
+    .control-box {
+      margin-top: 16px;
+      padding: 12px;
+      background: #1b2a3a;
+      border: 1px solid #32465e;
+      border-radius: 10px;
+    }
+
+    .status-line {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: #d5e2f5;
+      word-break: break-word;
+    }
+
+    .control-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 6px 0;
+      font-size: 12px;
+    }
+
+    .table-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .table-root {
+      position: relative;
+      width: 960px;
+      height: 720px;
+      background: linear-gradient(180deg, #24456d 0%, #163555 100%);
+      border: 2px solid #4f6b8c;
+      border-radius: 20px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+    }
+
+    .table-root canvas {
+      position: absolute;
+      inset: 0;
+      width: 960px;
+      height: 720px;
+      display: block;
+    }
+
+    .controls {
+      position: absolute;
+      top: 28px;
+      right: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      width: 280px;
+      justify-content: flex-end;
+    }
+
+    .control-button {
+      min-width: 84px;
+      padding: 8px 12px;
+      border: 1px solid #7f9bc0;
+      border-radius: 999px;
+      background: #f6fbff;
+      color: #122133;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .control-button[hidden] {
+      display: none;
+    }
+
+    .log-list {
+      max-height: 240px;
+      overflow: auto;
+      margin: 0;
+      padding-left: 18px;
+      font-size: 12px;
+      color: #d8e5f6;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .ghost-button {
+      padding: 8px 10px;
+      border: 1px solid #5c7597;
+      border-radius: 8px;
+      background: #203246;
+      color: #e7f0fb;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <aside class="sidebar">
+      <h1>Tenhou UI Bridge Mock</h1>
+      <p>
+        This page simulates the minimum Tenhou UI surface needed by the MV3 bridge:
+        hand-slot coordinates, visible control buttons, and click logging.
+      </p>
+      <ul>
+        <li>Load the extension from <code>extension/</code>.</li>
+        <li>Start the local app first so the service worker can connect to <code>ws://127.0.0.1:8765</code>.</li>
+        <li>Then open this page through the local mock server.</li>
+      </ul>
+
+      <div class="status-box">
+        <h2>Status</h2>
+        <p class="status-line" id="layout-status"></p>
+        <p class="status-line" id="last-action">Last action: none</p>
+        <div class="actions">
+          <button class="ghost-button" id="reset-log" type="button">Reset Log</button>
+          <button class="ghost-button" id="rotate-hand" type="button">Rotate Hand</button>
+        </div>
+      </div>
+
+      <div class="control-box">
+        <h2>Visible Controls</h2>
+        <div id="control-toggles"></div>
+      </div>
+
+      <div class="status-box">
+        <h2>Action Log</h2>
+        <ol class="log-list" id="action-log"></ol>
+      </div>
+    </aside>
+
+    <main class="table-wrap">
+      <div class="table-root">
+        <canvas id="tenhou-bridge-mock-canvas" width="960" height="720"></canvas>
+        <div class="controls" id="mock-controls"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="tenhou_ui_bridge_mock.js"></script>
+</body>
+</html>

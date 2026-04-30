@@ -1,0 +1,78 @@
+graph TD
+    tenhou["tenhou_hojo.py"]
+    app_main["app/main.py"]
+    app_reco["app/hand_recommendation_service.py"]
+    app_bridge_client["app/tenhou_ui_bridge_client.py"]
+    app_bridge_mock["app/tenhou_ui_bridge_mock_server.py"]
+    app_bridge_probe["app/tenhou_ui_bridge_probe.py"]
+    app_bridge_protocol["app/tenhou_ui_bridge_protocol.py"]
+    app_bridge_server["app/tenhou_ui_bridge_server.py"]
+    app_window["app/window.py"]
+    app_mock["app/mock_data.py"]
+    app_proto["app/pystyle_simulator_protocol.py"]
+    logic_danger["logic/danger_suji.py"]
+    logic_hand["logic/hand_analysis.py"]
+    table_view["table_view.py"]
+    ui_renderer["ui/table_renderer.py"]
+    ui_images["ui/tile_images.py"]
+    visible["visible_tiles.py"]
+    packet["packet_capture.py"]
+    cap_tshark["capture/tshark_capture.py"]
+    cap_pcap["capture/pcap_replay.py"]
+    cap_storage["capture/storage.py"]
+    parser["html_xml_parser.py"]
+    cap_parser["capture/fragment_parser.py"]
+    cap_meld["capture/meld_decoder.py"]
+    cap_state["capture/state.py"]
+    sutehai["sutehai.py"]
+
+    tenhou -->|再公開| app_main
+    tenhou -->|再公開| app_bridge_client
+    tenhou -->|再公開| app_bridge_mock
+    tenhou -->|再公開| app_bridge_protocol
+    tenhou -->|再公開| app_bridge_server
+    app_main -->|import| app_window
+    app_main -->|import| app_mock
+    app_main -->|import| app_reco
+    app_main -->|import| app_bridge_client
+    app_main -->|import| app_bridge_protocol
+    app_main -->|import| app_bridge_server
+    app_main -->|import| logic_danger
+    app_main -->|import| cap_state
+    app_main -->|import| cap_tshark
+    app_main -->|import| cap_pcap
+    app_main -->|import| ui_renderer
+    app_main -->|import| visible
+
+    app_reco -->|import| app_proto
+    app_bridge_client -->|import| app_bridge_protocol
+    app_bridge_client -->|import| app_bridge_server
+    app_bridge_server -->|import| app_bridge_protocol
+    app_bridge_probe -->|import| app_bridge_client
+    app_bridge_probe -->|import| app_bridge_protocol
+    app_bridge_probe -->|import| app_bridge_server
+
+    table_view -->|再公開| ui_renderer
+    ui_renderer -->|import| ui_images
+    ui_renderer -->|import| visible
+    ui_renderer -->|import| sutehai
+    visible -->|import| sutehai
+
+    packet -->|再公開| cap_tshark
+    cap_tshark -->|import| cap_parser
+    cap_tshark -->|import| cap_storage
+    cap_tshark -->|import| cap_state
+    cap_pcap -->|import| cap_parser
+    cap_pcap -->|import| cap_storage
+    cap_pcap -->|import| cap_state
+    cap_pcap -->|import| cap_tshark
+    cap_storage -->|import| cap_state
+    cap_storage -->|import| logic_hand
+    cap_storage -->|import| sutehai
+
+    parser -->|再公開| cap_parser
+    parser -->|再公開| cap_state
+    cap_parser -->|import| cap_meld
+    cap_parser -->|import| cap_state
+    cap_parser -->|import| sutehai
+    cap_meld -->|import| cap_state

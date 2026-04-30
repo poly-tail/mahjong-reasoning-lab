@@ -1,0 +1,59 @@
+graph TD
+    src["src ルート"]
+    wrappers["互換ラッパー"]
+    app["app"]
+    capture["capture"]
+    logic["logic"]
+    ui["ui"]
+    shared["共通モジュール"]
+    old["old"]
+
+    src --> wrappers
+    src --> app
+    src --> capture
+    src --> logic
+    src --> ui
+    src --> shared
+    src --> old
+
+    wrappers --> tenhou["tenhou_hojo.py"]
+    wrappers --> table_view["table_view.py"]
+    wrappers --> packet["packet_capture.py"]
+    wrappers --> parser["html_xml_parser.py"]
+    wrappers --> load["LoadImage.py"]
+
+    app --> app_init["__init__.py"]
+    app --> app_main["main.py"]
+    app --> app_reco["hand_recommendation_service.py"]
+    app --> app_mock["mock_data.py"]
+    app --> app_proto["pystyle_simulator_protocol.py"]
+    app --> app_bridge_client["tenhou_ui_bridge_client.py"]
+    app --> app_bridge_mock["tenhou_ui_bridge_mock_server.py"]
+    app --> app_bridge_probe["tenhou_ui_bridge_probe.py"]
+    app --> app_bridge_protocol["tenhou_ui_bridge_protocol.py"]
+    app --> app_bridge_server["tenhou_ui_bridge_server.py"]
+    app --> app_window["window.py"]
+
+    capture --> cap_init["__init__.py"]
+    capture --> cap_state["state.py"]
+    capture --> cap_meld["meld_decoder.py"]
+    capture --> cap_parser["fragment_parser.py"]
+    capture --> cap_pcap["pcap_replay.py"]
+    capture --> cap_storage["storage.py"]
+    capture --> cap_tshark["tshark_capture.py"]
+    capture --> cap_xml["xml_url_loader.py"]
+
+    logic --> logic_init["__init__.py"]
+    logic --> logic_danger["danger_suji.py"]
+    logic --> logic_hand["hand_analysis.py"]
+
+    ui --> ui_init["__init__.py"]
+    ui --> ui_renderer["table_renderer.py"]
+    ui --> ui_images["tile_images.py"]
+
+    shared --> src_init["__init__.py"]
+    shared --> sutehai["sutehai.py"]
+    shared --> visible["visible_tiles.py"]
+
+    old --> prototype["capture_prototype.py"]
+    old --> legacy["TenhouCapture.py"]

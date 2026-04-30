@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Editor
+.vscode/
+
+# Runtime logs
+logs/*.log
+.env
+.env.*
+!.env.example
+.secrets/
+src/.secrets/
+naga-ptev-analyzer/.secrets/
+
+# Packaged artifacts
+dist/
+out/
+**/out/
+
+# Transient temp directories
+tmp*/
+!tmp_web/
+!tmp_web/**
+src/tmp*/

@@ -1,0 +1,12 @@
+.secrets/
+out/raw/
+out/csv/
+out/logs/
+*.har
+storage_state*.json
+__pycache__/
+.pytest_cache/
+.streamlit/
+.env
+.env.*
+!.env.example
