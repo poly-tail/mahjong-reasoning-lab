@@ -605,7 +605,7 @@ class BridgeShortcutHelperTests(unittest.TestCase):
             ("pystyle ON", "#1f5136", "#d7deea"),
         )
 
-    def test_sync_hand_auto_mode_bridge_readiness_rearms_after_restore(self) -> None:
+    def test_sync_hand_auto_mode_bridge_readiness_keeps_dedupe_after_restore(self) -> None:
         canvas = SimpleNamespace(
             bridge_hand_auto_ready=False,
             bridge_hand_auto_rearm_pending=True,
@@ -635,13 +635,14 @@ class BridgeShortcutHelperTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertTrue(canvas.bridge_hand_auto_ready)
         self.assertFalse(canvas.bridge_hand_auto_rearm_pending)
-        self.assertIsNone(canvas.hand_response_requested_hand_key)
-        self.assertIsNone(canvas.hand_response_last_request_started_monotonic_s)
         self.assertEqual(
             canvas.hand_auto_mode_state,
             HandAutoModeState(
                 enabled=True,
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
+                in_flight=False,
+                last_attempt_key=("auto_discard_relaxed", "same-hand", 11),
+                last_error="timeout",
             ),
         )
 
@@ -682,6 +683,9 @@ class BridgeShortcutHelperTests(unittest.TestCase):
             HandAutoModeState(
                 enabled=True,
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
+                in_flight=False,
+                last_attempt_key=("auto_discard_relaxed", "same-hand", 11),
+                last_error="Bridge not ready",
             ),
         )
 

@@ -214,6 +214,29 @@ class TenhouUiBridgeClientTests(unittest.TestCase):
 
 
 class TenhouUiBridgeServerTests(unittest.TestCase):
+    def test_status_clears_stale_snapshot_when_extension_drops(self) -> None:
+        server = TenhouUiBridgeServer()
+        server._set_status(listening=True, connected=True, extension_ready=True)
+        server._handle_text_message(
+            '{"type":"ui_snapshot_result","result":{"ok":true,"tenhouReady":true,'
+            '"controls":[{"controlId":2360328,"visible":true,"text":"ron"}],'
+            '"toggleControls":[{"controlId":1183750,"visible":true,"available":true,"active":true}]}}'
+        )
+
+        ready_status = server.snapshot_status()
+        self.assertEqual(ready_status.last_event, "ui_snapshot_result")
+        self.assertEqual([control.control_id for control in ready_status.visible_controls], [2360328])
+        self.assertIsNotNone(ready_status.last_result)
+
+        server._set_status(connected=False, extension_ready=False, last_event="client_disconnected")
+
+        dropped_status = server.snapshot_status()
+        self.assertFalse(dropped_status.connected)
+        self.assertFalse(dropped_status.extension_ready)
+        self.assertIsNone(dropped_status.last_result)
+        self.assertEqual(dropped_status.visible_controls, ())
+        self.assertFalse(any(toggle.available for toggle in dropped_status.toggle_controls))
+
     def test_second_server_on_same_port_raises_bind_error(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as temp_socket:
             temp_socket.bind(("127.0.0.1", 0))

@@ -28,10 +28,13 @@ from ui.table_renderer import (
     _format_player_panel_remain_text,
     _normalize_player_score_diffs_by_seat,
     _normalize_opponent_suji_panel_summaries,
+    _player_panel_alert_sound_tone,
     _player_panel_display_name,
     _player_panel_alert_sound_priority,
     _player_panel_remain_sound_level,
     _persist_player_push_alerts,
+    _push_discard_marker_indices_by_seat,
+    _push_marker_alerts_for_render,
     _player_panel_remain_text_color,
     _handle_detail_memo_save_shortcut,
     _ensure_detail_memo_widgets,
@@ -1634,15 +1637,94 @@ class PlayerPanelAlertTest(unittest.TestCase):
             ("push:15",),
         )
 
-    def test_push_alert_key_is_muted_for_sound_priority(self) -> None:
-        self.assertEqual(_player_panel_alert_sound_priority("push:7"), 0)
-        self.assertEqual(_player_panel_alert_sound_priority("push_release:10"), 0)
+    def test_push_alert_key_uses_color_based_sound_priority(self) -> None:
+        self.assertEqual(_player_panel_alert_sound_priority("push:7"), 3)
+        self.assertEqual(_player_panel_alert_sound_priority("push_release:10"), 1)
         self.assertEqual(_player_panel_alert_sound_priority("remain_purple"), 3)
         self.assertEqual(_player_panel_alert_sound_priority("remain_yellow"), 1)
         self.assertEqual(_player_panel_alert_sound_priority("remain_red"), 2)
         self.assertEqual(_player_panel_alert_sound_priority("menzen_yellow"), 0)
         self.assertEqual(_player_panel_alert_sound_priority("menzen_red"), 2)
         self.assertEqual(_player_panel_alert_sound_priority("tenpai_near"), 1)
+
+    def test_push_discard_marker_stays_latched_for_round_after_panel_alert_expires(self) -> None:
+        first_markers = _push_marker_alerts_for_render(
+            {
+                1: {
+                    "seat": 1,
+                    "percentage": 12.3,
+                    "threshold_percent": 9.0,
+                    "tile_label": "5p",
+                    "discard_index": 7,
+                    "is_current": True,
+                }
+            },
+            {},
+            7,
+        )
+        later_markers = _push_marker_alerts_for_render(
+            {
+                1: {
+                    "seat": 1,
+                    "percentage": 0.0,
+                    "threshold_percent": 9.0,
+                    "tile_label": "",
+                    "discard_index": None,
+                    "is_current": False,
+                }
+            },
+            first_markers,
+            20,
+        )
+
+        self.assertEqual(_push_discard_marker_indices_by_seat(later_markers)[1], frozenset({7}))
+
+    def test_push_discard_marker_latches_multiple_push_discards_in_same_round(self) -> None:
+        first_markers = _push_marker_alerts_for_render(
+            {
+                1: {
+                    "seat": 1,
+                    "percentage": 12.3,
+                    "threshold_percent": 9.0,
+                    "discard_index": 7,
+                }
+            },
+            {},
+            7,
+        )
+        later_markers = _push_marker_alerts_for_render(
+            {
+                1: {
+                    "seat": 1,
+                    "percentage": 11.1,
+                    "threshold_percent": 9.0,
+                    "discard_index": 15,
+                }
+            },
+            first_markers,
+            15,
+        )
+
+        self.assertEqual(_push_discard_marker_indices_by_seat(later_markers)[1], frozenset({7, 15}))
+
+    def test_push_discard_marker_latch_resets_when_round_has_no_discards(self) -> None:
+        markers = _push_marker_alerts_for_render(
+            {},
+            {1: frozenset({7})},
+            None,
+        )
+
+        self.assertEqual(
+            _push_discard_marker_indices_by_seat(markers).get(1, frozenset()),
+            frozenset(),
+        )
+
+    def test_player_panel_alert_sound_tone_varies_by_alert_color(self) -> None:
+        self.assertEqual(_player_panel_alert_sound_tone("remain_purple"), (520, 110))
+        self.assertEqual(_player_panel_alert_sound_tone("push:7"), (520, 110))
+        self.assertEqual(_player_panel_alert_sound_tone("remain_red"), (760, 90))
+        self.assertEqual(_player_panel_alert_sound_tone("remain_yellow"), (960, 70))
+        self.assertEqual(_player_panel_alert_sound_tone("push_release:10"), (1200, 60))
 
     def test_player_panel_remain_sound_level_uses_no_temp_thresholds(self) -> None:
         self.assertEqual(

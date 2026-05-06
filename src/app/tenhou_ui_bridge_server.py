@@ -416,11 +416,17 @@ class TenhouUiBridgeServer:
 
         with self._status_lock:
             current = self._status
+            next_connected = bool(changes.get("connected", current.connected))
+            next_extension_ready = bool(changes.get("extension_ready", current.extension_ready))
+            if not (next_connected and next_extension_ready):
+                changes.setdefault("last_result", None)
+                changes.setdefault("visible_controls", ())
+                changes.setdefault("toggle_controls", normalize_bridge_toggle_controls(None))
             self._status = TenhouUiBridgeStatus(
                 ws_url=str(changes.get("ws_url", current.ws_url)),
                 listening=bool(changes.get("listening", current.listening)),
-                connected=bool(changes.get("connected", current.connected)),
-                extension_ready=bool(changes.get("extension_ready", current.extension_ready)),
+                connected=next_connected,
+                extension_ready=next_extension_ready,
                 last_error=str(changes.get("last_error", current.last_error)),
                 last_event=str(changes.get("last_event", current.last_event)),
                 last_sent_command=copy.deepcopy(changes.get("last_sent_command", current.last_sent_command)),

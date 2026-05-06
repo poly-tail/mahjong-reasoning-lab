@@ -32,6 +32,23 @@ from ui.table_renderer import (
 
 
 class AutoRiichiTests(unittest.TestCase):
+    def _ready_bridge_status(
+        self,
+        *,
+        ws_url: str = "ws://127.0.0.1:8765",
+        visible_controls: tuple[TenhouUiBridgeControl, ...] = (),
+        toggle_controls: tuple[TenhouUiBridgeToggleControl, ...] = (),
+    ) -> TenhouUiBridgeStatus:
+        return TenhouUiBridgeStatus(
+            ws_url=ws_url,
+            listening=True,
+            connected=True,
+            extension_ready=True,
+            last_result={"type": "ui_snapshot_result", "result": {"ok": True, "tenhouReady": True}},
+            visible_controls=visible_controls,
+            toggle_controls=toggle_controls,
+        )
+
     def test_place_bridge_action_controls_frame_hides_empty_frame(self) -> None:
         class _FakeChild:
             def __init__(self, manager: str) -> None:
@@ -78,7 +95,7 @@ class AutoRiichiTests(unittest.TestCase):
                 enabled=True,
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(),
                 toggle_controls=(
@@ -139,7 +156,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(),
                 toggle_controls=(
@@ -200,7 +217,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={BRIDGE_NAKI_DISABLED_TOGGLE_CONTROL_ID: True},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(
                     TenhouUiBridgeControl(control_id=2359814, visible=True, text="", label=""),
@@ -262,7 +279,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(
                     TenhouUiBridgeControl(control_id=2359814, visible=True, text="", label=""),
@@ -326,7 +343,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(
                     TenhouUiBridgeControl(control_id=2359814, visible=True, text="", label=""),
@@ -383,7 +400,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(),
                 toggle_controls=(
@@ -440,7 +457,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(),
                 toggle_controls=(
@@ -508,7 +525,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(),
                 toggle_controls=(
@@ -571,7 +588,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(),
                 toggle_controls=(
@@ -658,7 +675,7 @@ class AutoRiichiTests(unittest.TestCase):
                 mode=HAND_AUTO_MODE_KIND_RECOMMENDATION,
             ),
             bridge_toggle_active_overrides={},
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(),
                 toggle_controls=(
@@ -725,7 +742,7 @@ class AutoRiichiTests(unittest.TestCase):
         discard_calls: list[int] = []
         control_calls: list[int] = []
         canvas = SimpleNamespace(
-            bridge_status_provider=lambda: TenhouUiBridgeStatus(
+            bridge_status_provider=lambda: self._ready_bridge_status(
                 ws_url="ws://127.0.0.1:8765",
                 visible_controls=(
                     TenhouUiBridgeControl(control_id=2359814, visible=True, text="", label=""),

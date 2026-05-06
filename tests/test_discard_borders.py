@@ -14,6 +14,12 @@ from ui.table_renderer import (
     MULTI_PLAYER_LAG_DISCARD_MARKER,
     PEAK_THINKING_TIME_DISCARD_MARKER,
     PON_LAG_LIKELY_DISCARD_MARKER,
+    THINKING_TIME_BLUE_COLOR,
+    THINKING_TIME_GREEN_COLOR,
+    THINKING_TIME_OVERLAY_MAX_BLEND,
+    THINKING_TIME_PURPLE_COLOR,
+    THINKING_TIME_RED_COLOR,
+    THINKING_TIME_YELLOW_COLOR,
     THREE_VISIBLE_DISCARD_MARKER,
     FOUR_VISIBLE_DISCARD_MARKER,
     _discard_tint_brighten_overlay_band,
@@ -36,6 +42,8 @@ from ui.table_renderer import (
     _same_jun_match_discard_indices_by_seat,
     _self_hand_honor_visible_count,
     _self_hand_honor_visible_count_geometry,
+    _thinking_time_overlay_style,
+    _thinking_time_tint_step,
     _visible_count_marker_kind,
     _visible_count_marker_style,
     SAME_JUN_MATCH_DISCARD_MARKER,
@@ -80,6 +88,29 @@ class DiscardBorderKindTest(unittest.TestCase):
         )
 
         self.assertEqual(_discard_border_kind(discard), "none")
+
+    def test_thinking_time_overlay_style_uses_six_fixed_levels(self) -> None:
+        self.assertEqual(_thinking_time_overlay_style(_thinking_time_tint_step(0.0)), (None, 0.0))
+        self.assertEqual(
+            _thinking_time_overlay_style(_thinking_time_tint_step(1.0)),
+            (THINKING_TIME_GREEN_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND),
+        )
+        self.assertEqual(
+            _thinking_time_overlay_style(_thinking_time_tint_step(2500.0)),
+            (THINKING_TIME_BLUE_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND),
+        )
+        self.assertEqual(
+            _thinking_time_overlay_style(_thinking_time_tint_step(4000.0)),
+            (THINKING_TIME_YELLOW_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND),
+        )
+        self.assertEqual(
+            _thinking_time_overlay_style(_thinking_time_tint_step(5600.0)),
+            (THINKING_TIME_RED_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND),
+        )
+        self.assertEqual(
+            _thinking_time_overlay_style(_thinking_time_tint_step(7000.0)),
+            (THINKING_TIME_PURPLE_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND),
+        )
 
     def test_discard_tile_image_uses_precomputed_tint_base_helper(self) -> None:
         discard = Discard(
@@ -380,8 +411,8 @@ class DiscardBorderKindTest(unittest.TestCase):
                 }
             ),
             {
-                int(Player.KAMICHA): 7,
-                int(Player.SHIMOCHA): 9,
+                int(Player.KAMICHA): frozenset({7}),
+                int(Player.SHIMOCHA): frozenset({9}),
             },
         )
 
@@ -407,7 +438,7 @@ class DiscardBorderKindTest(unittest.TestCase):
         self.assertEqual(_push_discard_marker_indices_by_seat(raw_marker_alerts), {})
         self.assertEqual(
             _push_discard_marker_indices_by_seat(persisted_alerts),
-            {int(Player.SHIMOCHA): 2},
+            {int(Player.SHIMOCHA): frozenset({2})},
         )
 
     def test_lag_marker_reference_copy_mentions_l_pl_n_meanings(self) -> None:

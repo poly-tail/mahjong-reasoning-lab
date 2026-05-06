@@ -234,8 +234,10 @@ RIICHI_STICK_OUTLINE = "#94a3b8"
 THINKING_TIME_MAX_MS = 7000.0
 THINKING_TIME_TINT_STEPS = 50
 THINKING_TIME_GREEN_COLOR = (120, 224, 120)
+THINKING_TIME_BLUE_COLOR = (96, 165, 250)
 THINKING_TIME_YELLOW_COLOR = (250, 204, 21)
 THINKING_TIME_RED_COLOR = (220, 38, 38)
+THINKING_TIME_PURPLE_COLOR = (168, 85, 247)
 THINKING_TIME_OVERLAY_MAX_BLEND = 0.7
 THINKING_TIME_UPPER_BAND_START_RATIO = 0.5
 THINKING_TIME_UPPER_BAND_END_RATIO = 0.75
@@ -3050,6 +3052,7 @@ def create_canvas(
         seat: _empty_player_push_alert_payload(seat)
         for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
+    board_canvas.player_push_marker_latches_by_seat = _empty_player_push_marker_indices_by_seat()
     board_canvas.current_player_alert_indicators_by_seat = current_player_alert_indicators_by_seat
     board_canvas.hand_recommendation_request_action = hand_recommendation_request_action
     board_canvas.hand_recommendation_reset_action = hand_recommendation_reset_action
@@ -3396,13 +3399,19 @@ def create_canvas(
             if table_snapshot is not None
             else current_player_push_alert_percentages
         )
-        push_marker_alert_percentages = _push_marker_alerts_for_render(
-            raw_player_push_alert_percentages
+        latest_global_discard_index = _latest_global_discard_index_from_discard_map(
+            dynamic_discard_map
         )
+        push_marker_alert_percentages = _push_marker_alerts_for_render(
+            raw_player_push_alert_percentages,
+            getattr(board_canvas, "player_push_marker_latches_by_seat", {}),
+            latest_global_discard_index,
+        )
+        board_canvas.player_push_marker_latches_by_seat = push_marker_alert_percentages
         dynamic_player_push_alert_percentages = _persist_player_push_alerts(
             raw_player_push_alert_percentages,
             getattr(board_canvas, "player_push_alert_latches_by_seat", {}),
-            _latest_global_discard_index_from_discard_map(dynamic_discard_map),
+            latest_global_discard_index,
         )
         board_canvas.player_push_alert_latches_by_seat = dynamic_player_push_alert_percentages
         dynamic_player_alert_indicators_by_seat = (
@@ -3778,15 +3787,21 @@ def create_canvas(
                         raw_player_push_alert_percentages = _normalize_player_push_alert_percentages(
                             getattr(partial_snapshot, "player_push_alert_percentages", {})
                         )
+                        latest_global_discard_index = _latest_global_discard_index_from_discard_map(
+                            getattr(partial_snapshot, "discard_map", {})
+                        )
                         push_marker_alert_percentages = _push_marker_alerts_for_render(
-                            raw_player_push_alert_percentages
+                            raw_player_push_alert_percentages,
+                            getattr(board_canvas, "player_push_marker_latches_by_seat", {}),
+                            latest_global_discard_index,
+                        )
+                        board_canvas.player_push_marker_latches_by_seat = (
+                            push_marker_alert_percentages
                         )
                         dynamic_player_push_alert_percentages = _persist_player_push_alerts(
                             raw_player_push_alert_percentages,
                             getattr(board_canvas, "player_push_alert_latches_by_seat", {}),
-                            _latest_global_discard_index_from_discard_map(
-                                getattr(partial_snapshot, "discard_map", {})
-                            ),
+                            latest_global_discard_index,
                         )
                         board_canvas.player_push_alert_latches_by_seat = (
                             dynamic_player_push_alert_percentages
@@ -4887,15 +4902,39 @@ def _normalize_player_push_alert_percentages(
 
 def _push_marker_alerts_for_render(
     latest_push_alerts_by_seat: PlayerPushAlertPercentages | None,
-) -> dict[int, dict[str, object]]:
-    """Return raw latest-discard push payloads used only by the river `P` marker.
+    previous_marker_indices_by_seat: Mapping[int, object] | None = None,
+    latest_global_discard_index: int | None = None,
+) -> dict[int, frozenset[int]]:
+    """Return round-latched river `P` marker indexes.
 
-    `Push` / `Push解除` panel rows are persistence-based, but the river marker should keep pointing
-    at each seat's latest qualifying discard only. Old marker state must not be held alive by the
-    panel-side latch window.
+    Panel-side `Push` rows are short-lived, but the river marker remains for the round once
+    a qualifying push discard appears.
     """
 
-    return _normalize_player_push_alert_percentages(latest_push_alerts_by_seat)
+    current_marker_indices_by_seat = _push_discard_marker_indices_by_seat(
+        _normalize_player_push_alert_percentages(latest_push_alerts_by_seat)
+    )
+    if latest_global_discard_index is None:
+        return current_marker_indices_by_seat
+
+    previous_marker_indices = _normalize_push_marker_indices_by_seat(
+        previous_marker_indices_by_seat
+    )
+    latched_indices: dict[int, frozenset[int]] = {}
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        retained_previous_indices = {
+            discard_index
+            for discard_index in previous_marker_indices.get(seat, frozenset())
+            if discard_index <= latest_global_discard_index
+        }
+        merged_indices = frozenset(
+            retained_previous_indices
+            | set(current_marker_indices_by_seat.get(seat, frozenset()))
+        )
+        if not merged_indices:
+            continue
+        latched_indices[seat] = merged_indices
+    return latched_indices
 
 
 def _normalize_player_score_diffs_by_seat(
@@ -4967,6 +5006,51 @@ def _empty_player_push_alert_payload(seat: int) -> dict[str, object]:
         "target_seats": (),
         "exact_safe_target_seats": (),
     }
+
+
+def _empty_player_push_marker_indices_by_seat() -> dict[int, frozenset[int]]:
+    """Return the renderer's zero-value river push-marker index map."""
+
+    return {seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER}
+
+
+def _normalize_push_marker_indices_by_seat(
+    marker_indices_by_seat: Mapping[int, object] | None,
+) -> dict[int, frozenset[int]]:
+    """Normalize per-seat river push-marker indexes into immutable index sets."""
+
+    normalized = _empty_player_push_marker_indices_by_seat()
+    if not isinstance(marker_indices_by_seat, Mapping):
+        return normalized
+    for fallback_seat, raw_indices in marker_indices_by_seat.items():
+        try:
+            seat = int(fallback_seat)
+        except (TypeError, ValueError):
+            continue
+        if seat not in normalized:
+            continue
+        if isinstance(raw_indices, Mapping):
+            raw_index_values = raw_indices.get("discard_indices")
+            if raw_index_values is None:
+                raw_index_values = raw_indices.get("discard_index")
+        else:
+            raw_index_values = raw_indices
+        if isinstance(raw_index_values, (str, bytes)):
+            raw_iterable = (raw_index_values,)
+        elif isinstance(raw_index_values, Iterable):
+            raw_iterable = raw_index_values
+        else:
+            raw_iterable = (raw_index_values,)
+        valid_indices: set[int] = set()
+        for raw_index in raw_iterable:
+            try:
+                discard_index = int(raw_index)
+            except (TypeError, ValueError):
+                continue
+            if discard_index >= 0:
+                valid_indices.add(discard_index)
+        normalized[seat] = frozenset(valid_indices)
+    return normalized
 
 
 def _normalize_alert_seat_tuple(raw_values: object) -> tuple[int, ...]:
@@ -5759,6 +5843,7 @@ def _reset_round_ui_state(canvas: tkinter.Canvas) -> None:
         seat: _empty_player_push_alert_payload(seat)
         for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
+    canvas.player_push_marker_latches_by_seat = _empty_player_push_marker_indices_by_seat()
     _hide_detail_memo_editor(canvas)
 
 
@@ -6000,6 +6085,25 @@ def _reset_hand_auto_mode_volatile_state(
         canvas.hand_response_turn_started_monotonic_s = None
         canvas.hand_response_turn_display_key = None
         canvas.hand_response_timeout_fallback_applied_turn_key = None
+    reset_action = getattr(canvas, "hand_recommendation_reset_action", None)
+    if callable(reset_action):
+        reset_action()
+
+
+def _pause_hand_auto_mode_for_bridge_drop(canvas: tkinter.Canvas) -> None:
+    """Stop in-flight AUTO work after a bridge drop while preserving per-hand dedupe."""
+
+    current_auto_mode_state = getattr(canvas, "hand_auto_mode_state", HandAutoModeState())
+    canvas.hand_auto_mode_state = replace(
+        current_auto_mode_state,
+        in_flight=False,
+        last_error="Bridge not ready",
+    )
+    canvas.hand_response_requested_hand_key = None
+    canvas.hand_response_last_request_started_monotonic_s = None
+    canvas.hand_response_turn_started_monotonic_s = None
+    canvas.hand_response_turn_display_key = None
+    canvas.hand_response_timeout_fallback_applied_turn_key = None
     reset_action = getattr(canvas, "hand_recommendation_reset_action", None)
     if callable(reset_action):
         reset_action()
@@ -6452,19 +6556,18 @@ def _sync_hand_auto_mode_bridge_readiness(
         canvas.bridge_hand_auto_ready = ready_now
         canvas.bridge_hand_auto_rearm_pending = not ready_now
         if not ready_now:
-            _reset_hand_auto_mode_volatile_state(canvas)
+            _pause_hand_auto_mode_for_bridge_drop(canvas)
         return False
     if not ready_now:
         canvas.bridge_hand_auto_ready = False
         canvas.bridge_hand_auto_rearm_pending = True
         if bool(previous_ready) or not rearm_pending:
-            _reset_hand_auto_mode_volatile_state(canvas)
+            _pause_hand_auto_mode_for_bridge_drop(canvas)
             return True
         return False
     canvas.bridge_hand_auto_ready = True
     if rearm_pending or not bool(previous_ready):
         canvas.bridge_hand_auto_rearm_pending = False
-        _reset_hand_auto_mode_volatile_state(canvas)
         return True
     canvas.bridge_hand_auto_rearm_pending = False
     return False
@@ -7124,8 +7227,23 @@ def _refresh_bridge_widgets(canvas: tkinter.Canvas) -> None:
     status = _bridge_status_snapshot(canvas)
     toggle_controls_frame = getattr(canvas, "bridge_toggle_controls_frame", None)
     action_controls_frame = getattr(canvas, "bridge_action_controls_frame", None)
-    toggle_controls = tuple(getattr(status, "toggle_controls", ()) if status is not None else ())
-    visible_controls = tuple(getattr(status, "visible_controls", ()) if status is not None else ())
+    bridge_is_actionable = bool(
+        status is not None
+        and getattr(status, "listening", False)
+        and getattr(status, "connected", False)
+        and getattr(status, "extension_ready", False)
+        and _bridge_ui_snapshot_result(status) is not None
+    )
+    toggle_controls = (
+        tuple(getattr(status, "toggle_controls", ()))
+        if bridge_is_actionable and status is not None
+        else ()
+    )
+    visible_controls = (
+        tuple(getattr(status, "visible_controls", ()))
+        if bridge_is_actionable and status is not None
+        else ()
+    )
     action_control_specs = _build_bridge_action_control_specs(visible_controls)
     action_control_ids = {spec.control_id for spec in action_control_specs}
     click_action_available = callable(getattr(canvas, "bridge_click_control_action", None))
@@ -7362,6 +7480,18 @@ def _schedule_bridge_followup_snapshots(canvas: tkinter.Canvas) -> None:
     canvas.bridge_followup_snapshot_jobs = scheduled_jobs
 
 
+def _cancel_bridge_followup_snapshots(canvas: tkinter.Canvas) -> None:
+    """Cancel delayed bridge snapshots that were scheduled before a bridge drop."""
+
+    existing_jobs = list(getattr(canvas, "bridge_followup_snapshot_jobs", ()))
+    for existing_job in existing_jobs:
+        try:
+            canvas.after_cancel(existing_job)
+        except tkinter.TclError:
+            continue
+    canvas.bridge_followup_snapshot_jobs = []
+
+
 def _drain_bridge_background_result_queue(canvas: tkinter.Canvas) -> bool:
     """Apply finished bridge poll/command results back on the Tk thread."""
 
@@ -7469,6 +7599,14 @@ def _bridge_status_tick(canvas: tkinter.Canvas) -> None:
         if callable(redraw_action):
             redraw_action()
     current_bridge_status = _bridge_status_snapshot(canvas)
+    if not (
+        current_bridge_status is not None
+        and current_bridge_status.listening
+        and current_bridge_status.connected
+        and current_bridge_status.extension_ready
+    ):
+        canvas.bridge_snapshot_pending_force = False
+        _cancel_bridge_followup_snapshots(canvas)
     if _should_request_bridge_ui_snapshot_on_tick(canvas, current_bridge_status):
         if _request_bridge_ui_snapshot(canvas):
             canvas.bridge_last_requested_source_refresh_token = getattr(
@@ -7581,6 +7719,8 @@ def _maybe_start_hand_auto_discard(
         return
     current_mode = str(getattr(auto_mode_state, "mode", HAND_AUTO_MODE_KIND_RECOMMENDATION))
     bridge_status = _bridge_status_snapshot(canvas)
+    if not _is_bridge_ready_for_hand_auto(bridge_status):
+        return
     bridge_click_control_action = getattr(canvas, "bridge_click_control_action", None)
     if (
         current_mode == HAND_AUTO_MODE_KIND_RECOMMENDATION
@@ -12618,7 +12758,7 @@ def _normalize_player_alert_indicators_by_seat(
 def _player_panel_alert_sound_priority(alert_key: str) -> int:
     """Return player-panel alert sound priority, with push alerts muted."""
 
-    if alert_key == "remain_purple":
+    if alert_key == "remain_purple" or alert_key.startswith("push:"):
         return 3
     if alert_key in {"remain_red", "menzen_red", "hand_pattern_red"}:
         return 2
@@ -12628,7 +12768,7 @@ def _player_panel_alert_sound_priority(alert_key: str) -> int:
         "suit_bias",
         "ryanmen_chi_37",
         "tenpai_near",
-    }:
+    } or alert_key.startswith("push_release"):
         return 1
     return 0
 
@@ -12705,17 +12845,32 @@ def _highest_priority_player_panel_alert_key(alert_keys: Sequence[str] | None) -
     return best_key
 
 
+def _player_panel_alert_sound_tone(alert_key: str) -> tuple[int, int]:
+    """Return the beep tone for one player-panel alert key, grouped by alert color."""
+
+    normalized_key = str(alert_key or "").strip().lower()
+    if "purple" in normalized_key or normalized_key.startswith("push:"):
+        return 520, 110
+    if "red" in normalized_key:
+        return 760, 90
+    if "yellow" in normalized_key or normalized_key in {
+        "suit_bias",
+        "ryanmen_chi_37",
+        "tenpai_near",
+    }:
+        return 960, 70
+    if "green" in normalized_key or normalized_key.startswith("push_release"):
+        return 1200, 60
+    return 880, 70
+
+
 def _play_player_panel_alert_sound_worker(alert_key: str) -> None:
     """Emit one short platform sound for a player-panel alert transition."""
 
     if winsound is None:
         return
 
-    frequency_hz, duration_ms = (
-        (760, 80)
-        if _player_panel_alert_sound_priority(alert_key) >= 2
-        else (960, 70)
-    )
+    frequency_hz, duration_ms = _player_panel_alert_sound_tone(alert_key)
     try:
         winsound.Beep(frequency_hz, duration_ms)
     except RuntimeError:
@@ -15533,13 +15688,25 @@ def _discard_global_index(discard: object, fallback_index: int | None = None) ->
 
 
 def _push_discard_marker_indices_by_seat(
-    push_alerts_by_seat: Mapping[int, Mapping[str, object]] | None,
-) -> dict[int, int]:
+    push_alerts_by_seat: Mapping[int, object] | None,
+) -> dict[int, frozenset[int]]:
     """Return global discard indexes that should render the purple `P` push marker."""
 
     if not isinstance(push_alerts_by_seat, Mapping):
         return {}
-    marker_indices: dict[int, int] = {}
+    has_explicit_marker_indices = any(
+        not isinstance(raw_value, Mapping) or "discard_indices" in raw_value
+        for raw_value in push_alerts_by_seat.values()
+    )
+    if has_explicit_marker_indices:
+        return {
+            seat: indices
+            for seat, indices in _normalize_push_marker_indices_by_seat(
+                push_alerts_by_seat
+            ).items()
+            if indices
+        }
+    marker_indices: dict[int, frozenset[int]] = {}
     for fallback_seat, payload in push_alerts_by_seat.items():
         if not isinstance(payload, Mapping):
             continue
@@ -15560,7 +15727,7 @@ def _push_discard_marker_indices_by_seat(
             continue
         if discard_index < 0:
             continue
-        marker_indices[seat] = discard_index
+        marker_indices[seat] = frozenset({discard_index})
     return marker_indices
 
 
@@ -16020,55 +16187,36 @@ def _thinking_time_tint_step(thinking_time_ms: float | None) -> int:
     if thinking_time_ms is None or thinking_time_ms <= 0.0:
         return 0
     clamped_ms = min(max(thinking_time_ms, 0.0), THINKING_TIME_MAX_MS)
-    return int(round(clamped_ms / THINKING_TIME_MAX_MS * THINKING_TIME_TINT_STEPS))
+    return max(1, int(round(clamped_ms / THINKING_TIME_MAX_MS * THINKING_TIME_TINT_STEPS)))
 
 
 def _thinking_time_overlay_style(
     tint_step: int,
 ) -> tuple[tuple[int, int, int] | None, float]:
-    """Map time steps to `no change -> green -> yellow -> red` on the tile's lower quarter."""
+    """Map time steps to six fixed states: no change, green, blue, yellow, red, then purple."""
 
     if tint_step <= 0:
         return None, 0.0
 
-    first_stage_end = max(THINKING_TIME_TINT_STEPS // 3, 1)
-    second_stage_end = max((THINKING_TIME_TINT_STEPS * 2) // 3, first_stage_end + 1)
-    second_stage_end = min(second_stage_end, THINKING_TIME_TINT_STEPS)
+    first_stage_end = max(THINKING_TIME_TINT_STEPS // 5, 1)
+    second_stage_end = max((THINKING_TIME_TINT_STEPS * 2) // 5, first_stage_end + 1)
+    third_stage_end = max((THINKING_TIME_TINT_STEPS * 3) // 5, second_stage_end + 1)
+    fourth_stage_end = max((THINKING_TIME_TINT_STEPS * 4) // 5, third_stage_end + 1)
+    fourth_stage_end = min(fourth_stage_end, THINKING_TIME_TINT_STEPS)
 
     if tint_step <= first_stage_end:
-        return (
-            THINKING_TIME_GREEN_COLOR,
-            (tint_step / first_stage_end) * THINKING_TIME_OVERLAY_MAX_BLEND,
-        )
+        return THINKING_TIME_GREEN_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND
 
     if tint_step <= second_stage_end:
-        stage_span = max(second_stage_end - first_stage_end, 1)
-        stage_ratio = (tint_step - first_stage_end) / stage_span
-        overlay_color = tuple(
-            int(
-                round(
-                    THINKING_TIME_GREEN_COLOR[index]
-                    + (THINKING_TIME_YELLOW_COLOR[index] - THINKING_TIME_GREEN_COLOR[index])
-                    * stage_ratio
-                )
-            )
-            for index in range(3)
-        )
-        return overlay_color, THINKING_TIME_OVERLAY_MAX_BLEND
+        return THINKING_TIME_BLUE_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND
 
-    stage_span = max(THINKING_TIME_TINT_STEPS - second_stage_end, 1)
-    stage_ratio = (tint_step - second_stage_end) / stage_span
-    overlay_color = tuple(
-        int(
-            round(
-                THINKING_TIME_YELLOW_COLOR[index]
-                + (THINKING_TIME_RED_COLOR[index] - THINKING_TIME_YELLOW_COLOR[index])
-                * stage_ratio
-            )
-        )
-        for index in range(3)
-    )
-    return overlay_color, THINKING_TIME_OVERLAY_MAX_BLEND
+    if tint_step <= third_stage_end:
+        return THINKING_TIME_YELLOW_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND
+
+    if tint_step <= fourth_stage_end:
+        return THINKING_TIME_RED_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND
+
+    return THINKING_TIME_PURPLE_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND
 
 
 def _thinking_time_overlay_band(
@@ -17047,7 +17195,7 @@ def _draw_discards(
             )
             should_draw_push_marker = (
                 _discard_global_index(discard, idx)
-                == push_marker_indices_by_seat.get(int(player))
+                in push_marker_indices_by_seat.get(int(player), frozenset())
             )
             should_draw_same_jun_match_marker = idx in same_jun_match_indices
             should_draw_peak_thinking_time_marker = idx == peak_thinking_time_index
