@@ -15739,20 +15739,20 @@ def _push_discard_marker_geometry(
     bottom: float,
     current_ui_scale: float,
 ) -> tuple[float, float]:
-    """Return the rotated top-edge center used by the push marker."""
+    """Return the in-tile top marker row slot used by the push marker."""
 
-    width = max(0.0, right - left)
-    height = max(0.0, bottom - top)
-    edge_offset = _scaled_length(6, current_ui_scale, minimum=4)
-    center_x = left + width * 0.5
-    center_y = top + height * 0.5
-    if player == Player.JICHA:
-        return center_x, top - edge_offset
-    if player == Player.TOIMEN:
-        return center_x, bottom + edge_offset
-    if player == Player.SHIMOCHA:
-        return left - edge_offset, center_y
-    return right + edge_offset, center_y
+    del current_ui_scale
+    _marker_radius, _visible_count_center, same_jun_center, lag_center = _discard_marker_layout(
+        player,
+        left,
+        top,
+        right,
+        bottom,
+    )
+    return (
+        (float(same_jun_center[0]) + float(lag_center[0])) * 0.5,
+        (float(same_jun_center[1]) + float(lag_center[1])) * 0.5,
+    )
 
 
 def _draw_push_discard_marker(
@@ -15765,7 +15765,7 @@ def _draw_push_discard_marker(
     *,
     color: str = PUSH_DISCARD_MARKER,
 ) -> None:
-    """Draw the purple `P` push marker at the rotated top edge of one discard tile."""
+    """Draw the purple `P` push marker inside the top marker row of one discard tile."""
 
     current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
     font_size = max(8, int(round(9 * current_ui_scale)))

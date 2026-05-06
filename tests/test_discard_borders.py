@@ -904,7 +904,7 @@ class DiscardBorderKindTest(unittest.TestCase):
         self.assertEqual((shimo_x, shimo_y), (42.0, 50.0))
         self.assertEqual((kami_x, kami_y), (18.0, 50.0))
 
-    def test_push_discard_marker_geometry_uses_pre_rotation_upper_edge(self) -> None:
+    def test_push_discard_marker_geometry_stays_inside_next_to_lag_marker(self) -> None:
         jicha_x, jicha_y = _push_discard_marker_geometry(
             Player.JICHA,
             10.0,
@@ -938,10 +938,14 @@ class DiscardBorderKindTest(unittest.TestCase):
             1.0,
         )
 
-        self.assertEqual((jicha_x, jicha_y), (30.0, 14.0))
-        self.assertEqual((toimen_x, toimen_y), (30.0, 86.0))
-        self.assertEqual((shimo_x, shimo_y), (4.0, 50.0))
-        self.assertEqual((kami_x, kami_y), (56.0, 50.0))
+        self.assertAlmostEqual(jicha_x, 24.4)
+        self.assertAlmostEqual(jicha_y, 27.0)
+        self.assertAlmostEqual(toimen_x, 35.6)
+        self.assertAlmostEqual(toimen_y, 73.0)
+        self.assertAlmostEqual(shimo_x, 17.0)
+        self.assertAlmostEqual(shimo_y, 58.4)
+        self.assertAlmostEqual(kami_x, 43.0)
+        self.assertAlmostEqual(kami_y, 41.6)
 
     def test_collect_multi_player_lag_tiles_34_ignores_riseki_completion_discards(self) -> None:
         discard_map = {
