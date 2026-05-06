@@ -387,6 +387,8 @@ BRIDGE_STATUS_TICK_MS = 250
 BRIDGE_PERIODIC_SNAPSHOT_ENABLED = False
 BRIDGE_SNAPSHOT_POLL_S = 0.8
 BRIDGE_CONTROL_FOLLOWUP_SNAPSHOT_DELAYS_MS = (120, 320)
+BRIDGE_TABLE_SNAPSHOT_READY_RETRY_MS = 1000
+BRIDGE_TABLE_SNAPSHOT_READY_RETRY_LIMIT = 6
 BRIDGE_STATUS_SUCCESS_TTL_S = 3.0
 BRIDGE_STATUS_ERROR_TTL_S = 6.0
 SLOW_REDRAW_LOG_THRESHOLD_MS = 250.0
@@ -3026,6 +3028,8 @@ def create_canvas(
     board_canvas.bridge_feedback_expires_monotonic_s = 0.0
     board_canvas.bridge_status_tick_job = None
     board_canvas.bridge_followup_snapshot_jobs = []
+    board_canvas.bridge_table_snapshot_retry_count = 0
+    board_canvas.bridge_table_snapshot_retry_job = None
     board_canvas.bridge_hand_auto_ready = None
     board_canvas.bridge_hand_auto_rearm_pending = False
     board_canvas.bridge_toggle_active_overrides = {}
@@ -7451,7 +7455,7 @@ def _request_bridge_ui_snapshot(canvas: tkinter.Canvas, *, force: bool = False) 
     )
 
 
-def _request_bridge_table_snapshot(canvas: tkinter.Canvas) -> bool:
+def _request_bridge_table_snapshot(canvas: tkinter.Canvas, *, retry: bool = False) -> bool:
     """Kick one background browser-table import from the bridge widget."""
 
     action = getattr(canvas, "bridge_table_snapshot_action", None)
@@ -7459,6 +7463,9 @@ def _request_bridge_table_snapshot(canvas: tkinter.Canvas) -> bool:
         _set_bridge_feedback(canvas, "Bridge map unavailable", is_error=True)
         _refresh_bridge_widgets(canvas)
         return False
+    if not retry:
+        _cancel_bridge_table_snapshot_retry(canvas)
+        canvas.bridge_table_snapshot_retry_count = 0
     _set_bridge_feedback(canvas, "Mapping browser table...", is_error=False)
     _refresh_bridge_widgets(canvas)
     return _queue_bridge_background_action(
@@ -7516,6 +7523,78 @@ def _cancel_bridge_followup_snapshots(canvas: tkinter.Canvas) -> None:
         except tkinter.TclError:
             continue
     canvas.bridge_followup_snapshot_jobs = []
+
+
+def _cancel_bridge_table_snapshot_retry(canvas: tkinter.Canvas) -> None:
+    """Cancel one delayed browser table-map retry, if it is still pending."""
+
+    existing_job = getattr(canvas, "bridge_table_snapshot_retry_job", None)
+    if existing_job is not None:
+        try:
+            canvas.after_cancel(existing_job)
+        except (AttributeError, tkinter.TclError):
+            pass
+    canvas.bridge_table_snapshot_retry_job = None
+
+
+def _is_bridge_table_state_not_ready_error(error_text: object) -> bool:
+    """Return True for the transient browser-side table-state bootstrap error."""
+
+    normalized_error = str(error_text or "").strip().upper().replace(" ", "_")
+    return "TABLE_STATE_NOT_READY" in normalized_error
+
+
+def _schedule_bridge_table_snapshot_retry(
+    canvas: tkinter.Canvas,
+    *,
+    error_text: object,
+) -> bool:
+    """Retry browser table mapping when Tenhou globals have not reappeared yet."""
+
+    if not _is_bridge_table_state_not_ready_error(error_text):
+        return False
+    try:
+        retry_count = int(getattr(canvas, "bridge_table_snapshot_retry_count", 0) or 0)
+    except (TypeError, ValueError):
+        retry_count = 0
+    if retry_count >= BRIDGE_TABLE_SNAPSHOT_READY_RETRY_LIMIT:
+        _set_bridge_feedback(
+            canvas,
+            "Bridge map table state still not ready",
+            is_error=True,
+        )
+        canvas.bridge_table_snapshot_retry_count = 0
+        canvas.bridge_table_snapshot_retry_job = None
+        return True
+
+    next_retry_count = retry_count + 1
+    _cancel_bridge_table_snapshot_retry(canvas)
+    canvas.bridge_table_snapshot_retry_count = next_retry_count
+    _set_bridge_feedback(
+        canvas,
+        (
+            "Bridge map waiting for table state "
+            f"({next_retry_count}/{BRIDGE_TABLE_SNAPSHOT_READY_RETRY_LIMIT})"
+        ),
+        is_error=False,
+    )
+    try:
+        retry_job = canvas.after(
+            BRIDGE_TABLE_SNAPSHOT_READY_RETRY_MS,
+            lambda: _run_bridge_table_snapshot_retry(canvas),
+        )
+    except (AttributeError, tkinter.TclError):
+        canvas.bridge_table_snapshot_retry_job = None
+        return False
+    canvas.bridge_table_snapshot_retry_job = retry_job
+    return True
+
+
+def _run_bridge_table_snapshot_retry(canvas: tkinter.Canvas) -> None:
+    """Start one delayed browser table-map retry."""
+
+    canvas.bridge_table_snapshot_retry_job = None
+    _request_bridge_table_snapshot(canvas, retry=True)
 
 
 def _drain_bridge_background_result_queue(canvas: tkinter.Canvas) -> bool:
@@ -7578,6 +7657,8 @@ def _drain_bridge_background_result_queue(canvas: tkinter.Canvas) -> bool:
             elif kind == "control":
                 _set_bridge_feedback(canvas, _format_bridge_success_feedback(kind, nested_result), is_error=False)
             elif kind == "map":
+                _cancel_bridge_table_snapshot_retry(canvas)
+                canvas.bridge_table_snapshot_retry_count = 0
                 _set_bridge_feedback(canvas, _format_bridge_success_feedback(kind, nested_result), is_error=False)
             if kind in {"discard", "control"}:
                 canvas.bridge_last_snapshot_started_monotonic_s = 0.0
@@ -7596,6 +7677,12 @@ def _drain_bridge_background_result_queue(canvas: tkinter.Canvas) -> bool:
                     if failed_control_id in toggle_overrides:
                         toggle_overrides.pop(failed_control_id, None)
                         canvas.bridge_toggle_active_overrides = toggle_overrides
+            if kind == "map" and _schedule_bridge_table_snapshot_retry(
+                canvas,
+                error_text=nested_result.get("error", ""),
+            ):
+                _refresh_bridge_widgets(canvas)
+                continue
             _set_bridge_feedback(
                 canvas,
                 str(nested_result.get("error", "Bridge action failed") or "Bridge action failed"),
