@@ -473,10 +473,15 @@ def remember_pystyle_self_history(
     state: CaptureState,
     hand_tiles_37: list[int] | tuple[int, ...],
     ranked_entries: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    *,
+    blocking: bool = True,
 ) -> bool:
     """Cache the visible AI TOP3 result for the current self hand under the active round id."""
 
-    with state.state_lock:
+    acquired = state.state_lock.acquire(blocking=blocking)
+    if not acquired:
+        return False
+    try:
         round_state = state.current_round
         round_id = round_state.round_id if round_state is not None else state.round_id
         if not round_id or round_state is None:
@@ -493,6 +498,8 @@ def remember_pystyle_self_history(
         history[history_key] = normalized_columns
         state.pystyle_self_history_by_round_hand = history
         return True
+    finally:
+        state.state_lock.release()
 
 
 def _pystyle_history_columns_from_state(

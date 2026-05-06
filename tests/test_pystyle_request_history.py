@@ -1,3 +1,4 @@
+import threading
 import unittest
 
 from app.hand_recommendation_service import (
@@ -7,6 +8,7 @@ from app.hand_recommendation_service import (
 from app.main import _remember_visible_pystyle_history, build_live_pystyle_display_context
 from app.main import _build_hand_recommendation_panel_data
 from app.pystyle_simulator_protocol import PystyleDisplayContext
+from capture.storage import remember_pystyle_self_history
 from capture.state import CaptureState, Discard, RoundState, tile136_to_tile37
 from ui.table_renderer import (
     HandRecommendationItem,
@@ -178,6 +180,36 @@ class PystyleRequestHistoryTest(unittest.TestCase):
         )
 
         self.assertEqual(len(capture_state.pystyle_self_history_by_round_hand), 1)
+
+    def test_history_cache_nonblocking_skips_when_capture_state_lock_is_busy(self) -> None:
+        capture_state = CaptureState()
+        round_state = RoundState(round_id="round-1")
+        capture_state.current_round = round_state
+        capture_state.round_id = "round-1"
+        lock_acquired = threading.Event()
+        release_lock = threading.Event()
+
+        def hold_state_lock() -> None:
+            with capture_state.state_lock:
+                lock_acquired.set()
+                release_lock.wait(timeout=2.0)
+
+        worker = threading.Thread(target=hold_state_lock)
+        worker.start()
+        self.assertTrue(lock_acquired.wait(timeout=1.0))
+        try:
+            saved = remember_pystyle_self_history(
+                capture_state,
+                [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15],
+                (("1m", "1200pt"),),
+                blocking=False,
+            )
+        finally:
+            release_lock.set()
+            worker.join(timeout=1.0)
+
+        self.assertFalse(saved)
+        self.assertEqual(capture_state.pystyle_self_history_by_round_hand, {})
 
 
 if __name__ == "__main__":

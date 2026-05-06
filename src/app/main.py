@@ -1080,6 +1080,7 @@ def _remember_visible_pystyle_history(
         capture_state,
         list(hand_tiles_37),
         ranked_entries,
+        blocking=False,
     )
 
 
