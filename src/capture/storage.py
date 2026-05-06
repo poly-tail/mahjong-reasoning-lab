@@ -39,6 +39,7 @@ from capture.state import (
     LAG_FLAG_TRUE_CALLED,
     LAG_FLAG_TRUE_UNCALLED_PROBABLE,
     LAG_FLAG_UNCONFIRMED,
+    Meld,
     RoundState,
     mark_runtime_thread_progress,
     parse_tenhou_game_type_hex,
@@ -862,8 +863,8 @@ def _find_discard_for_event(
 
 
 def _event_index_for(state: CaptureState, event: Event) -> int | None:
-    for index, candidate in enumerate(state.events):
-        if candidate is event:
+    for index in range(len(state.events) - 1, -1, -1):
+        if state.events[index] is event:
             return index
     return None
 
@@ -945,6 +946,132 @@ def _visible_tile_summary_from_round_state(
     )
 
 
+def _clone_plain_value_for_async_persist(value: Any) -> Any:
+    """Clone plain containers without invoking arbitrary object-level deepcopy hooks."""
+
+    if isinstance(value, dict):
+        return {
+            _clone_plain_value_for_async_persist(key): _clone_plain_value_for_async_persist(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_clone_plain_value_for_async_persist(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_plain_value_for_async_persist(item) for item in value)
+    if isinstance(value, set):
+        return {_clone_plain_value_for_async_persist(item) for item in value}
+    return value
+
+
+def _clone_event_for_async_persist(event: Event) -> Event:
+    """Return a small independent event copy for the CSV persist worker."""
+
+    cloned_event = copy.copy(event)
+    cloned_event.attrs = _clone_plain_value_for_async_persist(getattr(event, "attrs", {}))
+    return cloned_event
+
+
+def _clone_discard_for_async_persist(discard: Discard) -> Discard:
+    """Return a lightweight discard copy for the CSV persist worker."""
+
+    cloned_discard = copy.copy(discard)
+    cloned_discard.hand_tiles_before_discard_136 = list(
+        getattr(discard, "hand_tiles_before_discard_136", ())
+    )
+    cloned_discard.self_hand_tiles_before_discard_136 = list(
+        getattr(discard, "self_hand_tiles_before_discard_136", ())
+    )
+    return cloned_discard
+
+
+def _clone_meld_for_async_persist(meld: Meld) -> Meld:
+    """Return a lightweight meld copy for the CSV persist worker."""
+
+    cloned_meld = copy.copy(meld)
+    cloned_meld.consumed_tile_ids = list(getattr(meld, "consumed_tile_ids", ()))
+    cloned_meld.tiles_136 = list(getattr(meld, "tiles_136", ()))
+    cloned_meld.tiles_34 = list(getattr(meld, "tiles_34", ()))
+    cloned_meld.tiles_37 = list(getattr(meld, "tiles_37", ()))
+    return cloned_meld
+
+
+def _clone_round_state_for_async_persist(round_state: RoundState) -> RoundState:
+    """Clone only the current-round fields needed by CSV persistence."""
+
+    return RoundState(
+        kyoku_index=round_state.kyoku_index,
+        honba=round_state.honba,
+        kyotaku=round_state.kyotaku,
+        dice_1_minus_1=round_state.dice_1_minus_1,
+        dice_2_minus_1=round_state.dice_2_minus_1,
+        oya=round_state.oya,
+        oya_abs=round_state.oya_abs,
+        oya_rel=round_state.oya_rel,
+        seat_order=list(round_state.seat_order),
+        round_key=tuple(round_state.round_key) if round_state.round_key is not None else None,
+        round_id=round_state.round_id,
+        scores=list(round_state.scores),
+        dora_indicators_136=list(round_state.dora_indicators_136),
+        initial_self_hand_136=list(round_state.initial_self_hand_136),
+        initial_hands_136={
+            seat: list(round_state.initial_hands_136.get(seat, ()))
+            for seat in range(4)
+        },
+        initial_hands_abs_136={
+            seat: list(round_state.initial_hands_abs_136.get(seat, ()))
+            for seat in range(4)
+        },
+        initial_hands_rel_136={
+            seat: list(round_state.initial_hands_rel_136.get(seat, ()))
+            for seat in range(4)
+        },
+        current_hands_136={
+            seat: list(round_state.current_hands_136.get(seat, ()))
+            for seat in range(4)
+        },
+        snapshot_is_partial=bool(round_state.snapshot_is_partial),
+        started_from_init_like=bool(round_state.started_from_init_like),
+        snapshot_bootstrap_sequence=int(getattr(round_state, "snapshot_bootstrap_sequence", 0)),
+        discards={
+            seat: [
+                _clone_discard_for_async_persist(discard)
+                for discard in round_state.discards.get(seat, ())
+            ]
+            for seat in range(4)
+        },
+        melds={
+            seat: [
+                _clone_meld_for_async_persist(meld)
+                for meld in round_state.melds.get(seat, ())
+            ]
+            for seat in range(4)
+        },
+        reach_state=dict(round_state.reach_state),
+        events=[
+            _clone_event_for_async_persist(event)
+            for event in getattr(round_state, "events", ())
+        ],
+        draws={
+            seat: list(round_state.draws.get(seat, ()))
+            for seat in range(4)
+        },
+        last_draw_tiles_136=dict(round_state.last_draw_tiles_136),
+        pending_riichi_markers=dict(round_state.pending_riichi_markers),
+        discard_thinking_starts=dict(round_state.discard_thinking_starts),
+        discard_thinking_before_reach=dict(round_state.discard_thinking_before_reach),
+        pending_response_discard=round_state.pending_response_discard,
+        raw_attrs=_clone_plain_value_for_async_persist(round_state.raw_attrs),
+        raw_init_attrs=_clone_plain_value_for_async_persist(round_state.raw_init_attrs),
+        raw_reinit_attrs=_clone_plain_value_for_async_persist(round_state.raw_reinit_attrs),
+        result=_clone_plain_value_for_async_persist(round_state.result),
+        reinit_kawa_raw={
+            seat: list(round_state.reinit_kawa_raw.get(seat, ()))
+            for seat in range(4)
+        },
+        validation_issues=list(round_state.validation_issues),
+    )
+
+
 def _snapshot_capture_state_for_async_persist(
     state: CaptureState,
     event: Event,
@@ -956,10 +1083,21 @@ def _snapshot_capture_state_for_async_persist(
         if round_state is None or not round_state.started_from_init_like:
             return None
         event_index = _event_index_for(state, event)
-        round_snapshot = copy.deepcopy(round_state)
+        round_snapshot = _clone_round_state_for_async_persist(round_state)
+        event_snapshot = _clone_event_for_async_persist(event)
+        events_snapshot = [
+            _clone_event_for_async_persist(candidate)
+            for candidate in state.events
+        ]
         snapshot_state = CaptureState(
-            players_abs=copy.deepcopy(state.players_abs),
-            players_rel=copy.deepcopy(state.players_rel),
+            players_abs={
+                seat: copy.copy(player)
+                for seat, player in state.players_abs.items()
+            },
+            players_rel={
+                seat: copy.copy(player)
+                for seat, player in state.players_rel.items()
+            },
             seat_order=list(state.seat_order),
             game_id=state.game_id,
             go_type=state.go_type,
@@ -967,17 +1105,20 @@ def _snapshot_capture_state_for_async_persist(
             room_class_label=state.room_class_label,
             rounds=[round_snapshot],
             current_round=round_snapshot,
-            raw_events=copy.deepcopy(state.events),
+            raw_events=events_snapshot,
             self_seat=state.self_seat,
             parser_mode=state.parser_mode,
             self_abs_seat=state.self_abs_seat,
             self_player_name=state.self_player_name,
             seat_mapping_resolved=state.seat_mapping_resolved,
+            pystyle_self_history_by_round_hand=_clone_plain_value_for_async_persist(
+                state.pystyle_self_history_by_round_hand
+            ),
         )
     snapshot_state.sync_current_round_context()
     if event_index is not None and 0 <= event_index < len(snapshot_state.events):
         return snapshot_state, snapshot_state.events[event_index]
-    return snapshot_state, copy.deepcopy(event)
+    return snapshot_state, event_snapshot
 
 
 def _suji_line_label(suit_index: int, left_number: int, right_number: int) -> str:

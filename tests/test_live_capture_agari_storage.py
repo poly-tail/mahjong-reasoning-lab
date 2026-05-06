@@ -17,8 +17,8 @@ SRC_DIR = WORKSPACE_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from capture.state import CaptureState, Discard, Event, RoundState
-from capture.storage import CsvDatabase, HanchanContext
+from capture.state import CaptureState, Discard, Event, Meld, RoundState
+from capture.storage import CsvDatabase, HanchanContext, _snapshot_capture_state_for_async_persist
 from logic.danger_suji import (
     OpponentSujiDangerProfile,
     OpponentSujiPanelSummary,
@@ -312,6 +312,72 @@ class LiveCaptureAgariStorageTest(unittest.TestCase):
         self.assertEqual(row["winner_name"], "winner-old")
         self.assertEqual(row["from_name"], "self-old")
         self.assertEqual(row["kyoku_id"], "20260417123543_0600")
+
+    def test_async_persist_snapshot_uses_lightweight_copy_for_call_state(self) -> None:
+        state = CaptureState()
+        state.players[0].name = "self-old"
+        state.players[1].name = "caller-old"
+        round_state = RoundState(
+            started_from_init_like=True,
+            kyoku_index=1,
+            honba=0,
+            oya=0,
+            round_id="round-old",
+        )
+        discard = Discard(
+            tile_136=12,
+            round_discard_index=0,
+            hand_tiles_before_discard_136=[1, 2, 3],
+            called=True,
+            event_index=0,
+        )
+        meld = Meld(
+            who=1,
+            raw_m=51275,
+            meld_type="pon",
+            consumed_tile_ids=[12, 13],
+            called_tile_id=14,
+            tiles_136=[12, 13, 14],
+            tiles_34=[3, 3, 3],
+            tiles_37=[4, 4, 4],
+            event_index=1,
+        )
+        round_state.discards[0].append(discard)
+        round_state.melds[1].append(meld)
+        state.current_round = round_state
+        state.rounds.append(round_state)
+        state.sync_current_round_context()
+        discard_event = Event(timestamp=1.0, event_type="discard", seat=0)
+        call_event = Event(
+            timestamp=2.0,
+            event_type="call",
+            seat=1,
+            attrs={"nested": {"tiles": [12, 13, 14]}},
+        )
+        state.events.extend([discard_event, call_event])
+        round_state.events.extend([discard_event, call_event])
+
+        with patch("capture.storage.copy.deepcopy", side_effect=AssertionError("deepcopy used")):
+            snapshot = _snapshot_capture_state_for_async_persist(state, call_event)
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        snapshot_state, snapshot_event = snapshot
+        self.assertIs(snapshot_event, snapshot_state.events[1])
+
+        state.players[1].name = "caller-new"
+        discard.hand_tiles_before_discard_136.append(99)
+        discard.called = False
+        meld.tiles_136.append(99)
+        call_event.attrs["nested"]["tiles"].append(99)
+
+        self.assertEqual(snapshot_state.players[1].name, "caller-old")
+        snapshot_discard = snapshot_state.current_round.discards[0][0]
+        self.assertEqual(snapshot_discard.hand_tiles_before_discard_136, [1, 2, 3])
+        self.assertTrue(snapshot_discard.called)
+        snapshot_meld = snapshot_state.current_round.melds[1][0]
+        self.assertEqual(snapshot_meld.tiles_136, [12, 13, 14])
+        self.assertEqual(snapshot_event.attrs["nested"]["tiles"], [12, 13, 14])
 
 
 if __name__ == "__main__":
