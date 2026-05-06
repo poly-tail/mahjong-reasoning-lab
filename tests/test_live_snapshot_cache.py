@@ -43,6 +43,33 @@ def _live_suji_bundle_completed(state: CaptureState) -> bool:
     return int(getattr(async_state, "update_sequence", 0)) > 0
 
 
+def _build_minimal_live_table_snapshot(refresh_token: object) -> app_main.LiveTableSnapshot:
+    return app_main.LiveTableSnapshot(
+        discard_map={player: [] for player in Player},
+        discard_red_tint_indices_by_seat={},
+        hand_tiles=[],
+        hand_draw_tile=None,
+        hand_danger_percentages=[],
+        opponent_suji_panel_summaries={},
+        player_push_alert_percentages={},
+        player_alert_indicators_by_seat={},
+        player_score_diffs_by_seat={},
+        player_names_by_seat={},
+        meld_tiles=[],
+        dora_indicator_tiles=[],
+        round_events=[],
+        round_info_panel=table_renderer.RoundInfoPanelData(),
+        melds_by_player={player: [] for player in Player},
+        visible_summary=app_main.VisibleTileSummary(
+            three_visible_tiles=[],
+            four_visible_tiles=[],
+        ),
+        round_identity=None,
+        refresh_token=refresh_token,
+        hand_recommendation_request_context=app_main.PystyleDisplayContext(),
+    )
+
+
 class LiveSnapshotCacheTest(unittest.TestCase):
     def setUp(self) -> None:
         app_main._LIVE_DISCARD_RED_TINT_CACHE_SIGNATURE = None
@@ -91,6 +118,76 @@ class LiveSnapshotCacheTest(unittest.TestCase):
         self.assertEqual(state.live_update_sequence, previous_live_update_sequence + 1)
         self.assertIsNone(state.cached_live_table_snapshot)
         self.assertIsNone(state.cached_live_table_snapshot_refresh_token)
+
+    def test_async_live_table_snapshot_provider_publishes_worker_snapshot(self) -> None:
+        state = CaptureState()
+        current_token = {"value": (1, 0)}
+        built_tokens: list[object] = []
+
+        def token_reader(_state: CaptureState) -> object:
+            return current_token["value"]
+
+        def snapshot_builder(_state: CaptureState) -> app_main.LiveTableSnapshot:
+            token = current_token["value"]
+            built_tokens.append(token)
+            return _build_minimal_live_table_snapshot(token)
+
+        provider = app_main.AsyncLiveTableSnapshotProvider(
+            state,
+            _build_minimal_live_table_snapshot((1, 0)),
+            snapshot_builder=snapshot_builder,
+            refresh_token_reader=token_reader,
+            reinit_action=token_reader,
+        )
+        try:
+            self.assertEqual(provider.current_refresh_token(), (1, 0))
+            current_token["value"] = (2, 0)
+            self.assertEqual(provider.current_refresh_token(), (1, 0))
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if provider.current_snapshot().refresh_token == (2, 0):
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(provider.current_snapshot().refresh_token, (2, 0))
+            self.assertIn((2, 0), built_tokens)
+        finally:
+            provider.stop()
+
+    def test_async_live_table_snapshot_provider_force_reinit_defers_publish_until_built(self) -> None:
+        state = CaptureState()
+        current_token = {"value": (1, 0)}
+
+        def token_reader(_state: CaptureState) -> object:
+            return current_token["value"]
+
+        def snapshot_builder(_state: CaptureState) -> app_main.LiveTableSnapshot:
+            return _build_minimal_live_table_snapshot(current_token["value"])
+
+        def reinit_action(_state: CaptureState) -> object:
+            current_token["value"] = (3, 0)
+            return current_token["value"]
+
+        provider = app_main.AsyncLiveTableSnapshotProvider(
+            state,
+            _build_minimal_live_table_snapshot((1, 0)),
+            snapshot_builder=snapshot_builder,
+            refresh_token_reader=token_reader,
+            reinit_action=reinit_action,
+        )
+        try:
+            self.assertEqual(provider.force_reinit(), (1, 0))
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if provider.current_snapshot().refresh_token == (3, 0):
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(provider.current_snapshot().refresh_token, (3, 0))
+        finally:
+            provider.stop()
 
     def test_live_discard_red_tint_cache_reuses_equivalent_round_signature(self) -> None:
         first_state = _build_live_capture_state()

@@ -2180,7 +2180,8 @@ def _request_live_suji_bundle(
             else:
                 async_state.wake_event.set()
     if worker_thread is not None:
-        table_view.show_thread_activity_notice("live suji")
+        if threading.current_thread() is threading.main_thread():
+            table_view.show_thread_activity_notice("live suji")
         worker_thread.start()
     return current_bundle, fallback_bundle
 
@@ -2234,7 +2235,8 @@ def _request_live_red_tint_bundle(
             else:
                 async_state.wake_event.set()
     if worker_thread is not None:
-        table_view.show_thread_activity_notice("live red tint")
+        if threading.current_thread() is threading.main_thread():
+            table_view.show_thread_activity_notice("live red tint")
         worker_thread.start()
     return current_indices, fallback_indices
 
@@ -2831,12 +2833,18 @@ def _read_live_snapshot_cache_state_locked(
 def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
     """Build one consistent live-table snapshot for the renderer."""
 
+    progress_thread_name = (
+        "ui" if threading.current_thread() is threading.main_thread() else "live_snapshot"
+    )
+    progress_subject = (
+        "UI thread" if progress_thread_name == "ui" else "live snapshot worker"
+    )
     mark_runtime_thread_progress(
         capture_state,
-        "ui",
+        progress_thread_name,
         "build_live_table_snapshot",
         detail="building live table snapshot",
-        blocked_hint="UI thread is building the live table snapshot",
+        blocked_hint=f"{progress_subject} is building the live table snapshot",
         stale_after_s=2.0,
         repeat_after_s=5.0,
     )
@@ -2847,10 +2855,10 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
             # Redraw should prefer a slightly stale frame over blocking behind live parser work.
             mark_runtime_thread_progress(
                 capture_state,
-                "ui",
+                progress_thread_name,
                 "snapshot_ready",
                 detail=f"cached_refresh_token={cached_snapshot.refresh_token}",
-                blocked_hint="UI thread has not published a fresh live snapshot",
+                blocked_hint=f"{progress_subject} has not published a fresh live snapshot",
                 stale_after_s=4.0,
                 repeat_after_s=10.0,
             )
@@ -2869,10 +2877,10 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
     if cached_refresh_token == cache_refresh_token and isinstance(cached_snapshot, LiveTableSnapshot):
         mark_runtime_thread_progress(
             capture_state,
-            "ui",
+            progress_thread_name,
             "snapshot_ready",
             detail=f"cached_refresh_token={cached_snapshot.refresh_token}",
-            blocked_hint="UI thread has not published a fresh live snapshot",
+            blocked_hint=f"{progress_subject} has not published a fresh live snapshot",
             stale_after_s=4.0,
             repeat_after_s=10.0,
         )
@@ -2885,10 +2893,10 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
             # and let the next redraw publish the fresh frame instead of blocking the Tk thread.
             mark_runtime_thread_progress(
                 capture_state,
-                "ui",
+                progress_thread_name,
                 "snapshot_ready",
                 detail=f"reused_cached_refresh_token={cached_snapshot.refresh_token}",
-                blocked_hint="UI reused cached live snapshot while capture state was busy",
+                blocked_hint=f"{progress_subject} reused cached live snapshot while capture state was busy",
                 stale_after_s=4.0,
                 repeat_after_s=10.0,
             )
@@ -2989,10 +2997,10 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
             capture_state.cached_live_table_snapshot = snapshot
     mark_runtime_thread_progress(
         capture_state,
-        "ui",
+        progress_thread_name,
         "snapshot_ready",
         detail=f"refresh_token={snapshot.refresh_token}",
-        blocked_hint="UI thread has not published a fresh live snapshot",
+        blocked_hint=f"{progress_subject} has not published a fresh live snapshot",
         stale_after_s=4.0,
         repeat_after_s=10.0,
     )
@@ -3075,6 +3083,127 @@ def build_live_refresh_token(capture_state: CaptureState) -> tuple[int, int]:
         )
     finally:
         state_lock.release()
+
+
+class AsyncLiveTableSnapshotProvider:
+    """Build live table snapshots away from the Tk thread and publish completed frames."""
+
+    def __init__(
+        self,
+        capture_state: CaptureState,
+        initial_snapshot: LiveTableSnapshot,
+        *,
+        snapshot_builder: Callable[[CaptureState], LiveTableSnapshot] = build_live_table_snapshot,
+        refresh_token_reader: Callable[[CaptureState], object | None] = build_live_refresh_token,
+        reinit_action: Callable[[CaptureState], object | None] = force_live_table_snapshot_reinit,
+    ) -> None:
+        self._capture_state = capture_state
+        self._snapshot_builder = snapshot_builder
+        self._refresh_token_reader = refresh_token_reader
+        self._reinit_action = reinit_action
+        self._lock = threading.Lock()
+        self._wake_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+        self._latest_snapshot = initial_snapshot
+        self._pending_refresh_token: object | None = None
+        self._in_flight_refresh_token: object | None = None
+        self._last_error_text = ""
+
+    def _ensure_worker_locked(self) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="live-table-snapshot",
+            daemon=True,
+        )
+        if threading.current_thread() is threading.main_thread():
+            table_view.show_thread_activity_notice("live snapshot")
+        self._worker_thread.start()
+
+    def _queue_refresh_token(self, refresh_token: object | None) -> None:
+        with self._lock:
+            latest_refresh_token = getattr(self._latest_snapshot, "refresh_token", None)
+            if refresh_token == latest_refresh_token or refresh_token == self._in_flight_refresh_token:
+                return
+            if refresh_token == self._pending_refresh_token:
+                return
+            self._pending_refresh_token = refresh_token
+            self._ensure_worker_locked()
+            self._wake_event.set()
+
+    def request_latest(self) -> None:
+        try:
+            refresh_token = self._refresh_token_reader(self._capture_state)
+        except Exception as exc:  # noqa: BLE001 - UI polling must stay non-blocking.
+            error_text = f"{type(exc).__name__}: {exc}"
+            with self._lock:
+                if self._last_error_text != error_text:
+                    self._last_error_text = error_text
+                    print(f"Live snapshot refresh-token read skipped: {error_text}", file=sys.stderr)
+            return
+        self._queue_refresh_token(refresh_token)
+
+    def current_snapshot(self) -> LiveTableSnapshot:
+        self.request_latest()
+        with self._lock:
+            return self._latest_snapshot
+
+    def current_refresh_token(self) -> object | None:
+        self.request_latest()
+        with self._lock:
+            return getattr(self._latest_snapshot, "refresh_token", None)
+
+    def force_reinit(self) -> object | None:
+        try:
+            refresh_token = self._reinit_action(self._capture_state)
+        except Exception as exc:  # noqa: BLE001 - manual REINIT should surface as a deferred retry.
+            error_text = f"{type(exc).__name__}: {exc}"
+            with self._lock:
+                if self._last_error_text != error_text:
+                    self._last_error_text = error_text
+                    print(f"Live snapshot REINIT skipped: {error_text}", file=sys.stderr)
+            return self.current_refresh_token()
+        self._queue_refresh_token(refresh_token)
+        with self._lock:
+            return getattr(self._latest_snapshot, "refresh_token", None)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._wake_event.set()
+        worker_thread = self._worker_thread
+        if (
+            worker_thread is not None
+            and worker_thread is not threading.current_thread()
+            and worker_thread.is_alive()
+        ):
+            worker_thread.join(timeout=1.0)
+
+    def _worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            with self._lock:
+                refresh_token = self._pending_refresh_token
+                self._pending_refresh_token = None
+                self._in_flight_refresh_token = refresh_token
+            if refresh_token is None:
+                self._wake_event.wait()
+                self._wake_event.clear()
+                continue
+            try:
+                snapshot = self._snapshot_builder(self._capture_state)
+            except Exception as exc:  # noqa: BLE001 - keep the snapshot worker alive after transient parse/cache errors.
+                error_text = f"{type(exc).__name__}: {exc}"
+                with self._lock:
+                    self._in_flight_refresh_token = None
+                    if self._last_error_text != error_text:
+                        self._last_error_text = error_text
+                        print(f"Live snapshot build skipped: {error_text}", file=sys.stderr)
+                continue
+            with self._lock:
+                self._latest_snapshot = snapshot
+                self._in_flight_refresh_token = None
+                self._last_error_text = ""
 
 
 def main() -> None:
@@ -3351,6 +3480,7 @@ def main() -> None:
     melds_by_player_provider = None
     table_snapshot_provider = None
     table_snapshot_reinit_action = None
+    live_table_snapshot_provider: AsyncLiveTableSnapshotProvider | None = None
     capture_state: CaptureState | None = None
     live_runtime_watchdog_enabled = False
 
@@ -3455,6 +3585,10 @@ def main() -> None:
         live_runtime_watchdog_enabled = True
         _start_live_runtime_watchdog(capture_state)
         initial_snapshot = build_live_table_snapshot(capture_state)
+        live_table_snapshot_provider = AsyncLiveTableSnapshotProvider(
+            capture_state,
+            initial_snapshot,
+        )
         tracker = initial_snapshot.discard_map
         hand_tiles = initial_snapshot.hand_tiles
         meld_tiles = initial_snapshot.meld_tiles
@@ -3489,9 +3623,9 @@ def main() -> None:
                 display_context,
             )
         )
-        refresh_token_provider = lambda: build_live_refresh_token(capture_state)
-        table_snapshot_provider = lambda: build_live_table_snapshot(capture_state)
-        table_snapshot_reinit_action = lambda: force_live_table_snapshot_reinit(capture_state)
+        refresh_token_provider = live_table_snapshot_provider.current_refresh_token
+        table_snapshot_provider = live_table_snapshot_provider.current_snapshot
+        table_snapshot_reinit_action = live_table_snapshot_provider.force_reinit
         melds_by_player = initial_snapshot.melds_by_player
         bridge_visible_hand_provider = lambda: build_live_visible_hand_state(capture_state)
 
