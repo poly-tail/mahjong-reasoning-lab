@@ -427,7 +427,7 @@ class HandAutoModeTest(unittest.TestCase):
         self.assertEqual(reason, "cleared_ui_render_cache")
         self.assertEqual(request_redraw_calls, [{"replace_pending": True}])
 
-    def test_force_manual_ui_reinit_updates_refresh_token_and_restarts_mapping(self) -> None:
+    def test_force_manual_ui_reinit_updates_refresh_token_without_bridge_map(self) -> None:
         canvas = SimpleNamespace(
             redraw_in_progress=False,
             redraw_request_pending=False,
@@ -442,23 +442,20 @@ class HandAutoModeTest(unittest.TestCase):
             side_panel_render_cache=object(),
         )
         request_redraw_calls: list[dict[str, object]] = []
-        mapping_calls: list[str] = []
 
         with patch("ui.table_renderer.time.monotonic", return_value=42.0):
             reason = _force_manual_ui_reinit(
                 canvas,
                 request_redraw=lambda **kwargs: request_redraw_calls.append(dict(kwargs)),
                 table_snapshot_reinit_action=lambda: ("new", 2),
-                realtime_mapping_request=lambda: mapping_calls.append("called") or True,
             )
 
         self.assertEqual(
             reason,
-            "snapshot_cache_invalidated,refresh_token_updated,realtime_mapping_requested,cleared_ui_render_cache",
+            "snapshot_cache_invalidated,refresh_token_updated,cleared_ui_render_cache",
         )
         self.assertEqual(canvas.current_refresh_token, ("new", 2))
         self.assertEqual(canvas.last_refresh_token_change_monotonic_s, 42.0)
-        self.assertEqual(mapping_calls, ["called"])
         self.assertEqual(request_redraw_calls, [{"replace_pending": True}])
 
     def test_auto_force_ui_reinit_uses_same_reinit_path_after_stalled_redraw(self) -> None:
@@ -501,7 +498,7 @@ class HandAutoModeTest(unittest.TestCase):
         self.assertEqual(request_redraw_calls, [{"replace_pending": True}])
         log_auto.assert_called_once()
 
-    def test_auto_force_ui_reinit_restarts_realtime_mapping_after_stalled_redraw(self) -> None:
+    def test_auto_force_ui_reinit_avoids_bridge_map_after_stalled_redraw(self) -> None:
         canvas = SimpleNamespace(
             redraw_in_progress=False,
             redraw_request_pending=True,
@@ -520,7 +517,6 @@ class HandAutoModeTest(unittest.TestCase):
         )
         request_redraw_calls: list[dict[str, object]] = []
         reinit_calls: list[str] = []
-        mapping_calls: list[str] = []
 
         with patch("ui.table_renderer._log_auto_ui_reinit"):
             reason = _maybe_auto_force_ui_reinit(
@@ -528,15 +524,13 @@ class HandAutoModeTest(unittest.TestCase):
                 now_monotonic=25.5,
                 request_redraw=lambda **kwargs: request_redraw_calls.append(dict(kwargs)),
                 table_snapshot_reinit_action=lambda: reinit_calls.append("called"),
-                realtime_mapping_request=lambda: mapping_calls.append("called") or True,
             )
 
         self.assertEqual(
             reason,
-            "auto_redraw_request_pending_stalled,snapshot_cache_invalidated,realtime_mapping_requested,cleared_pending_redraw_request,cleared_ui_render_cache",
+            "auto_redraw_request_pending_stalled,snapshot_cache_invalidated,cleared_pending_redraw_request,cleared_ui_render_cache",
         )
         self.assertEqual(reinit_calls, ["called"])
-        self.assertEqual(mapping_calls, ["called"])
         self.assertEqual(request_redraw_calls, [{"replace_pending": True}])
 
     def test_auto_force_ui_reinit_uses_first_uncompleted_refresh_time(self) -> None:

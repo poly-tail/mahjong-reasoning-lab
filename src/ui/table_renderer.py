@@ -1436,9 +1436,8 @@ def _force_manual_ui_reinit(
     *,
     request_redraw: Callable[..., None] | None,
     table_snapshot_reinit_action: Callable[[], object | None] | None = None,
-    realtime_mapping_request: Callable[[], bool] | None = None,
 ) -> str:
-    """Reset redraw/UI caches, force one live refresh, optionally restart realtime mapping."""
+    """Reset redraw/UI caches and force one live refresh from the current local state."""
 
     reasons: list[str] = []
     if callable(table_snapshot_reinit_action):
@@ -1448,8 +1447,6 @@ def _force_manual_ui_reinit(
             canvas.current_refresh_token = next_refresh_token
             canvas.last_refresh_token_change_monotonic_s = time.monotonic()
             reasons.append("refresh_token_updated")
-    if callable(realtime_mapping_request) and realtime_mapping_request():
-        reasons.append("realtime_mapping_requested")
     if bool(getattr(canvas, "redraw_in_progress", False)):
         canvas.redraw_in_progress = False
         canvas.last_redraw_started_monotonic_s = 0.0
@@ -1546,7 +1543,6 @@ def _maybe_auto_force_ui_reinit(
     now_monotonic: float,
     request_redraw: Callable[..., None] | None,
     table_snapshot_reinit_action: Callable[[], object | None] | None = None,
-    realtime_mapping_request: Callable[[], bool] | None = None,
 ) -> str | None:
     """Force the same REINIT path as the button when redraw state stays stale too long."""
 
@@ -1564,7 +1560,6 @@ def _maybe_auto_force_ui_reinit(
         canvas,
         request_redraw=request_redraw,
         table_snapshot_reinit_action=table_snapshot_reinit_action,
-        realtime_mapping_request=realtime_mapping_request,
     )
     combined_reason = f"auto_{stall_reason}"
     if force_reason:
@@ -3021,6 +3016,7 @@ def create_canvas(
     board_canvas.bridge_snapshot_in_flight = False
     board_canvas.bridge_snapshot_pending_force = False
     board_canvas.bridge_last_snapshot_started_monotonic_s = 0.0
+    board_canvas.bridge_table_snapshot_in_flight = False
     board_canvas.bridge_snapshot_source_refresh_token = refresh_token
     board_canvas.bridge_last_requested_source_refresh_token = None
     board_canvas.bridge_feedback_text = ""
@@ -3876,11 +3872,6 @@ def create_canvas(
             now_monotonic=now_monotonic,
             request_redraw=request_redraw,
             table_snapshot_reinit_action=table_snapshot_reinit_action,
-            realtime_mapping_request=(
-                (lambda: _request_bridge_table_snapshot(board_canvas))
-                if callable(getattr(board_canvas, "bridge_table_snapshot_action", None))
-                else None
-            ),
         )
         if auto_reinit_reason is not None:
             queue_changed = False
@@ -4047,11 +4038,6 @@ def create_canvas(
             board_canvas,
             request_redraw=request_redraw,
             table_snapshot_reinit_action=table_snapshot_reinit_action,
-            realtime_mapping_request=(
-                (lambda: _request_bridge_table_snapshot(board_canvas))
-                if callable(getattr(board_canvas, "bridge_table_snapshot_action", None))
-                else None
-            ),
         )
         _log_manual_ui_reinit(board_canvas, reason)
 
@@ -7463,16 +7449,25 @@ def _request_bridge_table_snapshot(canvas: tkinter.Canvas, *, retry: bool = Fals
         _set_bridge_feedback(canvas, "Bridge map unavailable", is_error=True)
         _refresh_bridge_widgets(canvas)
         return False
+    if bool(getattr(canvas, "bridge_table_snapshot_in_flight", False)):
+        if not retry:
+            _set_bridge_feedback(canvas, "Bridge map already running", is_error=False)
+            _refresh_bridge_widgets(canvas)
+        return False
     if not retry:
         _cancel_bridge_table_snapshot_retry(canvas)
         canvas.bridge_table_snapshot_retry_count = 0
     _set_bridge_feedback(canvas, "Mapping browser table...", is_error=False)
     _refresh_bridge_widgets(canvas)
-    return _queue_bridge_background_action(
+    canvas.bridge_table_snapshot_in_flight = True
+    queued = _queue_bridge_background_action(
         canvas,
         kind="map",
         action=action,
     )
+    if not queued:
+        canvas.bridge_table_snapshot_in_flight = False
+    return queued
 
 
 def _flush_pending_bridge_ui_snapshot_request(canvas: tkinter.Canvas) -> bool:
@@ -7616,6 +7611,8 @@ def _drain_bridge_background_result_queue(canvas: tkinter.Canvas) -> bool:
         changed = True
         if kind == "snapshot":
             canvas.bridge_snapshot_in_flight = False
+        if kind == "map":
+            canvas.bridge_table_snapshot_in_flight = False
         if not bool(payload.get("ok", False)):
             if kind == "control" and isinstance(payload_meta, Mapping):
                 try:
@@ -7720,6 +7717,8 @@ def _bridge_status_tick(canvas: tkinter.Canvas) -> None:
     ):
         canvas.bridge_snapshot_pending_force = False
         _cancel_bridge_followup_snapshots(canvas)
+        _cancel_bridge_table_snapshot_retry(canvas)
+        canvas.bridge_table_snapshot_retry_count = 0
     if _should_request_bridge_ui_snapshot_on_tick(canvas, current_bridge_status):
         if _request_bridge_ui_snapshot(canvas):
             canvas.bridge_last_requested_source_refresh_token = getattr(

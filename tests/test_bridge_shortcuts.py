@@ -446,6 +446,7 @@ class BridgeShortcutHelperTests(unittest.TestCase):
             bridge_feedback_expires_monotonic_s=0.0,
             bridge_table_snapshot_retry_count=0,
             bridge_table_snapshot_retry_job=None,
+            bridge_table_snapshot_in_flight=True,
             bridge_toggle_active_overrides={},
             after=after,
             after_cancel=lambda _job: None,
@@ -469,6 +470,7 @@ class BridgeShortcutHelperTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertFalse(canvas.bridge_feedback_is_error)
         self.assertIn("waiting for table state", canvas.bridge_feedback_text)
+        self.assertFalse(canvas.bridge_table_snapshot_in_flight)
         self.assertEqual(canvas.bridge_table_snapshot_retry_count, 1)
         self.assertEqual(canvas.bridge_table_snapshot_retry_job, "retry-job")
         self.assertEqual(scheduled_jobs[0][0], table_renderer.BRIDGE_TABLE_SNAPSHOT_READY_RETRY_MS)
@@ -482,6 +484,7 @@ class BridgeShortcutHelperTests(unittest.TestCase):
             bridge_feedback_expires_monotonic_s=0.0,
             bridge_table_snapshot_retry_count=3,
             bridge_table_snapshot_retry_job="old-retry",
+            bridge_table_snapshot_in_flight=False,
             after_cancel=lambda job: cancelled_jobs.append(job),
         )
 
@@ -493,9 +496,30 @@ class BridgeShortcutHelperTests(unittest.TestCase):
         self.assertEqual(cancelled_jobs, ["old-retry"])
         self.assertEqual(canvas.bridge_table_snapshot_retry_count, 0)
         self.assertIsNone(canvas.bridge_table_snapshot_retry_job)
+        self.assertTrue(canvas.bridge_table_snapshot_in_flight)
         self.assertFalse(canvas.bridge_feedback_is_error)
         self.assertEqual(canvas.bridge_feedback_text, "Mapping browser table...")
         queue_action.assert_called_once()
+
+    def test_request_bridge_table_snapshot_does_not_queue_while_in_flight(self) -> None:
+        canvas = SimpleNamespace(
+            bridge_table_snapshot_action=lambda: {"result": {"ok": True}},
+            bridge_feedback_text="",
+            bridge_feedback_is_error=False,
+            bridge_feedback_expires_monotonic_s=0.0,
+            bridge_table_snapshot_retry_count=0,
+            bridge_table_snapshot_retry_job=None,
+            bridge_table_snapshot_in_flight=True,
+        )
+
+        with patch("ui.table_renderer._queue_bridge_background_action") as queue_action:
+            with patch("ui.table_renderer._refresh_bridge_widgets"):
+                started = _request_bridge_table_snapshot(canvas)
+
+        self.assertFalse(started)
+        self.assertFalse(canvas.bridge_feedback_is_error)
+        self.assertEqual(canvas.bridge_feedback_text, "Bridge map already running")
+        queue_action.assert_not_called()
 
     def test_should_request_bridge_ui_snapshot_on_tick_requires_connected_ready_bridge(self) -> None:
         canvas = SimpleNamespace(
