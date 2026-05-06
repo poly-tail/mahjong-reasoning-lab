@@ -112,7 +112,7 @@ SIDE_DISCARD_HEIGHT = 210
 BOTTOM_DISCARD_WIDTH = 280
 BOTTOM_DISCARD_HEIGHT = 116
 CENTER_PANEL_WIDTH = 148
-CENTER_PANEL_HEIGHT = 102
+CENTER_PANEL_HEIGHT = 124
 HAND_STRIP_WIDTH = 430
 HAND_STRIP_HEIGHT = 74
 SELF_LOWER_LAYOUT_SHIFT = 18
@@ -11202,7 +11202,7 @@ def _build_layout(
         center_panel_pref_height = _scaled_length(
             CENTER_PANEL_HEIGHT,
             max(ui_scale, 0.92),
-            minimum=96,
+            minimum=112,
         )
         horizontal_meld_height = _scaled_length(
             tuning.top_bottom_meld_height,
@@ -14593,7 +14593,6 @@ def _draw_center_panel(
     """卓中央の局情報パネルを描く。"""
     left, top, right, bottom = rect
     center_x = (left + right) / 2
-    center_y = (top + bottom) / 2
     canvas.create_rectangle(left + 3, top + 4, right + 3, bottom + 4, fill=SHADOW, outline="")
     canvas.create_rectangle(left, top, right, bottom, fill=CENTER_PANEL, outline=CENTER_PANEL_BORDER, width=2)
     # 中央パネルは固定文言ではなく、現在局の情報をそのまま表示する。
@@ -14612,9 +14611,11 @@ def _draw_center_panel(
             fill=TEXT_SECONDARY,
             font=("Consolas", 7, "bold"),
         )
-    canvas.create_text(center_x, center_y - 12, text="DORA", fill=TEXT_SECONDARY, font=("Consolas", 9, "bold"))
-    _draw_center_dora_tiles(canvas, center_x, center_y + 4, dora_indicator_tiles)
-    canvas.create_text(center_x, bottom - 20, text="KYOTAKU", fill=TEXT_SECONDARY, font=("Consolas", 8, "bold"))
+    dora_label_y = top + (58 if round_info_panel.bootstrap_text else 50)
+    dora_tiles_y = dora_label_y + 19
+    canvas.create_text(center_x, dora_label_y, text="DORA", fill=TEXT_SECONDARY, font=("Consolas", 9, "bold"))
+    _draw_center_dora_tiles(canvas, center_x, dora_tiles_y, dora_indicator_tiles)
+    canvas.create_text(center_x, bottom - 22, text="KYOTAKU", fill=TEXT_SECONDARY, font=("Consolas", 8, "bold"))
     canvas.create_text(
         center_x,
         bottom - 8,

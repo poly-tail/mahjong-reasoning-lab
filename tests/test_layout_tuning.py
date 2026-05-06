@@ -44,6 +44,18 @@ def _build_fake_image_table() -> dict[Player, dict[DrawType, dict[int, _FakeImag
     return table
 
 
+class _FakeCanvas:
+    def __init__(self) -> None:
+        self.text_items: list[dict[str, object]] = []
+
+    def create_rectangle(self, *args: object, **kwargs: object) -> int:
+        return 1
+
+    def create_text(self, x: float, y: float, **kwargs: object) -> int:
+        self.text_items.append({"x": x, "y": y, **kwargs})
+        return len(self.text_items)
+
+
 class LayoutTuningTest(unittest.TestCase):
     def test_reset_defaults_match_saved_layout_snapshot(self) -> None:
         settings_path = Path(__file__).resolve().parents[1] / "csv_db" / "ui_layout_tuning.json"
@@ -115,6 +127,40 @@ class LayoutTuningTest(unittest.TestCase):
 
         self.assertEqual(round(top_rect[2] - top_rect[0]), 140)
         self.assertEqual(round(bottom_rect[2] - bottom_rect[0]), 220)
+
+    def test_center_panel_has_room_for_bootstrap_row(self) -> None:
+        layout = _build_layout(
+            0,
+            0,
+            1400,
+            900,
+            _build_fake_image_table(),
+            1.0,
+            layout_tuning=LayoutTuningSettings(component_offsets={}),
+        )
+
+        center_panel = layout["center_panel"]
+
+        self.assertEqual(round(center_panel[3] - center_panel[1]), table_renderer.CENTER_PANEL_HEIGHT)
+
+    def test_center_panel_draws_bootstrap_above_dora_without_overlap(self) -> None:
+        canvas = _FakeCanvas()
+
+        table_renderer._draw_center_panel(
+            canvas,
+            (0.0, 0.0, float(table_renderer.CENTER_PANEL_WIDTH), float(table_renderer.CENTER_PANEL_HEIGHT)),
+            [],
+            table_renderer.RoundInfoPanelData(
+                round_text="東1局 0本場",
+                bootstrap_text="REINIT #3",
+            ),
+        )
+
+        y_by_text = {
+            str(item.get("text")): float(item.get("y", 0.0))
+            for item in canvas.text_items
+        }
+        self.assertGreaterEqual(y_by_text["DORA"] - y_by_text["REINIT #3"], 20.0)
 
 
 if __name__ == "__main__":
