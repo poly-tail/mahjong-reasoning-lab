@@ -1433,13 +1433,20 @@ def _force_manual_ui_reinit(
     *,
     request_redraw: Callable[..., None] | None,
     table_snapshot_reinit_action: Callable[[], object | None] | None = None,
+    realtime_mapping_request: Callable[[], bool] | None = None,
 ) -> str:
-    """Reset redraw/UI caches, invalidate one live snapshot cache, and queue a redraw."""
+    """Reset redraw/UI caches, force one live refresh, optionally restart realtime mapping."""
 
     reasons: list[str] = []
     if callable(table_snapshot_reinit_action):
-        table_snapshot_reinit_action()
+        next_refresh_token = table_snapshot_reinit_action()
         reasons.append("snapshot_cache_invalidated")
+        if next_refresh_token is not None:
+            canvas.current_refresh_token = next_refresh_token
+            canvas.last_refresh_token_change_monotonic_s = time.monotonic()
+            reasons.append("refresh_token_updated")
+    if callable(realtime_mapping_request) and realtime_mapping_request():
+        reasons.append("realtime_mapping_requested")
     if bool(getattr(canvas, "redraw_in_progress", False)):
         canvas.redraw_in_progress = False
         canvas.last_redraw_started_monotonic_s = 0.0
@@ -4022,6 +4029,11 @@ def create_canvas(
             board_canvas,
             request_redraw=request_redraw,
             table_snapshot_reinit_action=table_snapshot_reinit_action,
+            realtime_mapping_request=(
+                (lambda: _request_bridge_table_snapshot(board_canvas))
+                if callable(getattr(board_canvas, "bridge_table_snapshot_action", None))
+                else None
+            ),
         )
         _log_manual_ui_reinit(board_canvas, reason)
 

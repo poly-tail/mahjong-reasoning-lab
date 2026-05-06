@@ -427,6 +427,40 @@ class HandAutoModeTest(unittest.TestCase):
         self.assertEqual(reason, "cleared_ui_render_cache")
         self.assertEqual(request_redraw_calls, [{"replace_pending": True}])
 
+    def test_force_manual_ui_reinit_updates_refresh_token_and_restarts_mapping(self) -> None:
+        canvas = SimpleNamespace(
+            redraw_in_progress=False,
+            redraw_request_pending=False,
+            last_redraw_started_monotonic_s=0.0,
+            last_redraw_request_monotonic_s=0.0,
+            current_refresh_token=("old", 1),
+            last_refresh_token_change_monotonic_s=0.0,
+            live_async_render_state=object(),
+            last_render_layout={"detail_content_rect": (0.0, 0.0, 1.0, 1.0)},
+            last_render_layout_signature=("layout", 3),
+            last_render_detail_content_rect=(0.0, 0.0, 1.0, 1.0),
+            side_panel_render_cache=object(),
+        )
+        request_redraw_calls: list[dict[str, object]] = []
+        mapping_calls: list[str] = []
+
+        with patch("ui.table_renderer.time.monotonic", return_value=42.0):
+            reason = _force_manual_ui_reinit(
+                canvas,
+                request_redraw=lambda **kwargs: request_redraw_calls.append(dict(kwargs)),
+                table_snapshot_reinit_action=lambda: ("new", 2),
+                realtime_mapping_request=lambda: mapping_calls.append("called") or True,
+            )
+
+        self.assertEqual(
+            reason,
+            "snapshot_cache_invalidated,refresh_token_updated,realtime_mapping_requested,cleared_ui_render_cache",
+        )
+        self.assertEqual(canvas.current_refresh_token, ("new", 2))
+        self.assertEqual(canvas.last_refresh_token_change_monotonic_s, 42.0)
+        self.assertEqual(mapping_calls, ["called"])
+        self.assertEqual(request_redraw_calls, [{"replace_pending": True}])
+
     def test_auto_force_ui_reinit_uses_same_reinit_path_after_stalled_redraw(self) -> None:
         canvas = SimpleNamespace(
             redraw_in_progress=True,

@@ -2966,7 +2966,7 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
 
 
 def force_live_table_snapshot_reinit(capture_state: CaptureState) -> tuple[int, int]:
-    """Drop the live snapshot cache so the next UI redraw rebuilds from current capture state."""
+    """Drop the live snapshot cache and force one refresh from the current capture state."""
 
     mark_runtime_thread_progress(
         capture_state,
@@ -2980,6 +2980,7 @@ def force_live_table_snapshot_reinit(capture_state: CaptureState) -> tuple[int, 
     with capture_state.state_lock:
         capture_state.cached_live_table_snapshot = None
         capture_state.cached_live_table_snapshot_refresh_token = None
+        capture_state.mark_live_update()
         async_state = _get_live_suji_async_state(capture_state)
         red_tint_async_state = _get_live_red_tint_async_state(capture_state)
         return (

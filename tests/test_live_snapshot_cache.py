@@ -75,6 +75,7 @@ class LiveSnapshotCacheTest(unittest.TestCase):
         first = app_main.build_live_table_snapshot(state)
         state.cached_live_table_snapshot = first
         state.cached_live_table_snapshot_refresh_token = first.refresh_token
+        previous_live_update_sequence = int(state.live_update_sequence)
 
         returned_refresh_token = app_main.force_live_table_snapshot_reinit(state)
 
@@ -87,6 +88,7 @@ class LiveSnapshotCacheTest(unittest.TestCase):
                 else 0,
             ),
         )
+        self.assertEqual(state.live_update_sequence, previous_live_update_sequence + 1)
         self.assertIsNone(state.cached_live_table_snapshot)
         self.assertIsNone(state.cached_live_table_snapshot_refresh_token)
 
