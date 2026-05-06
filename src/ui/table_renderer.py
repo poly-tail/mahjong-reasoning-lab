@@ -1426,6 +1426,7 @@ def _mark_ui_refresh_completed(
     canvas.last_completed_redraw_refresh_token = resolved_refresh_token
     canvas.last_completed_redraw_monotonic_s = resolved_monotonic
     canvas.last_redraw_finished_monotonic_s = resolved_monotonic
+    canvas.uncompleted_refresh_token_started_monotonic_s = 0.0
 
 
 def _force_manual_ui_reinit(
@@ -1502,13 +1503,18 @@ def _resolve_auto_ui_reinit_stall(
     current_refresh_token = getattr(canvas, "current_refresh_token", None)
     last_completed_refresh_token = getattr(canvas, "last_completed_redraw_refresh_token", None)
     if current_refresh_token != last_completed_refresh_token:
-        last_refresh_change = float(
-            getattr(canvas, "last_refresh_token_change_monotonic_s", 0.0) or 0.0
+        uncompleted_since = float(
+            getattr(canvas, "uncompleted_refresh_token_started_monotonic_s", 0.0)
+            or 0.0
         )
-        if last_refresh_change > 0.0:
-            stalled_for_s = max(0.0, now_monotonic - last_refresh_change)
-            if stalled_for_s >= UI_AUTO_REINIT_STALL_THRESHOLD_S:
-                return "refresh_token_stalled", stalled_for_s
+        if uncompleted_since <= 0.0:
+            canvas.uncompleted_refresh_token_started_monotonic_s = now_monotonic
+            return None
+        stalled_for_s = max(0.0, now_monotonic - uncompleted_since)
+        if stalled_for_s >= UI_AUTO_REINIT_STALL_THRESHOLD_S:
+            return "refresh_token_stalled", stalled_for_s
+    else:
+        canvas.uncompleted_refresh_token_started_monotonic_s = 0.0
     return None
 
 
@@ -1538,6 +1544,7 @@ def _maybe_auto_force_ui_reinit(
     now_monotonic: float,
     request_redraw: Callable[..., None] | None,
     table_snapshot_reinit_action: Callable[[], object | None] | None = None,
+    realtime_mapping_request: Callable[[], bool] | None = None,
 ) -> str | None:
     """Force the same REINIT path as the button when redraw state stays stale too long."""
 
@@ -1555,6 +1562,7 @@ def _maybe_auto_force_ui_reinit(
         canvas,
         request_redraw=request_redraw,
         table_snapshot_reinit_action=table_snapshot_reinit_action,
+        realtime_mapping_request=realtime_mapping_request,
     )
     combined_reason = f"auto_{stall_reason}"
     if force_reason:
@@ -3104,6 +3112,7 @@ def create_canvas(
     board_canvas.last_auto_reinit_monotonic_s = 0.0
     board_canvas.last_auto_reinit_reason = None
     board_canvas.last_refresh_token_change_monotonic_s = time.monotonic()
+    board_canvas.uncompleted_refresh_token_started_monotonic_s = 0.0
     board_canvas.last_completed_redraw_refresh_token = refresh_token
     board_canvas.last_redraw_error_text = None
     board_canvas.last_slow_redraw_refresh_token = None
@@ -3863,6 +3872,11 @@ def create_canvas(
             now_monotonic=now_monotonic,
             request_redraw=request_redraw,
             table_snapshot_reinit_action=table_snapshot_reinit_action,
+            realtime_mapping_request=(
+                (lambda: _request_bridge_table_snapshot(board_canvas))
+                if callable(getattr(board_canvas, "bridge_table_snapshot_action", None))
+                else None
+            ),
         )
         if auto_reinit_reason is not None:
             queue_changed = False
