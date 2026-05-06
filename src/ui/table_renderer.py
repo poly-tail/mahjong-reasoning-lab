@@ -394,6 +394,7 @@ BRIDGE_STATUS_ERROR_TTL_S = 6.0
 SLOW_REDRAW_LOG_THRESHOLD_MS = 250.0
 UI_AUTO_REINIT_STALL_THRESHOLD_S = 15.0
 UI_AUTO_REINIT_COOLDOWN_S = 15.0
+UI_REDRAW_WATCHDOG_THREAD_POLL_S = 1.0
 HAND_HONOR_VISIBLE_COUNT_TEXT = "#111827"
 HAND_SELF_ALERT_FILL = "#171f2b"
 HAND_SELF_ALERT_OUTLINE = "#3b4c63"
@@ -1515,6 +1516,151 @@ def _resolve_auto_ui_reinit_stall(
     else:
         canvas.uncompleted_refresh_token_started_monotonic_s = 0.0
     return None
+
+
+def _resolve_redraw_watchdog_thread_stall(
+    canvas: tkinter.Canvas,
+    *,
+    now_monotonic: float,
+) -> tuple[str, float] | None:
+    """Read-only stall detector for the background watchdog thread."""
+
+    if bool(getattr(canvas, "redraw_in_progress", False)):
+        redraw_started = float(getattr(canvas, "last_redraw_started_monotonic_s", 0.0) or 0.0)
+        if redraw_started > 0.0:
+            stalled_for_s = max(0.0, now_monotonic - redraw_started)
+            if stalled_for_s >= UI_AUTO_REINIT_STALL_THRESHOLD_S:
+                return "thread_redraw_in_progress_stalled", stalled_for_s
+    if bool(getattr(canvas, "redraw_request_pending", False)):
+        redraw_requested = float(getattr(canvas, "last_redraw_request_monotonic_s", 0.0) or 0.0)
+        if redraw_requested > 0.0:
+            stalled_for_s = max(0.0, now_monotonic - redraw_requested)
+            if stalled_for_s >= UI_AUTO_REINIT_STALL_THRESHOLD_S:
+                return "thread_redraw_request_pending_stalled", stalled_for_s
+    current_refresh_token = getattr(canvas, "current_refresh_token", None)
+    last_completed_refresh_token = getattr(canvas, "last_completed_redraw_refresh_token", None)
+    uncompleted_since = float(
+        getattr(canvas, "uncompleted_refresh_token_started_monotonic_s", 0.0)
+        or 0.0
+    )
+    if current_refresh_token != last_completed_refresh_token and uncompleted_since > 0.0:
+        stalled_for_s = max(0.0, now_monotonic - uncompleted_since)
+        if stalled_for_s >= UI_AUTO_REINIT_STALL_THRESHOLD_S:
+            return "thread_refresh_token_stalled", stalled_for_s
+    return None
+
+
+def _redraw_watchdog_thread_worker(
+    canvas: tkinter.Canvas,
+    result_queue: queue.Queue[dict[str, object]],
+    stop_event: threading.Event,
+) -> None:
+    """Monitor redraw state from a background thread and queue recovery requests."""
+
+    last_request_monotonic_s = 0.0
+    while not stop_event.wait(UI_REDRAW_WATCHDOG_THREAD_POLL_S):
+        now_monotonic = time.monotonic()
+        if (
+            last_request_monotonic_s > 0.0
+            and (now_monotonic - last_request_monotonic_s) < UI_AUTO_REINIT_COOLDOWN_S
+        ):
+            continue
+        stalled = _resolve_redraw_watchdog_thread_stall(
+            canvas,
+            now_monotonic=now_monotonic,
+        )
+        if stalled is None:
+            continue
+        try:
+            if result_queue.qsize() > 0:
+                continue
+        except NotImplementedError:
+            pass
+        stall_reason, stalled_for_s = stalled
+        result_queue.put(
+            {
+                "kind": "auto_reinit",
+                "reason": stall_reason,
+                "stalled_for_s": stalled_for_s,
+                "requested_monotonic_s": now_monotonic,
+            }
+        )
+        last_request_monotonic_s = now_monotonic
+
+
+def _start_redraw_watchdog_thread(canvas: tkinter.Canvas) -> None:
+    """Start the background redraw watchdog once for this canvas."""
+
+    existing_thread = getattr(canvas, "redraw_watchdog_thread", None)
+    if isinstance(existing_thread, threading.Thread) and existing_thread.is_alive():
+        return
+    result_queue = getattr(canvas, "redraw_watchdog_result_queue", None)
+    if result_queue is None:
+        result_queue = queue.Queue()
+        canvas.redraw_watchdog_result_queue = result_queue
+    stop_event = getattr(canvas, "redraw_watchdog_stop_event", None)
+    if not isinstance(stop_event, threading.Event):
+        stop_event = threading.Event()
+        canvas.redraw_watchdog_stop_event = stop_event
+    else:
+        stop_event.clear()
+    watchdog_thread = threading.Thread(
+        target=_redraw_watchdog_thread_worker,
+        args=(canvas, result_queue, stop_event),
+        name="ui-redraw-watchdog",
+        daemon=True,
+    )
+    canvas.redraw_watchdog_thread = watchdog_thread
+    watchdog_thread.start()
+
+
+def _drain_redraw_watchdog_result_queue(
+    canvas: tkinter.Canvas,
+    *,
+    now_monotonic: float,
+    request_redraw: Callable[..., None] | None,
+    table_snapshot_reinit_action: Callable[[], object | None] | None = None,
+) -> bool:
+    """Apply queued watchdog recovery requests on the Tk thread."""
+
+    result_queue = getattr(canvas, "redraw_watchdog_result_queue", None)
+    if result_queue is None:
+        return False
+    changed = False
+    while True:
+        try:
+            payload = result_queue.get_nowait()
+        except queue.Empty:
+            break
+        if not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("kind", "") or "") != "auto_reinit":
+            continue
+        try:
+            stalled_for_s = float(payload.get("stalled_for_s", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            stalled_for_s = 0.0
+        last_auto_reinit = float(getattr(canvas, "last_auto_reinit_monotonic_s", 0.0) or 0.0)
+        if last_auto_reinit > 0.0 and (now_monotonic - last_auto_reinit) < UI_AUTO_REINIT_COOLDOWN_S:
+            continue
+        force_reason = _force_manual_ui_reinit(
+            canvas,
+            request_redraw=request_redraw,
+            table_snapshot_reinit_action=table_snapshot_reinit_action,
+        )
+        stall_reason = str(payload.get("reason", "") or "thread_redraw_stalled")
+        combined_reason = f"auto_{stall_reason}"
+        if force_reason:
+            combined_reason = f"{combined_reason},{force_reason}"
+        canvas.last_auto_reinit_monotonic_s = now_monotonic
+        canvas.last_auto_reinit_reason = combined_reason
+        _log_auto_ui_reinit(
+            canvas,
+            combined_reason,
+            stalled_for_s=stalled_for_s,
+        )
+        changed = True
+    return changed
 
 
 def _log_auto_ui_reinit(
@@ -3023,6 +3169,8 @@ def create_canvas(
     board_canvas.bridge_feedback_is_error = False
     board_canvas.bridge_feedback_expires_monotonic_s = 0.0
     board_canvas.bridge_status_tick_job = None
+    board_canvas.bridge_status_tick_closed = False
+    board_canvas.last_bridge_status_tick_error_text = None
     board_canvas.bridge_followup_snapshot_jobs = []
     board_canvas.bridge_table_snapshot_retry_count = 0
     board_canvas.bridge_table_snapshot_retry_job = None
@@ -3114,6 +3262,10 @@ def create_canvas(
     board_canvas.last_refresh_token_change_monotonic_s = time.monotonic()
     board_canvas.uncompleted_refresh_token_started_monotonic_s = 0.0
     board_canvas.last_completed_redraw_refresh_token = refresh_token
+    board_canvas.redraw_watchdog_result_queue = queue.Queue()
+    board_canvas.redraw_watchdog_stop_event = threading.Event()
+    board_canvas.redraw_watchdog_thread = None
+    board_canvas.refresh_watch_closed = False
     board_canvas.last_redraw_error_text = None
     board_canvas.last_slow_redraw_refresh_token = None
     board_canvas.last_full_redraw_notice_key = None
@@ -3134,6 +3286,19 @@ def create_canvas(
     refresh_job: str | None = None
     watch_job: str | None = None
     redraw_job: str | None = None
+
+    def schedule_refresh_watch() -> None:
+        nonlocal watch_job
+        if refresh_token_provider is None or refresh_watch_ms <= 0:
+            return
+        if bool(getattr(board_canvas, "refresh_watch_closed", False)):
+            return
+        if not board_canvas.winfo_exists():
+            return
+        try:
+            watch_job = board_canvas.after(refresh_watch_ms, watch_refresh_token)
+        except tkinter.TclError:
+            watch_job = None
 
     def redraw() -> None:
         redraw_phase_timings: list[PhaseTiming] = []
@@ -3743,8 +3908,19 @@ def create_canvas(
 
     def watch_refresh_token() -> None:
         nonlocal watch_job
+        watch_job = None
+        schedule_refresh_watch()
         now_monotonic = time.monotonic()
         queue_changed = _drain_hand_auto_mode_result_queue(board_canvas)
+        queue_changed = (
+            _drain_redraw_watchdog_result_queue(
+                board_canvas,
+                now_monotonic=now_monotonic,
+                request_redraw=request_redraw,
+                table_snapshot_reinit_action=table_snapshot_reinit_action,
+            )
+            or queue_changed
+        )
         if _inferred_visible_runtime_enabled(board_canvas):
             queue_changed = _drain_inferred_visible_background_result_queue(board_canvas) or queue_changed
         if AWASEUCHI_MARKERS_ENABLED:
@@ -3790,8 +3966,6 @@ def create_canvas(
                                 board_canvas.last_redraw_error_text = error_text
                             request_redraw()
                             queue_changed = False
-                            if refresh_token_provider is not None and refresh_watch_ms > 0:
-                                watch_job = board_canvas.after(refresh_watch_ms, watch_refresh_token)
                             return
                         dynamic_hand_danger_percentages = [
                             _normalize_hand_danger_percentages(percentages)
@@ -3878,8 +4052,6 @@ def create_canvas(
         if queue_changed:
             _refresh_hand_auto_mode_button_widget(board_canvas)
             request_redraw()
-        if refresh_token_provider is not None and refresh_watch_ms > 0:
-            watch_job = board_canvas.after(refresh_watch_ms, watch_refresh_token)
 
     def handle_canvas_press(event: tkinter.Event) -> None:
         if getattr(board_canvas, "layout_drag_enabled", False) and _start_layout_component_drag(
@@ -3937,6 +4109,11 @@ def create_canvas(
         nonlocal resize_job, refresh_job, watch_job, redraw_job
         global _THREAD_ACTIVITY_NOTICE_ACTIVE_CANVAS
         _save_detail_memo_if_needed(board_canvas)
+        board_canvas.refresh_watch_closed = True
+        board_canvas.bridge_status_tick_closed = True
+        redraw_watchdog_stop_event = getattr(board_canvas, "redraw_watchdog_stop_event", None)
+        if isinstance(redraw_watchdog_stop_event, threading.Event):
+            redraw_watchdog_stop_event.set()
         if resize_job is not None:
             board_canvas.after_cancel(resize_job)
             resize_job = None
@@ -4251,20 +4428,19 @@ def create_canvas(
         or callable(getattr(board_canvas, "bridge_ui_snapshot_action", None))
         or callable(getattr(board_canvas, "bridge_table_snapshot_action", None))
     ):
-        board_canvas.bridge_status_tick_job = board_canvas.after(
-            BRIDGE_STATUS_TICK_MS,
-            lambda: _bridge_status_tick(board_canvas),
-        )
+        _schedule_bridge_status_tick(board_canvas)
     root.bind_all("<Control-Shift-L>", handle_layout_window_open)
     root.bind_all("<Control-Shift-l>", handle_layout_window_open)
     root.protocol("WM_DELETE_WINDOW", handle_window_close)
     if _inferred_visible_runtime_enabled(board_canvas):
         _ensure_inferred_visible_background_worker(board_canvas)
+    if table_snapshot_reinit_action is not None:
+        _start_redraw_watchdog_thread(board_canvas)
     _run_redraw_safely()
     if auto_refresh_ms is not None:
         refresh_job = board_canvas.after(auto_refresh_ms, schedule_auto_refresh)
     if refresh_token_provider is not None and refresh_watch_ms > 0:
-        watch_job = board_canvas.after(refresh_watch_ms, watch_refresh_token)
+        schedule_refresh_watch()
     root.mainloop()
 
 
@@ -7690,43 +7866,77 @@ def _drain_bridge_background_result_queue(canvas: tkinter.Canvas) -> bool:
     return changed
 
 
+def _schedule_bridge_status_tick(canvas: tkinter.Canvas) -> None:
+    """Schedule the next bridge status tick when bridge integration is active."""
+
+    if bool(getattr(canvas, "bridge_status_tick_closed", False)):
+        return
+    winfo_exists = getattr(canvas, "winfo_exists", None)
+    if callable(winfo_exists):
+        try:
+            if not bool(winfo_exists()):
+                return
+        except tkinter.TclError:
+            return
+    if not (
+        callable(getattr(canvas, "bridge_status_provider", None))
+        or callable(getattr(canvas, "bridge_ui_snapshot_action", None))
+        or callable(getattr(canvas, "bridge_table_snapshot_action", None))
+    ):
+        return
+    try:
+        canvas.bridge_status_tick_job = canvas.after(
+            BRIDGE_STATUS_TICK_MS,
+            lambda: _bridge_status_tick(canvas),
+        )
+    except (AttributeError, tkinter.TclError):
+        canvas.bridge_status_tick_job = None
+
+
 def _bridge_status_tick(canvas: tkinter.Canvas) -> None:
     """Keep bridge status/control widgets fresh without blocking redraw."""
 
     canvas.bridge_status_tick_job = None
-    _drain_bridge_background_result_queue(canvas)
-    same_jun_changed = (
-        _drain_same_jun_match_background_result_queue(canvas)
-        if AWASEUCHI_MARKERS_ENABLED
-        else False
-    )
-    bridge_auto_changed = _sync_hand_auto_mode_bridge_readiness(canvas)
-    if bridge_auto_changed:
-        _refresh_hand_auto_mode_button_widget(canvas)
-    _refresh_bridge_widgets(canvas)
-    if bridge_auto_changed or same_jun_changed:
-        redraw_action = getattr(canvas, "redraw_action", None)
-        if callable(redraw_action):
-            redraw_action()
-    current_bridge_status = _bridge_status_snapshot(canvas)
-    if not (
-        current_bridge_status is not None
-        and current_bridge_status.listening
-        and current_bridge_status.connected
-        and current_bridge_status.extension_ready
-    ):
-        canvas.bridge_snapshot_pending_force = False
-        _cancel_bridge_followup_snapshots(canvas)
-        _cancel_bridge_table_snapshot_retry(canvas)
-        canvas.bridge_table_snapshot_retry_count = 0
-    if _should_request_bridge_ui_snapshot_on_tick(canvas, current_bridge_status):
-        if _request_bridge_ui_snapshot(canvas):
-            canvas.bridge_last_requested_source_refresh_token = getattr(
-                canvas,
-                "bridge_snapshot_source_refresh_token",
-                None,
-            )
-    canvas.bridge_status_tick_job = canvas.after(BRIDGE_STATUS_TICK_MS, lambda: _bridge_status_tick(canvas))
+    _schedule_bridge_status_tick(canvas)
+    try:
+        _drain_bridge_background_result_queue(canvas)
+        same_jun_changed = (
+            _drain_same_jun_match_background_result_queue(canvas)
+            if AWASEUCHI_MARKERS_ENABLED
+            else False
+        )
+        bridge_auto_changed = _sync_hand_auto_mode_bridge_readiness(canvas)
+        if bridge_auto_changed:
+            _refresh_hand_auto_mode_button_widget(canvas)
+        _refresh_bridge_widgets(canvas)
+        if bridge_auto_changed or same_jun_changed:
+            redraw_action = getattr(canvas, "redraw_action", None)
+            if callable(redraw_action):
+                redraw_action()
+        current_bridge_status = _bridge_status_snapshot(canvas)
+        if not (
+            current_bridge_status is not None
+            and current_bridge_status.listening
+            and current_bridge_status.connected
+            and current_bridge_status.extension_ready
+        ):
+            canvas.bridge_snapshot_pending_force = False
+            _cancel_bridge_followup_snapshots(canvas)
+            _cancel_bridge_table_snapshot_retry(canvas)
+            canvas.bridge_table_snapshot_retry_count = 0
+        if _should_request_bridge_ui_snapshot_on_tick(canvas, current_bridge_status):
+            if _request_bridge_ui_snapshot(canvas):
+                canvas.bridge_last_requested_source_refresh_token = getattr(
+                    canvas,
+                    "bridge_snapshot_source_refresh_token",
+                    None,
+                )
+        canvas.last_bridge_status_tick_error_text = None
+    except Exception as exc:  # noqa: BLE001 - status tick must keep polling after transient UI/bridge errors.
+        error_text = f"{type(exc).__name__}: {exc}"
+        if getattr(canvas, "last_bridge_status_tick_error_text", None) != error_text:
+            canvas.last_bridge_status_tick_error_text = error_text
+            print(f"Bridge status tick failed: {error_text}")
 
 
 def _hand_auto_discard_worker(

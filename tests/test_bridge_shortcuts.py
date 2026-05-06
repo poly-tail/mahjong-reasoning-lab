@@ -619,6 +619,29 @@ class BridgeShortcutHelperTests(unittest.TestCase):
         request_snapshot.assert_not_called()
         self.assertEqual(canvas.bridge_status_tick_job, "job-2")
 
+    def test_bridge_status_tick_reschedules_before_transient_drain_error(self) -> None:
+        canvas = SimpleNamespace(
+            bridge_status_tick_job=None,
+            bridge_ui_snapshot_action=lambda: {"ok": True},
+            bridge_status_provider=lambda: None,
+            last_bridge_status_tick_error_text=None,
+        )
+        scheduled = []
+        canvas.after = lambda delay_ms, callback: scheduled.append((delay_ms, callback)) or "job-3"
+
+        with patch(
+            "ui.table_renderer._drain_bridge_background_result_queue",
+            side_effect=RuntimeError("boom"),
+        ):
+            with patch("builtins.print") as print_mock:
+                table_renderer._bridge_status_tick(canvas)
+
+        self.assertEqual(canvas.bridge_status_tick_job, "job-3")
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0][0], table_renderer.BRIDGE_STATUS_TICK_MS)
+        self.assertEqual(canvas.last_bridge_status_tick_error_text, "RuntimeError: boom")
+        print_mock.assert_called_once_with("Bridge status tick failed: RuntimeError: boom")
+
     def test_resolve_hand_auto_discard_delay_s_uses_betaori_random_window(self) -> None:
         class _FixedRng:
             def __init__(self, value: float) -> None:

@@ -1,3 +1,4 @@
+import queue
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from ui.table_renderer import (
     SelfHandValueAlertState,
     _cached_layout_runtime_guard_reason,
     _cached_layout_skip_reason,
+    _drain_redraw_watchdog_result_queue,
     _force_manual_ui_reinit,
     _format_phase_timing_breakdown,
     _format_hand_recommendation_value_text,
@@ -27,6 +29,7 @@ from ui.table_renderer import (
     _redraw_live_async_regions_if_possible,
     _hand_recommendation_request_context_key,
     _redraw_hand_response_controls_if_possible,
+    _resolve_redraw_watchdog_thread_stall,
     _resolve_hand_response_panel_state_for_auto_mode,
     _resolve_request_hand_index_by_tile37,
     _maybe_auto_force_ui_reinit,
@@ -626,6 +629,74 @@ class HandAutoModeTest(unittest.TestCase):
         self.assertIsNone(reason)
         self.assertEqual(request_redraw_calls, [])
         log_auto.assert_not_called()
+
+    def test_redraw_watchdog_thread_detects_stalled_redraw_without_mutating_timer(self) -> None:
+        canvas = SimpleNamespace(
+            redraw_in_progress=False,
+            redraw_request_pending=False,
+            last_redraw_started_monotonic_s=0.0,
+            last_redraw_request_monotonic_s=0.0,
+            uncompleted_refresh_token_started_monotonic_s=10.0,
+            current_refresh_token=("current", 8),
+            last_completed_redraw_refresh_token=("old", 7),
+        )
+
+        stalled = _resolve_redraw_watchdog_thread_stall(
+            canvas,
+            now_monotonic=26.0,
+        )
+
+        self.assertEqual(stalled, ("thread_refresh_token_stalled", 16.0))
+        self.assertEqual(canvas.uncompleted_refresh_token_started_monotonic_s, 10.0)
+
+    def test_drain_redraw_watchdog_queue_reinits_on_tk_thread(self) -> None:
+        result_queue: queue.Queue[dict[str, object]] = queue.Queue()
+        result_queue.put(
+            {
+                "kind": "auto_reinit",
+                "reason": "thread_redraw_in_progress_stalled",
+                "stalled_for_s": 16.0,
+            }
+        )
+        canvas = SimpleNamespace(
+            redraw_watchdog_result_queue=result_queue,
+            redraw_in_progress=True,
+            redraw_request_pending=True,
+            last_redraw_started_monotonic_s=10.0,
+            last_redraw_request_monotonic_s=11.0,
+            last_auto_reinit_monotonic_s=0.0,
+            last_auto_reinit_reason=None,
+            current_refresh_token=("current", 9),
+            last_completed_redraw_refresh_token=("old", 8),
+            live_async_render_state=object(),
+            last_render_layout={"detail_content_rect": (0.0, 0.0, 1.0, 1.0)},
+            last_render_layout_signature=("layout", 9),
+            last_render_detail_content_rect=(0.0, 0.0, 1.0, 1.0),
+            side_panel_render_cache=object(),
+        )
+        request_redraw_calls: list[dict[str, object]] = []
+        reinit_calls: list[str] = []
+
+        with patch("ui.table_renderer._log_auto_ui_reinit") as log_auto:
+            changed = _drain_redraw_watchdog_result_queue(
+                canvas,
+                now_monotonic=26.0,
+                request_redraw=lambda **kwargs: request_redraw_calls.append(dict(kwargs)),
+                table_snapshot_reinit_action=lambda: reinit_calls.append("called"),
+            )
+
+        self.assertTrue(changed)
+        self.assertFalse(canvas.redraw_in_progress)
+        self.assertFalse(canvas.redraw_request_pending)
+        self.assertIsNone(canvas.live_async_render_state)
+        self.assertEqual(reinit_calls, ["called"])
+        self.assertEqual(request_redraw_calls, [{"replace_pending": True}])
+        self.assertEqual(
+            canvas.last_auto_reinit_reason,
+            "auto_thread_redraw_in_progress_stalled,snapshot_cache_invalidated,cleared_redraw_in_progress,cleared_pending_redraw_request,cleared_ui_render_cache",
+        )
+        self.assertEqual(canvas.last_auto_reinit_monotonic_s, 26.0)
+        log_auto.assert_called_once()
 
     def test_render_table_using_cached_layout_allows_active_redraw_pass(self) -> None:
         class CanvasStub:
