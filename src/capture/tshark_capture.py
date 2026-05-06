@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import queue
 import subprocess
 import sys
+import threading
 import traceback
 from dataclasses import asdict
 from datetime import datetime
@@ -60,15 +62,57 @@ TSHARK_FIELDS = [
 LIVE_CAPTURE_LOG_PATH = DEFAULT_LIVE_CAPTURE_LOG_PATH
 
 
+_LIVE_CAPTURE_LOG_QUEUE_MAX_SIZE = 4096
+_LIVE_CAPTURE_LOG_QUEUE: queue.Queue[str] | None = None
+_LIVE_CAPTURE_LOG_QUEUE_LOCK = threading.Lock()
+
+
+def _live_capture_log_worker(log_queue: queue.Queue[str]) -> None:
+    """Write queued capture diagnostics without blocking the capture parser."""
+
+    while True:
+        first_line = log_queue.get()
+        lines = [first_line]
+        try:
+            while True:
+                try:
+                    lines.append(log_queue.get_nowait())
+                except queue.Empty:
+                    break
+            LIVE_CAPTURE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with LIVE_CAPTURE_LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write("".join(lines))
+        except OSError:
+            pass
+        finally:
+            for _line in lines:
+                log_queue.task_done()
+
+
+def _live_capture_log_queue() -> queue.Queue[str]:
+    """Return the singleton nonblocking live-capture log queue."""
+
+    global _LIVE_CAPTURE_LOG_QUEUE
+    with _LIVE_CAPTURE_LOG_QUEUE_LOCK:
+        if _LIVE_CAPTURE_LOG_QUEUE is None:
+            _LIVE_CAPTURE_LOG_QUEUE = queue.Queue(maxsize=_LIVE_CAPTURE_LOG_QUEUE_MAX_SIZE)
+            threading.Thread(
+                target=_live_capture_log_worker,
+                args=(_LIVE_CAPTURE_LOG_QUEUE,),
+                name="live-capture-log-writer",
+                daemon=True,
+            ).start()
+        return _LIVE_CAPTURE_LOG_QUEUE
+
+
 def _append_live_capture_log(message: str) -> None:
     """Append a timestamped live-capture diagnostic line to a local log file."""
 
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{now_text}] {message}\n"
     try:
-        LIVE_CAPTURE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with LIVE_CAPTURE_LOG_PATH.open("a", encoding="utf-8") as handle:
-            now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            handle.write(f"[{now_text}] {message}\n")
-    except OSError:
+        _live_capture_log_queue().put_nowait(line)
+    except queue.Full:
         return
 
 
@@ -183,6 +227,21 @@ def _debug_tag_event(timestamp: float | None, fragment: str, event: object) -> N
     attrs = getattr(event, "attrs", {})
     _emit_tag_debug_message(
         f"[debug-event] ts={timestamp} type={event_type} seat={seat} tile_136={tile_136} attrs={attrs}"
+    )
+
+
+def _append_parsed_event_log(timestamp: float | None, fragment: str, event: object) -> None:
+    """Append a compact parsed-event trace for post-freeze diagnosis."""
+
+    if event is None:
+        return
+    event_type = getattr(event, "event_type", "")
+    seat = getattr(event, "seat", None)
+    tile_136 = getattr(event, "tile_136", None)
+    _append_live_capture_log(
+        "event_parsed: "
+        f"ts={timestamp} type={event_type} seat={seat} tile_136={tile_136} "
+        f"raw={fragment[:400]}"
     )
 
 
@@ -366,6 +425,7 @@ def parse_tshark_output_line(
         )
         if debug_tags:
             _debug_tag_event(timestamp, fragment, event)
+        _append_parsed_event_log(timestamp, fragment, event)
         if event is not None and event.event_type in {"init", "reinit", "initbylog", "wgc"}:
             _append_live_capture_log(
                 f"snapshot_event: type={event.event_type} raw={fragment[:1000]}"

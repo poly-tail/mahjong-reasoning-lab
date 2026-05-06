@@ -379,6 +379,39 @@ class LiveCaptureAgariStorageTest(unittest.TestCase):
         self.assertEqual(snapshot_meld.tiles_136, [12, 13, 14])
         self.assertEqual(snapshot_event.attrs["nested"]["tiles"], [12, 13, 14])
 
+    def test_async_persist_snapshot_can_skip_when_live_state_lock_is_busy(self) -> None:
+        state = CaptureState()
+        round_state = RoundState(started_from_init_like=True, round_id="round-busy")
+        state.current_round = round_state
+        state.rounds.append(round_state)
+        state.sync_current_round_context()
+        event = Event(timestamp=1.0, event_type="discard", seat=0)
+        state.events.append(event)
+        round_state.events.append(event)
+
+        lock_acquired = threading.Event()
+        release_lock = threading.Event()
+
+        def _hold_state_lock() -> None:
+            with state.state_lock:
+                lock_acquired.set()
+                release_lock.wait(timeout=2.0)
+
+        holder_thread = threading.Thread(target=_hold_state_lock, daemon=True)
+        holder_thread.start()
+        self.assertTrue(lock_acquired.wait(timeout=1.0))
+        try:
+            snapshot = _snapshot_capture_state_for_async_persist(
+                state,
+                event,
+                blocking=False,
+            )
+        finally:
+            release_lock.set()
+            holder_thread.join(timeout=1.0)
+
+        self.assertIsNone(snapshot)
+
 
 if __name__ == "__main__":
     unittest.main()

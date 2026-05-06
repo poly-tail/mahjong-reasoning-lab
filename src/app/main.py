@@ -169,6 +169,18 @@ def _format_stale_runtime_thread_report(report: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _append_live_runtime_log(message: str) -> None:
+    """Append one live-runtime diagnostic line to the capture log."""
+
+    try:
+        LIVE_CAPTURE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LIVE_CAPTURE_LOG_PATH.open("a", encoding="utf-8") as handle:
+            now_text = time.strftime("%Y-%m-%d %H:%M:%S")
+            handle.write(f"[{now_text}] {message}\n")
+    except OSError:
+        return
+
+
 def _start_live_runtime_watchdog(capture_state: CaptureState) -> None:
     """Start one stdout watchdog that reports stale capture/UI progress markers."""
 
@@ -201,7 +213,9 @@ def _start_live_runtime_watchdog(capture_state: CaptureState) -> None:
                     and (now_monotonic - last_report[1]) < repeat_after_s
                 ):
                     continue
-                print(_format_stale_runtime_thread_report(report))
+                formatted_report = _format_stale_runtime_thread_report(report)
+                print(formatted_report)
+                _append_live_runtime_log(formatted_report)
                 last_report_by_thread[thread_name] = (signature, now_monotonic)
 
     threading.Thread(

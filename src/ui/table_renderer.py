@@ -37,6 +37,7 @@ from logic.danger_suji import (
     MENZEN_ALERT_YELLOW_SCORE,
     NO_TEMP_REMAIN_RED_TINT_THRESHOLD,
 )
+from runtime_paths import DEFAULT_LIVE_CAPTURE_LOG_PATH
 from sutehai import Discard, DrawType, Player, SutehaiTracker
 from visible_tiles import (
     THREE_VISIBLE_TILES_ENABLED,
@@ -75,6 +76,19 @@ DETAIL_VISIBLE_ROWS = 3
 # 中央局情報パネル内で使うドラ表示牌画像の最大サイズ。
 CENTER_DORA_MAX_WIDTH = 18
 CENTER_DORA_MAX_HEIGHT = 28
+
+
+def _append_ui_diagnostic_log(message: str) -> None:
+    """Append one UI diagnostic line to the live-capture log."""
+
+    try:
+        DEFAULT_LIVE_CAPTURE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with DEFAULT_LIVE_CAPTURE_LOG_PATH.open("a", encoding="utf-8") as handle:
+            now_text = time.strftime("%Y-%m-%d %H:%M:%S")
+            handle.write(f"[{now_text}] {message}\n")
+    except OSError:
+        return
+
 
 # 卓外背景と卓枠の配色定義。
 BOARD_OUTER = "#101820"
@@ -3817,7 +3831,9 @@ def create_canvas(
         except Exception as exc:  # noqa: BLE001 - UI refresh must keep rescheduling on transient failures.
             error_text = f"{type(exc).__name__}: {exc}"
             if getattr(board_canvas, "last_redraw_error_text", None) != error_text:
-                print(f"UI redraw skipped: {error_text}")
+                message = f"UI redraw skipped: {error_text}"
+                print(message)
+                _append_ui_diagnostic_log(message)
                 board_canvas.last_redraw_error_text = error_text
         else:
             elapsed_ms = (time.perf_counter() - redraw_started_at) * 1000.0
@@ -3838,12 +3854,14 @@ def create_canvas(
                 render_breakdown = _format_phase_timing_breakdown(
                     getattr(board_canvas, "last_render_table_phase_timings", ()),
                 )
-                print(
+                message = (
                     "UI redraw slow: "
                     f"{elapsed_ms:.1f}ms refresh_token={current_refresh_token}"
                     + (f" redraw=[{redraw_breakdown}]" if redraw_breakdown else "")
                     + (f" render=[{render_breakdown}]" if render_breakdown else "")
                 )
+                print(message)
+                _append_ui_diagnostic_log(message)
         finally:
             board_canvas.last_redraw_finished_monotonic_s = time.monotonic()
             board_canvas.redraw_in_progress = False

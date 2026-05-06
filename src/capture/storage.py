@@ -1082,10 +1082,16 @@ def _clone_round_state_for_async_persist(round_state: RoundState) -> RoundState:
 def _snapshot_capture_state_for_async_persist(
     state: CaptureState,
     event: Event,
+    *,
+    blocking: bool = True,
 ) -> tuple[CaptureState, Event] | None:
     """Return a lightweight immutable snapshot for background DB persistence."""
 
-    with state.state_lock:
+    state_lock = state.state_lock
+    acquired = state_lock.acquire(blocking=blocking)
+    if not acquired:
+        return None
+    try:
         round_state = state.current_round
         if round_state is None or not round_state.started_from_init_like:
             return None
@@ -1122,6 +1128,8 @@ def _snapshot_capture_state_for_async_persist(
                 state.pystyle_self_history_by_round_hand
             ),
         )
+    finally:
+        state_lock.release()
     snapshot_state.sync_current_round_context()
     if event_index is not None and 0 <= event_index < len(snapshot_state.events):
         return snapshot_state, snapshot_state.events[event_index]
@@ -2599,7 +2607,7 @@ class CsvDatabase:
             return
         if self._async_persist_queue is None:
             raise RuntimeError("async persist queue was not initialized")
-        snapshot = _snapshot_capture_state_for_async_persist(state, event)
+        snapshot = _snapshot_capture_state_for_async_persist(state, event, blocking=False)
         if snapshot is None:
             return
         snapshot_state, snapshot_event = snapshot
