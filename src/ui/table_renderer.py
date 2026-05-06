@@ -661,6 +661,7 @@ class RoundInfoPanelData:
 
     round_text: str = "東3局 1本場"
     kyotaku_text: str = "0"
+    bootstrap_text: str = ""
     seat_wind_labels_by_seat: dict[int, str] = field(default_factory=dict)
 
 
@@ -14603,6 +14604,14 @@ def _draw_center_panel(
         fill=TEXT_PRIMARY,
         font=("Yu Gothic UI", 11, "bold"),
     )
+    if round_info_panel.bootstrap_text:
+        canvas.create_text(
+            center_x,
+            top + 36,
+            text=round_info_panel.bootstrap_text,
+            fill=TEXT_SECONDARY,
+            font=("Consolas", 7, "bold"),
+        )
     canvas.create_text(center_x, center_y - 12, text="DORA", fill=TEXT_SECONDARY, font=("Consolas", 9, "bold"))
     _draw_center_dora_tiles(canvas, center_x, center_y + 4, dora_indicator_tiles)
     canvas.create_text(center_x, bottom - 20, text="KYOTAKU", fill=TEXT_SECONDARY, font=("Consolas", 8, "bold"))

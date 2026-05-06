@@ -164,6 +164,17 @@ class LiveSnapshotCacheTest(unittest.TestCase):
             },
         )
 
+    def test_build_live_round_info_panel_includes_reinit_bootstrap_count(self) -> None:
+        state = _build_live_capture_state()
+        state.current_round.snapshot_bootstrap_sequence = 3
+        state.current_round.raw_reinit_attrs = {"tag": "REINIT"}
+
+        round_info_panel = app_main.build_live_round_info_panel(state)
+        table_snapshot = app_main.build_live_table_snapshot(state)
+
+        self.assertEqual(round_info_panel.bootstrap_text, "REINIT #3")
+        self.assertEqual(table_snapshot.round_info_panel.bootstrap_text, "REINIT #3")
+
     def test_live_suji_bundle_tolerates_missing_optional_discard_numbers(self) -> None:
         state = _build_live_capture_state()
         live_discard = state.current_round.discards[int(Player.SHIMOCHA)][0]

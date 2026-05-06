@@ -2465,6 +2465,36 @@ def _build_seat_wind_labels_by_seat(oya_rel: int | None) -> dict[int, str]:
     return seat_winds
 
 
+def _format_round_bootstrap_text(round_state: RoundState) -> str:
+    """Return a compact INIT/REINIT/MAP rebuild counter for the center panel."""
+
+    try:
+        sequence = int(getattr(round_state, "snapshot_bootstrap_sequence", 0) or 0)
+    except (TypeError, ValueError):
+        sequence = 0
+    if sequence <= 0:
+        return ""
+
+    raw_reinit_attrs = dict(getattr(round_state, "raw_reinit_attrs", {}) or {})
+    raw_init_attrs = dict(getattr(round_state, "raw_init_attrs", {}) or {})
+    raw_attrs = dict(getattr(round_state, "raw_attrs", {}) or {})
+    source_text = str(
+        raw_reinit_attrs.get("source")
+        or raw_init_attrs.get("source")
+        or raw_attrs.get("source")
+        or ""
+    ).strip()
+    if source_text == "bridge_table_snapshot":
+        label = "MAP"
+    elif raw_reinit_attrs:
+        label = "REINIT"
+    elif raw_init_attrs:
+        label = "INIT"
+    else:
+        label = "BOOT"
+    return f"{label} #{sequence}"
+
+
 def build_live_round_info_panel(capture_state: CaptureState) -> table_view.RoundInfoPanelData:
     """Return the compact center-panel payload derived from the active round state."""
 
@@ -2474,6 +2504,7 @@ def build_live_round_info_panel(capture_state: CaptureState) -> table_view.Round
     return table_view.RoundInfoPanelData(
         round_text=_format_round_text(round_state.kyoku_index, round_state.honba),
         kyotaku_text=str(int(round_state.kyotaku or 0)),
+        bootstrap_text=_format_round_bootstrap_text(round_state),
         seat_wind_labels_by_seat=_build_seat_wind_labels_by_seat(round_state.oya_rel),
     )
 
@@ -2588,6 +2619,9 @@ def _clone_round_state_for_live_snapshot(round_state: RoundState | None) -> Roun
             for seat in range(4)
         },
         reach_state=dict(round_state.reach_state),
+        raw_attrs=dict(getattr(round_state, "raw_attrs", {}) or {}),
+        raw_init_attrs=dict(getattr(round_state, "raw_init_attrs", {}) or {}),
+        raw_reinit_attrs=dict(getattr(round_state, "raw_reinit_attrs", {}) or {}),
         events=[
             _clone_capture_event_for_live_snapshot(event)
             for event in getattr(round_state, "events", ())
