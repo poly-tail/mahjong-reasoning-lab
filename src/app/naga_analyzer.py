@@ -10,7 +10,7 @@ from typing import Any, Callable, Sequence
 
 from runtime_paths import WORKSPACE_ROOT
 
-SEAT_LABELS = ("YOU", "SHIMO", "TOIMEN", "KAMI")
+SEAT_LABELS = ("自家", "下家", "対面", "上家")
 DEFAULT_NAGA_STORAGE_ENV = "TENHOU_NAGA_STORAGE_STATE"
 DEFAULT_NAGA_RAW_DIR_ENV = "TENHOU_NAGA_RAW_DIR"
 
@@ -25,11 +25,11 @@ class NagaQueryState:
 
     @property
     def round_text(self) -> str:
-        wind_labels = ("East", "South", "West", "North")
+        wind_labels = ("東", "南", "西", "北")
         wind_index = max(0, int(self.kyoku)) // 4
         hand_index = int(self.kyoku) % 4 + 1
-        wind_label = wind_labels[wind_index] if 0 <= wind_index < len(wind_labels) else "Round"
-        return f"{wind_label} {hand_index} / Honba {int(self.honba)} / Kyotaku {int(self.kyotaku)}"
+        wind_label = wind_labels[wind_index] if 0 <= wind_index < len(wind_labels) else "局"
+        return f"{wind_label}{hand_index}局 {int(self.honba)}本場 供託{int(self.kyotaku)}本"
 
     @property
     def self_is_dealer(self) -> bool | None:
@@ -165,16 +165,49 @@ def _format_probability(probability: float) -> str:
     return f"{float(probability) * 100.0:.1f}%"
 
 
+def _format_probability_delta(probability_delta: float) -> str:
+    return f"{float(probability_delta) * 100.0:+.1f}pt"
+
+
+def _format_score_mv_as_points(score_mv: float | None) -> str:
+    if score_mv is None:
+        return "不明"
+    return f"{float(score_mv) * 100.0:+.0f}点相当"
+
+
+def _format_rank_probability_with_delta(
+    probability: float,
+    base_probability: float | None,
+) -> str:
+    text = _format_probability(probability)
+    if base_probability is None:
+        return text
+    return f"{text}({_format_probability_delta(float(probability) - float(base_probability))})"
+
+
+def _format_self_baseline_line(seat_prediction: Any) -> str:
+    rank_prob = getattr(seat_prediction, "rank_prob")
+    p1 = float(getattr(rank_prob, "p1", 0.0))
+    p2 = float(getattr(rank_prob, "p2", 0.0))
+    p4 = float(getattr(rank_prob, "p4", 0.0))
+    return (
+        f"現在: 自家ptEV {float(getattr(seat_prediction, 'ptev', 0.0)):+.1f} / "
+        f"1着率 {_format_probability(p1)} / "
+        f"連対率 {_format_probability(p1 + p2)} / "
+        f"4着率 {_format_probability(p4)}"
+    )
+
+
 def _seat_line(seat_prediction: Any) -> str:
     seat_label = SEAT_LABELS[int(getattr(seat_prediction, "seat", 0))]
     rank_prob = getattr(seat_prediction, "rank_prob")
     return (
-        f"{seat_label:<6} "
-        f"P1 {_format_probability(rank_prob.p1):>6} "
-        f"P2 {_format_probability(rank_prob.p2):>6} "
-        f"P3 {_format_probability(rank_prob.p3):>6} "
-        f"P4 {_format_probability(rank_prob.p4):>6} "
-        f"ptEV {float(getattr(seat_prediction, 'ptev', 0.0)):+6.1f}"
+        f"{seat_label}: "
+        f"段位ptEV {float(getattr(seat_prediction, 'ptev', 0.0)):+.1f} / "
+        f"1着率 {_format_probability(rank_prob.p1)} / "
+        f"2着率 {_format_probability(rank_prob.p2)} / "
+        f"3着率 {_format_probability(rank_prob.p3)} / "
+        f"4着率 {_format_probability(rank_prob.p4)}"
     )
 
 
@@ -213,9 +246,9 @@ def _ryukyoku_label(branch_index: int) -> str:
     }
     seats = tenpai_labels.get(int(branch_index), [])
     if not seats:
-        return "tenpai none"
-    labels = ",".join(SEAT_LABELS[seat] for seat in seats)
-    return f"tenpai {labels}"
+        return "全員ノーテン"
+    labels = "・".join(SEAT_LABELS[seat] for seat in seats)
+    return f"聴牌: {labels}"
 
 
 def _branch_delta_self(base_branch: Sequence[Any], branch: Sequence[Any], self_seat: int = 0) -> float:
@@ -259,14 +292,24 @@ def _format_self_metric_line(
     delta_ptev: float,
     p1: float,
     p2: float,
+    p4: float,
+    base_p1: float | None = None,
+    base_p2: float | None = None,
+    base_p4: float | None = None,
 ) -> str:
-    mv_text = f"{score_mv:.1f}" if score_mv is not None else "na"
+    rentai = float(p1) + float(p2)
+    base_rentai = (
+        float(base_p1) + float(base_p2)
+        if base_p1 is not None and base_p2 is not None
+        else None
+    )
     return (
-        f"{label:<16} "
-        f"mv {mv_text:>5} "
-        f"dEV {delta_ptev:+6.1f} "
-        f"P1 {_format_probability(p1):>6} "
-        f"P2 {_format_probability(p2):>6}"
+        f"{label}: "
+        f"和了素点 {_format_score_mv_as_points(score_mv)} / "
+        f"自家ptEV {delta_ptev:+.1f} / "
+        f"1着率 {_format_rank_probability_with_delta(p1, base_p1)} / "
+        f"連対率 {_format_rank_probability_with_delta(rentai, base_rentai)} / "
+        f"4着率 {_format_rank_probability_with_delta(p4, base_p4)}"
     )
 
 
@@ -309,7 +352,7 @@ def _best_self_ron_representatives_by_target(
 def _self_average_metrics(
     base_branch: Sequence[Any],
     branches: Sequence[Sequence[Any]],
-) -> tuple[float | None, float, float, float] | None:
+) -> tuple[float | None, float, float, float, float] | None:
     if not branches:
         return None
     score_values = [
@@ -322,6 +365,7 @@ def _self_average_metrics(
         fmean(_branch_delta_self(base_branch, branch) for branch in branches),
         fmean(_branch_probability(branch, 0, "p1") for branch in branches),
         fmean(_branch_probability(branch, 0, "p2") for branch in branches),
+        fmean(_branch_probability(branch, 0, "p4") for branch in branches),
     )
 
 
@@ -373,45 +417,60 @@ def _build_fixed_format_sections(
         state,
         expected_score_mv=expected_3900,
     )
-    ron_3900_lines.append(f"[3900 Ron Average] expected actor mv {expected_3900:.1f}")
+    base_p1 = _branch_probability(parsed_response.base, 0, "p1")
+    base_p2 = _branch_probability(parsed_response.base, 0, "p2")
+    base_p4 = _branch_probability(parsed_response.base, 0, "p4")
+    ron_3900_lines.append(
+        f"【3900直撃平均】想定和了素点 {_format_score_mv_as_points(expected_3900)}"
+    )
     if ron_by_target:
         average_metrics = _self_average_metrics(
             parsed_response.base,
             [branch for _branch_index, branch in ron_by_target.values()],
         )
         if average_metrics is not None:
-            average_score_mv, average_delta, average_p1, average_p2 = average_metrics
+            average_score_mv, average_delta, average_p1, average_p2, average_p4 = average_metrics
             average_line = _format_self_metric_line(
-                "AVG 3 targets",
+                f"直撃候補平均({len(ron_by_target)}人)",
                 score_mv=average_score_mv,
                 delta_ptev=average_delta,
                 p1=average_p1,
                 p2=average_p2,
+                p4=average_p4,
+                base_p1=base_p1,
+                base_p2=base_p2,
+                base_p4=base_p4,
             )
-            summary_lines.append(f"3900 avg : {average_line}")
+            summary_lines.append(average_line.replace("直撃候補平均", "3900直撃平均", 1))
             ron_3900_lines.append(average_line)
         for target in (1, 2, 3):
             representative = ron_by_target.get(target)
             if representative is None:
-                ron_3900_lines.append(f"{SEAT_LABELS[target]:<16} (no close branch)")
+                ron_3900_lines.append(f"{SEAT_LABELS[target]}からロン: 近い分岐なし")
                 continue
             branch_index, branch = representative
             ron_3900_lines.append(
                 _format_self_metric_line(
-                    f"{SEAT_LABELS[target]} RON{branch_index:02d}",
+                    f"{SEAT_LABELS[target]}からロン R{branch_index:02d}",
                     score_mv=_branch_score_mv(branch, 0),
                     delta_ptev=_branch_delta_self(parsed_response.base, branch),
                     p1=_branch_probability(branch, 0, "p1"),
                     p2=_branch_probability(branch, 0, "p2"),
+                    p4=_branch_probability(branch, 0, "p4"),
+                    base_p1=base_p1,
+                    base_p2=base_p2,
+                    base_p4=base_p4,
                 )
             )
     else:
-        summary_lines.append(f"3900 avg : no close branch (expected mv {expected_3900:.1f})")
-        ron_3900_lines.append("(no close ron branch found)")
+        summary_lines.append(
+            f"3900直撃平均: 近い分岐なし(想定和了素点 {_format_score_mv_as_points(expected_3900)})"
+        )
+        ron_3900_lines.append("近いロン分岐が見つかりませんでした。")
 
     expected_mangan = _expected_mangan_tsumo_score_mvs(state)
-    expected_mangan_text = ", ".join(f"{value:.1f}" for value in expected_mangan)
-    mangan_tsumo_lines.append(f"[Mangan Tsumo Candidates] expected actor mv {expected_mangan_text}")
+    expected_mangan_text = " / ".join(_format_score_mv_as_points(value) for value in expected_mangan)
+    mangan_tsumo_lines.append(f"【満貫ツモ候補】想定和了素点 {expected_mangan_text}")
     tsumo_candidates = _closest_self_tsumo_candidates(
         parsed_response,
         expected_mangan,
@@ -419,28 +478,35 @@ def _build_fixed_format_sections(
     if tsumo_candidates:
         first_branch_index, first_branch, first_gap = tsumo_candidates[0]
         summary_lines.append(
-            "Mangan tsumo: "
-            + _format_self_metric_line(
-                f"TSM{first_branch_index:02d} gap {first_gap:.1f}",
+            _format_self_metric_line(
+                f"満貫ツモ候補 ツモ{first_branch_index:02d}",
                 score_mv=_branch_score_mv(first_branch, 0),
                 delta_ptev=_branch_delta_self(parsed_response.base, first_branch),
                 p1=_branch_probability(first_branch, 0, "p1"),
                 p2=_branch_probability(first_branch, 0, "p2"),
+                p4=_branch_probability(first_branch, 0, "p4"),
+                base_p1=base_p1,
+                base_p2=base_p2,
+                base_p4=base_p4,
             )
         )
         for branch_index, branch, gap in tsumo_candidates:
             mangan_tsumo_lines.append(
                 _format_self_metric_line(
-                    f"TSM{branch_index:02d} gap {gap:.1f}",
+                    f"ツモ候補 {branch_index:02d}(想定差 {gap * 100.0:.0f}点)",
                     score_mv=_branch_score_mv(branch, 0),
                     delta_ptev=_branch_delta_self(parsed_response.base, branch),
                     p1=_branch_probability(branch, 0, "p1"),
                     p2=_branch_probability(branch, 0, "p2"),
+                    p4=_branch_probability(branch, 0, "p4"),
+                    base_p1=base_p1,
+                    base_p2=base_p2,
+                    base_p4=base_p4,
                 )
             )
     else:
-        summary_lines.append(f"Mangan tsumo: no close branch (expected mv {expected_mangan_text})")
-        mangan_tsumo_lines.append("(no close tsumo branch found)")
+        summary_lines.append(f"満貫ツモ候補: 近い分岐なし(想定和了素点 {expected_mangan_text})")
+        mangan_tsumo_lines.append("近いツモ分岐が見つかりませんでした。")
 
     return NagaFixedFormatSections(
         summary_lines=tuple(summary_lines),
@@ -459,26 +525,47 @@ def _format_branch_line(
     self_seat: int = 0,
 ) -> str:
     self_summary = branch[self_seat]
+    base_summary = base_branch[self_seat]
+    self_rank_prob = getattr(self_summary, "rank_prob")
+    base_rank_prob = getattr(base_summary, "rank_prob")
     delta_self = _branch_delta_self(base_branch, branch, self_seat=self_seat)
     actor = _branch_actor(branch)
     target = _branch_target(branch)
     score_mv = _branch_score_mv(branch, actor)
     actor_text = SEAT_LABELS[actor] if actor is not None and 0 <= actor < 4 else "-"
     target_text = SEAT_LABELS[target] if target is not None and 0 <= target < 4 else "-"
-    mv_text = f"{score_mv:.1f}" if score_mv is not None else "na"
     if prefix == "RON":
-        context = f"{actor_text}->{target_text}"
+        branch_label = "ロン"
+        if actor == self_seat and target is not None:
+            context = f"{target_text}からロン"
+        elif target == self_seat and actor is not None:
+            context = f"{actor_text}へ放銃"
+        else:
+            context = f"{actor_text}が{target_text}からロン"
     elif prefix == "TSM":
-        context = actor_text
+        branch_label = "ツモ"
+        context = f"{actor_text}ツモ"
     else:
+        branch_label = "流局"
         context = label
-    return (
-        f"{prefix}{branch_index:02d} "
-        f"{context:<18} "
-        f"mv {mv_text:>5} "
-        f"dEV {delta_self:+6.1f} "
-        f"P1 {_format_probability(getattr(self_summary.rank_prob, 'p1', 0.0)):>6}"
+    p1 = float(getattr(self_rank_prob, "p1", 0.0))
+    p2 = float(getattr(self_rank_prob, "p2", 0.0))
+    p4 = float(getattr(self_rank_prob, "p4", 0.0))
+    base_p1 = float(getattr(base_rank_prob, "p1", 0.0))
+    base_p2 = float(getattr(base_rank_prob, "p2", 0.0))
+    base_p4 = float(getattr(base_rank_prob, "p4", 0.0))
+    parts = [f"{branch_label}{branch_index:02d} {context}"]
+    if score_mv is not None:
+        parts.append(f"和了素点 {_format_score_mv_as_points(score_mv)}")
+    parts.extend(
+        [
+            f"自家ptEV {delta_self:+.1f}",
+            f"1着率 {_format_rank_probability_with_delta(p1, base_p1)}",
+            f"連対率 {_format_rank_probability_with_delta(p1 + p2, base_p1 + base_p2)}",
+            f"4着率 {_format_rank_probability_with_delta(p4, base_p4)}",
+        ]
     )
+    return " / ".join(parts)
 
 
 def _top_branch_lines(
@@ -538,7 +625,7 @@ def _build_graph_points(parsed_response: Any, *, self_seat: int = 0, per_group_l
     points: list[NagaGraphPoint] = [
         _graph_point_from_branch(
             category="BASE",
-            label="Now",
+            label="現状",
             branch=base_branch,
             base_branch=base_branch,
             self_seat=self_seat,
@@ -546,10 +633,10 @@ def _build_graph_points(parsed_response: Any, *, self_seat: int = 0, per_group_l
     ]
 
     groups: tuple[tuple[str, Sequence[Sequence[Any]], bool, Callable[[int], str]], ...] = (
-        ("RON+", parsed_response.ron_branches, True, lambda index: f"R{index:02d}"),
-        ("TSM+", parsed_response.tsumo_branches, True, lambda index: f"T{index:02d}"),
-        ("RON-", parsed_response.ron_branches, False, lambda index: f"H{index:02d}"),
-        ("RYK", parsed_response.ryukyoku_branches, True, lambda index: f"Y{index:02d}"),
+        ("RON+", parsed_response.ron_branches, True, lambda index: f"ロン{index:02d}"),
+        ("TSM+", parsed_response.tsumo_branches, True, lambda index: f"ツモ{index:02d}"),
+        ("RON-", parsed_response.ron_branches, False, lambda index: f"放銃{index:02d}"),
+        ("RYK", parsed_response.ryukyoku_branches, True, lambda index: f"流局{index:02d}"),
     )
     for category, branches, sort_desc, label_builder in groups:
         candidates: list[tuple[int, Sequence[Any], float]] = []
@@ -591,12 +678,10 @@ def _build_detail_text(
     if fixed_sections.mangan_tsumo_lines:
         lines.extend(fixed_sections.mangan_tsumo_lines)
         lines.append("")
-    lines.append(parsed_response.state.model_dump_json(indent=2))
-    lines.append("")
-    lines.append("[Baseline]")
+    lines.append("【現在の全員評価】")
     lines.extend(_seat_line(seat) for seat in parsed_response.base)
     lines.append("")
-    lines.append("[Self Ron Best]")
+    lines.append("【自家ロン和了で良い動き】")
     self_ron_lines = _top_branch_lines(
         branches=parsed_response.ron_branches,
         base_branch=parsed_response.base,
@@ -605,9 +690,9 @@ def _build_detail_text(
         label_builder=lambda _branch_index: "",
         predicate=lambda branch: _branch_actor(branch) == 0,
     )
-    lines.extend(self_ron_lines or ["(none)"])
+    lines.extend(self_ron_lines or ["該当分岐なし"])
     lines.append("")
-    lines.append("[Self Tsumo Best]")
+    lines.append("【自家ツモ和了で良い動き】")
     self_tsumo_lines = _top_branch_lines(
         branches=parsed_response.tsumo_branches,
         base_branch=parsed_response.base,
@@ -616,9 +701,9 @@ def _build_detail_text(
         label_builder=lambda _branch_index: "",
         predicate=lambda branch: _branch_actor(branch) == 0,
     )
-    lines.extend(self_tsumo_lines or ["(none)"])
+    lines.extend(self_tsumo_lines or ["該当分岐なし"])
     lines.append("")
-    lines.append("[Houjuu Worst For YOU]")
+    lines.append("【自家放銃で悪い動き】")
     houjuu_lines = _top_branch_lines(
         branches=parsed_response.ron_branches,
         base_branch=parsed_response.base,
@@ -627,9 +712,9 @@ def _build_detail_text(
         label_builder=lambda _branch_index: "",
         predicate=lambda branch: _branch_target(branch) == 0 and _branch_actor(branch) not in {None, 0},
     )
-    lines.extend(houjuu_lines or ["(none)"])
+    lines.extend(houjuu_lines or ["該当分岐なし"])
     lines.append("")
-    lines.append("[Ryukyoku Best For YOU]")
+    lines.append("【流局で良い動き】")
     ryukyoku_best_lines = _top_branch_lines(
         branches=parsed_response.ryukyoku_branches,
         base_branch=parsed_response.base,
@@ -637,9 +722,9 @@ def _build_detail_text(
         sort_desc=True,
         label_builder=_ryukyoku_label,
     )
-    lines.extend(ryukyoku_best_lines or ["(none)"])
+    lines.extend(ryukyoku_best_lines or ["該当分岐なし"])
     lines.append("")
-    lines.append("[Ryukyoku Worst For YOU]")
+    lines.append("【流局で悪い動き】")
     ryukyoku_worst_lines = _top_branch_lines(
         branches=parsed_response.ryukyoku_branches,
         base_branch=parsed_response.base,
@@ -647,13 +732,16 @@ def _build_detail_text(
         sort_desc=False,
         label_builder=_ryukyoku_label,
     )
-    lines.extend(ryukyoku_worst_lines or ["(none)"])
+    lines.extend(ryukyoku_worst_lines or ["該当分岐なし"])
     lines.append("")
-    lines.append("[Probe]")
-    lines.append(f"Page URL: {probe_result.get('page_url') or '-'}")
-    lines.append(f"Captured fetch calls: {len(probe_result.get('captured_calls') or ())}")
+    lines.append("【NAGA照会状態(JSON)】")
+    lines.append(parsed_response.state.model_dump_json(indent=2))
+    lines.append("")
+    lines.append("【取得情報】")
+    lines.append(f"ページURL: {probe_result.get('page_url') or '-'}")
+    lines.append(f"取得fetch数: {len(probe_result.get('captured_calls') or ())}")
     if raw_artifact_path is not None:
-        lines.append(f"Raw artifact: {raw_artifact_path}")
+        lines.append(f"生レスポンス: {raw_artifact_path}")
     return "\n".join(lines)
 
 
@@ -664,7 +752,8 @@ def _build_summary_lines(
     base = parsed_response.base
     self_base = base[0]
     summary_lines = [
-        f"YOU  P1 {_format_probability(self_base.rank_prob.p1)}  P2 {_format_probability(self_base.rank_prob.p2)}  ptEV {float(self_base.ptev):+.1f}",
+        _format_self_baseline_line(self_base),
+        "主な変化（自家目線）:",
     ]
     summary_lines.extend(fixed_sections.summary_lines)
     ron_lines = _top_branch_lines(
@@ -677,7 +766,7 @@ def _build_summary_lines(
         limit=1,
     )
     if ron_lines:
-        summary_lines.append(f"Best agari: {ron_lines[0]}")
+        summary_lines.append(f"最大ロン和了: {ron_lines[0]}")
     houjuu_lines = _top_branch_lines(
         branches=parsed_response.ron_branches,
         base_branch=base,
@@ -688,7 +777,7 @@ def _build_summary_lines(
         limit=1,
     )
     if houjuu_lines:
-        summary_lines.append(f"Worst houjuu: {houjuu_lines[0]}")
+        summary_lines.append(f"最大放銃悪化: {houjuu_lines[0]}")
     tsumo_lines = _top_branch_lines(
         branches=parsed_response.tsumo_branches,
         base_branch=base,
@@ -699,7 +788,7 @@ def _build_summary_lines(
         limit=1,
     )
     if tsumo_lines:
-        summary_lines.append(f"Best tsumo: {tsumo_lines[0]}")
+        summary_lines.append(f"最大ツモ和了: {tsumo_lines[0]}")
     return tuple(summary_lines)
 
 

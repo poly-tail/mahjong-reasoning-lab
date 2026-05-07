@@ -89,7 +89,8 @@ LIVE_RUNTIME_WATCHDOG_POLL_INTERVAL_S = 1.0
 NAGA_BUTTON_X = 82
 NAGA_BUTTON_Y = 64
 NAGA_WINDOW_WIDTH = 860
-NAGA_WINDOW_HEIGHT = 660
+NAGA_WINDOW_HEIGHT = 700
+NAGA_POPUP_TITLE = "NAGA 段位ポイント分析"
 NAGA_POPUP_SECTION_ALL = "all"
 NAGA_POPUP_SECTION_3900 = "3900"
 NAGA_POPUP_SECTION_MANGAN = "mangan"
@@ -99,7 +100,7 @@ NAGA_POPUP_SECTION_LABELS = (
     (NAGA_POPUP_SECTION_MANGAN, "満貫ツモ候補"),
 )
 NAGA_GRAPH_METRICS = (
-    ("ptev", "ptEV"),
+    ("ptev", "段位ptEV"),
     ("p1", "1着率"),
     ("p2", "2着率"),
     ("p4", "4着率"),
@@ -295,10 +296,10 @@ def _format_naga_popup_text(
 ) -> str:
     lines = [title]
     if query_state is not None:
-        score_text = " / ".join(str(score) for score in query_state.scores)
-        lines.append(f"Round : {query_state.round_text}")
-        lines.append(f"Scores: {score_text}")
-    lines.append(f"State : {storage_state_path}")
+        score_text = " / ".join(f"{score * 100}点" for score in query_state.scores)
+        lines.append(f"局面: {query_state.round_text}")
+        lines.append(f"持ち点: {score_text}")
+    lines.append(f"ログイン状態: {storage_state_path}")
     lines.append("")
     lines.append(body)
     return "\n".join(lines)
@@ -315,31 +316,28 @@ def _format_naga_error_body(
     normalized_error_text = str(raw_error_text or "").strip()
     if "Saved NAGA session is not authenticated anymore" in normalized_error_text:
         return (
-            "Saved NAGA login state expired.\n\n"
-            "This tool uses the saved Playwright session file below, not your current Chrome login.\n\n"
-            "Run this in a separate terminal:\n"
+            "保存済みのNAGAログイン状態が期限切れです。\n\n"
+            "この機能は、普段使っているChromeではなく、下のPlaywright用ログイン状態ファイルを使います。\n\n"
+            "別ターミナルで一度実行してください:\n"
             f"{_naga_login_command_text(storage_state_path)}\n\n"
-            "Optional: store credentials securely in the OS credential store:\n"
+            "必要ならOSの資格情報ストアへログイン情報を保存できます:\n"
             "python -m naga_ptev.cli store-login\n\n"
-            "Fallback: local .env also works if you accept plaintext storage.\n\n"
-            "Then log in in the opened Playwright browser window and press Enter in that terminal."
+            "開いたPlaywrightブラウザでログインし、そのターミナルでEnterを押してください。"
         )
     if "Storage state not found" in normalized_error_text:
         return (
-            "Saved NAGA login state was not found.\n\n"
-            "If stored credentials are available, the tool will try to create it automatically.\n\n"
-            "If that still fails, run this in a separate terminal:\n"
+            "保存済みのNAGAログイン状態が見つかりません。\n\n"
+            "資格情報が保存済みなら自動作成を試します。失敗する場合は別ターミナルで実行してください:\n"
             f"{_naga_login_command_text(storage_state_path)}\n\n"
-            "You can also pre-store credentials securely with:\n"
+            "先に資格情報だけ保存する場合:\n"
             "python -m naga_ptev.cli store-login"
         )
     if "Saved NAGA login state does not exist yet" in normalized_error_text:
         return (
-            "Saved NAGA login state does not exist yet, and automatic login did not finish creating it.\n\n"
-            "This usually means NicoNico requested an extra confirmation step.\n\n"
-            "Run this in a separate terminal:\n"
+            "NAGAログイン状態がまだ作成されておらず、自動ログインでも作成できませんでした。\n\n"
+            "ニコニコ側で追加確認が必要な場合があります。別ターミナルで実行してください:\n"
             f"{_naga_login_command_text(storage_state_path)}\n\n"
-            "Then complete the login in the opened Playwright browser once."
+            "開いたPlaywrightブラウザで一度ログインを完了してください。"
         )
     return normalized_error_text
 
@@ -351,21 +349,21 @@ def _format_naga_result_popup_text(
     section: str = NAGA_POPUP_SECTION_ALL,
 ) -> str:
     if section == NAGA_POPUP_SECTION_3900:
-        title = "NAGA PT Analyzer / 3900 Ron"
-        body_lines = [result.ron_3900_text or "(no section data)"]
+        title = f"{NAGA_POPUP_TITLE} / 3900直撃"
+        body_lines = [result.ron_3900_text or "この項目のデータはありません。"]
     elif section == NAGA_POPUP_SECTION_MANGAN:
-        title = "NAGA PT Analyzer / Mangan Tsumo"
-        body_lines = [result.mangan_tsumo_text or "(no section data)"]
+        title = f"{NAGA_POPUP_TITLE} / 満貫ツモ"
+        body_lines = [result.mangan_tsumo_text or "この項目のデータはありません。"]
     else:
-        title = "NAGA PT Analyzer"
+        title = NAGA_POPUP_TITLE
         body_lines = list(result.summary_lines)
         if result.raw_artifact_path is not None:
-            body_lines.append(f"Raw  : {result.raw_artifact_path}")
+            body_lines.append(f"生レスポンス: {result.raw_artifact_path}")
         body_lines.append("")
         body_lines.append(result.detail_text)
     if result.raw_artifact_path is not None and section != NAGA_POPUP_SECTION_ALL:
         body_lines.append("")
-        body_lines.append(f"Raw  : {result.raw_artifact_path}")
+        body_lines.append(f"生レスポンス: {result.raw_artifact_path}")
     return _format_naga_popup_text(
         storage_state_path,
         title=title,
@@ -463,7 +461,7 @@ def _draw_naga_graph(ui_state: NagaAnalyzerUiState) -> None:
     result = ui_state.last_result
     points = tuple(result.graph_points) if result is not None else ()
     if not points:
-        canvas.create_text(width // 2, height // 2, text="No graph data", fill="#9aa4b5", font=("Yu Gothic UI", 9))
+        canvas.create_text(width // 2, height // 2, text="グラフデータなし", fill="#9aa4b5", font=("Yu Gothic UI", 9))
         return
 
     metric = ui_state.active_graph_metric
@@ -507,7 +505,7 @@ def _draw_naga_graph(ui_state: NagaAnalyzerUiState) -> None:
     base_value = _naga_graph_metric_value(points[0], metric)
     base_y = _y(base_value)
     canvas.create_line(left, base_y, right, base_y, fill="#627086", dash=(3, 3))
-    canvas.create_text(left, 8, text=f"YOU {metric_label}", fill="#d7deea", anchor="w", font=("Yu Gothic UI", 9, "bold"))
+    canvas.create_text(left, 8, text=f"自家 {metric_label}", fill="#d7deea", anchor="w", font=("Yu Gothic UI", 9, "bold"))
 
     colors = {
         "BASE": "#f8fafc",
@@ -515,6 +513,12 @@ def _draw_naga_graph(ui_state: NagaAnalyzerUiState) -> None:
         "TSM+": "#34d399",
         "RON-": "#fb7185",
         "RYK": "#fbbf24",
+    }
+    legend_labels = {
+        "RON+": "ロン和了",
+        "TSM+": "ツモ和了",
+        "RON-": "放銃",
+        "RYK": "流局",
     }
     for index, point in enumerate(points):
         x = _x(index)
@@ -528,8 +532,15 @@ def _draw_naga_graph(ui_state: NagaAnalyzerUiState) -> None:
             canvas.create_text(x, bottom + 12, text=point.label, fill="#aeb8c8", font=("Consolas", 8))
     legend_x = right
     for category in ("RON+", "TSM+", "RON-", "RYK"):
-        legend_x -= 48
-        canvas.create_text(legend_x, 8, text=category, fill=colors[category], anchor="w", font=("Consolas", 8))
+        legend_x -= 64
+        canvas.create_text(
+            legend_x,
+            8,
+            text=legend_labels[category],
+            fill=colors[category],
+            anchor="w",
+            font=("Yu Gothic UI", 8),
+        )
 
 
 def _handle_naga_popup_section_click(
@@ -582,7 +593,7 @@ def _ensure_naga_popup(
         return
 
     window = tkinter.Toplevel(root)
-    window.title("NAGA PT Analyzer")
+    window.title(NAGA_POPUP_TITLE)
     window.geometry(f"{NAGA_WINDOW_WIDTH}x{NAGA_WINDOW_HEIGHT}")
     window.configure(bg="#101820")
     container = tkinter.Frame(window, bg="#101820")
@@ -646,7 +657,7 @@ def _ensure_naga_popup(
         insertbackground="#f8fafc",
         relief=tkinter.FLAT,
         bd=0,
-        font=("Consolas", 10),
+        font=("Yu Gothic UI", 10),
         padx=10,
         pady=10,
     )
@@ -676,7 +687,7 @@ def _ensure_naga_popup(
     ui_state.text_widget = text_widget
     _refresh_naga_popup_section_buttons(ui_state)
     _refresh_naga_graph_metric_buttons(ui_state)
-    _clear_naga_graph(ui_state, "Run NAGA PT")
+    _clear_naga_graph(ui_state, "NAGA段位分析を実行")
 
 
 def _refresh_naga_button_widget(ui_state: NagaAnalyzerUiState) -> None:
@@ -685,7 +696,7 @@ def _refresh_naga_button_widget(ui_state: NagaAnalyzerUiState) -> None:
         return
     if ui_state.in_flight:
         button_widget.configure(
-            text="NAGA...",
+            text="NAGA中",
             bg=table_view.HAND_AUTO_BUTTON_RUN_FILL,
             activebackground=table_view.HAND_AUTO_BUTTON_RUN_FILL,
             fg=table_view.HAND_AUTO_BUTTON_TEXT,
@@ -694,7 +705,7 @@ def _refresh_naga_button_widget(ui_state: NagaAnalyzerUiState) -> None:
         return
     if ui_state.last_error_text:
         button_widget.configure(
-            text="NAGA ERR",
+            text="NAGA失敗",
             bg=table_view.HAND_AUTO_BUTTON_ERROR_FILL,
             activebackground=table_view.HAND_AUTO_BUTTON_ERROR_FILL,
             fg=table_view.HAND_AUTO_BUTTON_TEXT,
@@ -703,7 +714,7 @@ def _refresh_naga_button_widget(ui_state: NagaAnalyzerUiState) -> None:
         return
     if ui_state.last_result is not None:
         button_widget.configure(
-            text="NAGA OK",
+            text="NAGA完了",
             bg=table_view.HAND_AUTO_BUTTON_ON_FILL,
             activebackground=table_view.HAND_AUTO_BUTTON_ON_FILL,
             fg=table_view.HAND_AUTO_BUTTON_TEXT,
@@ -711,7 +722,7 @@ def _refresh_naga_button_widget(ui_state: NagaAnalyzerUiState) -> None:
         )
         return
     button_widget.configure(
-        text="NAGA PT",
+        text="NAGA段位",
         bg="#16202c",
         activebackground="#29415d",
         fg="#d7deea",
@@ -730,32 +741,32 @@ def _handle_naga_button_click(
         else None
     )
     if query_state is None:
-        ui_state.last_error_text = "Round state unavailable"
+        ui_state.last_error_text = "局面情報なし"
         _refresh_naga_button_widget(ui_state)
-        _clear_naga_graph(ui_state, "Round state unavailable")
+        _clear_naga_graph(ui_state, "局面情報なし")
         _set_naga_popup_text(
             ui_state,
             _format_naga_popup_text(
                 ui_state.storage_state_path,
-                title="NAGA PT Analyzer",
-                body="Current round state is not available yet.",
+                title=NAGA_POPUP_TITLE,
+                body="現在局面の情報がまだ取得できていません。",
             ),
         )
         _refresh_naga_popup_section_buttons(ui_state)
         _refresh_naga_graph_metric_buttons(ui_state)
         return
     if not ui_state.storage_state_path.exists():
-        ui_state.last_error_text = "Storage state not found"
+        ui_state.last_error_text = "ログイン状態なし"
         _refresh_naga_button_widget(ui_state)
-        _clear_naga_graph(ui_state, "Storage state not found")
+        _clear_naga_graph(ui_state, "ログイン状態なし")
         _set_naga_popup_text(
             ui_state,
             _format_naga_popup_text(
                 ui_state.storage_state_path,
-                title="NAGA PT Analyzer",
+                title=NAGA_POPUP_TITLE,
                 body=(
-                    "Saved NAGA login state was not found.\n\n"
-                    "Run this once in a separate terminal:\n"
+                    "保存済みのNAGAログイン状態が見つかりません。\n\n"
+                    "別ターミナルで一度実行してください:\n"
                     f"{_naga_login_command_text(ui_state.storage_state_path)}"
                 ),
                 query_state=query_state,
@@ -773,17 +784,17 @@ def _handle_naga_button_click(
     _refresh_naga_button_widget(ui_state)
     _refresh_naga_popup_section_buttons(ui_state)
     _refresh_naga_graph_metric_buttons(ui_state)
-    _clear_naga_graph(ui_state, "Loading...")
+    _clear_naga_graph(ui_state, "NAGA照会中")
     _set_naga_popup_text(
         ui_state,
         _format_naga_popup_text(
             ui_state.storage_state_path,
-            title="NAGA PT Analyzer",
-            body="Loading analyzer response...",
+            title=NAGA_POPUP_TITLE,
+            body="NAGAの段位ポイント分析を取得しています。",
             query_state=query_state,
         ),
     )
-    table_view.begin_thread_activity_notice("NAGA PT")
+    table_view.begin_thread_activity_notice("NAGA段位")
 
     def _schedule_on_ui_thread(callback: Callable[[], None]) -> None:
         try:
@@ -799,7 +810,7 @@ def _handle_naga_button_click(
                 "naga",
                 "query_start",
                 detail=query_state.round_text,
-                blocked_hint="NAGA analyzer query is running",
+                blocked_hint="NAGA段位ポイント分析を照会中",
                 stale_after_s=10.0,
                 repeat_after_s=20.0,
             )
@@ -818,12 +829,12 @@ def _handle_naga_button_click(
                 _refresh_naga_button_widget(ui_state)
                 _refresh_naga_popup_section_buttons(ui_state)
                 _refresh_naga_graph_metric_buttons(ui_state)
-                _clear_naga_graph(ui_state, "NAGA query failed")
+                _clear_naga_graph(ui_state, "NAGA照会失敗")
                 _set_naga_popup_text(
                     ui_state,
                     _format_naga_popup_text(
                         ui_state.storage_state_path,
-                        title="NAGA PT Analyzer",
+                        title=NAGA_POPUP_TITLE,
                         body=_format_naga_error_body(ui_state.storage_state_path, error_text),
                         query_state=query_state,
                     ),
@@ -836,7 +847,7 @@ def _handle_naga_button_click(
                     "naga",
                     "query_error",
                     detail=error_text,
-                    blocked_hint="NAGA analyzer query failed",
+                    blocked_hint="NAGA段位ポイント分析の照会に失敗",
                     stale_after_s=10.0,
                     repeat_after_s=20.0,
                 )
@@ -857,12 +868,12 @@ def _handle_naga_button_click(
                     "naga",
                     "query_ready",
                     detail=query_state.round_text,
-                    blocked_hint="NAGA analyzer result is waiting for UI display",
+                    blocked_hint="NAGA段位ポイント分析の表示待ち",
                     stale_after_s=10.0,
                     repeat_after_s=20.0,
                 )
         finally:
-            table_view.finish_thread_activity_notice("NAGA PT")
+            table_view.finish_thread_activity_notice("NAGA段位")
 
     threading.Thread(
         target=_worker,
@@ -887,7 +898,7 @@ def _install_naga_button(
     )
     button_widget = tkinter.Button(
         root,
-        text="NAGA PT",
+        text="NAGA段位",
         command=lambda: _handle_naga_button_click(root, ui_state),
         relief=tkinter.FLAT,
         bd=1,

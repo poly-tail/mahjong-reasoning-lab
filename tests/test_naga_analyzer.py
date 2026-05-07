@@ -144,10 +144,12 @@ def test_build_fixed_format_sections_splits_3900_and_mangan_text() -> None:
 
     sections = naga_analyzer._build_fixed_format_sections(parsed_response, query_state)
 
-    assert any("3900 avg" in line for line in sections.summary_lines)
-    assert any("Mangan tsumo" in line for line in sections.summary_lines)
-    assert sections.ron_3900_lines[0].startswith("[3900 Ron Average]")
-    assert sections.mangan_tsumo_lines[0].startswith("[Mangan Tsumo Candidates]")
+    assert any("3900直撃平均" in line for line in sections.summary_lines)
+    assert any("満貫ツモ候補" in line for line in sections.summary_lines)
+    assert any("自家ptEV +9.0" in line for line in sections.summary_lines)
+    assert any("1着率 33.0%(+13.0pt)" in line for line in sections.summary_lines)
+    assert sections.ron_3900_lines[0].startswith("【3900直撃平均】")
+    assert sections.mangan_tsumo_lines[0].startswith("【満貫ツモ候補】")
 
 
 def test_build_graph_points_includes_baseline_and_transition_groups() -> None:
@@ -174,6 +176,6 @@ def test_build_graph_points_includes_baseline_and_transition_groups() -> None:
     points = naga_analyzer._build_graph_points(parsed_response)
 
     assert points[0].category == "BASE"
-    assert points[0].label == "Now"
+    assert points[0].label == "現状"
     assert {point.category for point in points} == {"BASE", "RON+", "TSM+", "RON-", "RYK"}
     assert any(point.delta_ptev == 16.0 for point in points)
