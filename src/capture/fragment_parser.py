@@ -98,6 +98,7 @@ SPECTATOR_INIT_TAGS = {"INITBYLOG", "WGC"}
 SNAPSHOT_ROUND_REUSE_MIN_DISCARD_MATCH_RATIO = 0.8
 # LAG_THRESHOLD_SECONDS の定義。
 LAG_THRESHOLD_SECONDS = 0.005
+CLIENT_DISCARD_REQUEST_RAW_TAG_PREFIX = "CLIENT_DISCARD_REQUEST:"
 
 
 @dataclass(frozen=True)
@@ -998,6 +999,69 @@ def _remove_tile_from_hand(hand_tiles: list[int], tile_136: int) -> None:
         hand_tiles.remove(tile_136)
     except ValueError:
         pass
+
+
+def _is_client_discard_request_discard(discard: Discard) -> bool:
+    """Return whether one discard was created from the browser/client send packet."""
+
+    return str(getattr(discard, "raw_tag", "") or "").startswith(
+        CLIENT_DISCARD_REQUEST_RAW_TAG_PREFIX
+    )
+
+
+def _latest_matching_client_discard_request(
+    round_state: RoundState,
+    seat: int,
+    tile_136: int,
+) -> Discard | None:
+    """Return the latest provisional self discard matching a later server confirmation."""
+
+    if seat != LOCAL_RELATIVE_SEAT:
+        return None
+    discards = round_state.discards.get(seat, [])
+    if not discards:
+        return None
+    latest_discard = discards[-1]
+    if not _is_client_discard_request_discard(latest_discard):
+        return None
+    if int(latest_discard.tile_136) != int(tile_136):
+        return None
+    return latest_discard
+
+
+def _update_latest_tracker_discard_from_capture_discard(
+    state: GameState,
+    seat: int,
+    discard: Discard,
+    *,
+    timestamp: Optional[float],
+) -> None:
+    """Keep the legacy UI tracker aligned when a provisional discard is confirmed."""
+
+    tile_37 = tile136_to_tile37(discard.tile_136)
+    if tile_37 is None:
+        return
+    try:
+        tracker_discards = state.tracker.discards[Player(seat)]
+    except (KeyError, ValueError):
+        return
+    if not tracker_discards:
+        return
+    tracker_discard = tracker_discards[-1]
+    if int(getattr(tracker_discard, "tile_id", -1)) != int(tile_37):
+        return
+    tracker_discard.tag = discard.raw_tag
+    tracker_discard.timestamp = timestamp
+    tracker_discard.riichi_marker_before = discard.riichi_marker_before
+    tracker_discard.thinking_time_ms = discard.thinking_time_ms
+    tracker_discard.thinking_time_source = discard.thinking_time_source
+    tracker_discard.thinking_time_before_reach_ms = discard.thinking_time_before_reach_ms
+    tracker_discard.thinking_time_before_reach_source = discard.thinking_time_before_reach_source
+    tracker_discard.self_hand_tiles_before_discard_136 = list(
+        discard.self_hand_tiles_before_discard_136
+    )
+    tracker_discard.round_discard_index = discard.round_discard_index
+    tracker_discard.event_index = discard.event_index
 
 
 def _sync_live_state(state: GameState) -> None:
@@ -2117,6 +2181,222 @@ def _classify_tsumogiri(round_state: RoundState, seat: int, tile_136: int, tag_n
     return False, False
 
 
+def _build_discard_event_attrs(
+    parsed_attrs: dict[str, Any],
+    discard: Discard,
+    *,
+    delay_confidence: str,
+    delay_ms: Optional[int] = None,
+    delay_source: Optional[str] = None,
+    extra_attrs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the event attrs shared by confirmed and provisional discard paths."""
+
+    event_attrs = {
+        **_copy_attr_dict(parsed_attrs),
+        "tsumogiri": discard.tsumogiri,
+        "is_tsumogiri_estimated": discard.is_tsumogiri_estimated,
+        "tsumogiri_flag": discard.tsumogiri_flag,
+        "riichi_marker_before": discard.riichi_marker_before,
+        "concealed_tile_count_before_discard": len(discard.hand_tiles_before_discard_136),
+        "delay_confidence": delay_confidence,
+        "lagged": LAG_FLAG_UNKNOWN,
+        "round_discard_index": discard.round_discard_index,
+    }
+    if delay_ms is not None:
+        event_attrs["action_delay_ms"] = delay_ms
+    if delay_source is not None:
+        event_attrs["delay_source"] = delay_source
+    if discard.thinking_time_ms is not None:
+        event_attrs["thinking_time_ms"] = discard.thinking_time_ms
+    if discard.thinking_time_source is not None:
+        event_attrs["thinking_time_source"] = discard.thinking_time_source
+    if discard.thinking_time_before_reach_ms is not None:
+        event_attrs["thinking_time_before_reach_ms"] = discard.thinking_time_before_reach_ms
+    if discard.thinking_time_before_reach_source is not None:
+        event_attrs["thinking_time_before_reach_source"] = (
+            discard.thinking_time_before_reach_source
+        )
+    if extra_attrs:
+        event_attrs.update(extra_attrs)
+    return event_attrs
+
+
+def _confirm_client_discard_request(
+    state: GameState,
+    round_state: RoundState,
+    timestamp: Optional[float],
+    parsed: ParsedTag,
+    *,
+    seat: int,
+    tile_136: int,
+    delay_ms: Optional[int],
+    delay_source: Optional[str],
+    delay_confidence: str,
+) -> Event:
+    """Merge a server discard tag into the provisional self discard created from a client packet."""
+
+    discard = _latest_matching_client_discard_request(round_state, seat, tile_136)
+    if discard is None:
+        raise RuntimeError("missing client discard request to confirm")
+    discard.raw_tag = parsed.raw_tag
+    event_attrs = _build_discard_event_attrs(
+        parsed.attrs,
+        discard,
+        delay_ms=delay_ms,
+        delay_source=delay_source,
+        delay_confidence=delay_confidence,
+        extra_attrs={"confirmed_client_discard_request": True},
+    )
+    _sync_live_state(state)
+    event = state.add_event(
+        timestamp,
+        "discard",
+        seat=seat,
+        tile_136=tile_136,
+        raw_tag=parsed.raw_tag,
+        attrs=event_attrs,
+        action_delay_ms=delay_ms,
+        delay_source=delay_source,
+        delay_confidence=delay_confidence,
+        thinking_time_ms=discard.thinking_time_ms,
+        thinking_time_source=discard.thinking_time_source,
+        thinking_time_before_reach_ms=discard.thinking_time_before_reach_ms,
+        thinking_time_before_reach_source=discard.thinking_time_before_reach_source,
+    )
+    discard.event_index = len(state.events) - 1
+    _update_latest_tracker_discard_from_capture_discard(
+        state,
+        seat,
+        discard,
+        timestamp=timestamp,
+    )
+    return event
+
+
+def parse_client_discard_request(
+    state: GameState,
+    timestamp: Optional[float],
+    parsed: ParsedTag,
+) -> Event:
+    """Handle client-origin discard send packets without waiting for the server echo."""
+
+    tag_name = parsed.normalized_tag
+    source_seat = DISCARD_SEAT_MAP.get(tag_name, LOCAL_RELATIVE_SEAT)
+    seat = _source_seat_to_storage_seat(state, source_seat)
+    tile_136 = _safe_int(parsed.attrs.get("p"))
+    event_attrs = {
+        **_copy_attr_dict(parsed.attrs),
+        "client_discard_request": True,
+    }
+    if tile_136 is None:
+        return state.add_event(
+            timestamp,
+            "client_discard_request",
+            seat=seat,
+            raw_tag=parsed.raw_tag,
+            attrs=event_attrs,
+            mark_live_update=False,
+        )
+
+    round_state = state.current_round
+    if (
+        round_state is None
+        or seat != LOCAL_RELATIVE_SEAT
+        or tile_136 not in round_state.current_hands_136.get(seat, [])
+        or _latest_matching_client_discard_request(round_state, seat, tile_136) is not None
+    ):
+        return state.add_event(
+            timestamp,
+            "client_discard_request",
+            seat=seat,
+            tile_136=tile_136,
+            raw_tag=parsed.raw_tag,
+            attrs={**event_attrs, "optimistic_discard_applied": False},
+            mark_live_update=False,
+        )
+
+    tsumogiri, is_tsumogiri_estimated = _classify_tsumogiri(
+        round_state,
+        seat,
+        tile_136,
+        parsed.tag_name,
+    )
+    (
+        thinking_time_ms,
+        thinking_time_source,
+        thinking_time_before_reach_ms,
+        thinking_time_before_reach_source,
+    ) = _consume_discard_thinking_start(round_state, seat, timestamp)
+    riichi_marker_before = round_state.pending_riichi_markers[seat]
+    round_state.pending_riichi_markers[seat] = False
+    pre_discard_hand_tiles_136 = list(round_state.current_hands_136.get(seat, []))
+    pre_self_hand_tiles_136 = list(round_state.current_hands_136.get(LOCAL_RELATIVE_SEAT, []))
+
+    discard = Discard(
+        tile_136=tile_136,
+        hand_tiles_before_discard_136=pre_discard_hand_tiles_136,
+        self_hand_tiles_before_discard_136=pre_self_hand_tiles_136,
+        tsumogiri=tsumogiri,
+        is_tsumogiri_estimated=is_tsumogiri_estimated,
+        riichi_marker_before=riichi_marker_before,
+        raw_tag=f"{CLIENT_DISCARD_REQUEST_RAW_TAG_PREFIX}{parsed.raw_tag}",
+        thinking_time_ms=thinking_time_ms,
+        thinking_time_source=thinking_time_source,
+        thinking_time_before_reach_ms=thinking_time_before_reach_ms,
+        thinking_time_before_reach_source=thinking_time_before_reach_source,
+    )
+    round_state.discards[seat].append(discard)
+    discard.round_discard_index = sum(len(discards) for discards in round_state.discards.values()) - 1
+    _remove_tile_from_hand(round_state.current_hands_136[seat], tile_136)
+    round_state.last_draw_tiles_136[seat] = None
+
+    tile_37 = tile136_to_tile37(tile_136)
+    tracker_discard = None
+    if tile_37 is not None:
+        tracker_discard = state.tracker.add_discard(
+            Player(seat),
+            tile_37,
+            tsumogiri=tsumogiri,
+            tag=discard.raw_tag,
+            timestamp=timestamp,
+            riichi_marker_before=riichi_marker_before,
+        )
+        tracker_discard.thinking_time_ms = thinking_time_ms
+        tracker_discard.thinking_time_source = thinking_time_source
+        tracker_discard.thinking_time_before_reach_ms = thinking_time_before_reach_ms
+        tracker_discard.thinking_time_before_reach_source = thinking_time_before_reach_source
+        tracker_discard.self_hand_tiles_before_discard_136 = list(pre_self_hand_tiles_136)
+        tracker_discard.round_discard_index = discard.round_discard_index
+    _begin_pending_response_discard(round_state, seat, timestamp)
+    _sync_live_state(state)
+    event = state.add_event(
+        timestamp,
+        "discard",
+        seat=seat,
+        tile_136=tile_136,
+        raw_tag=parsed.raw_tag,
+        attrs=_build_discard_event_attrs(
+            parsed.attrs,
+            discard,
+            delay_confidence="unknown",
+            extra_attrs={
+                **event_attrs,
+                "optimistic_discard_applied": True,
+                "discard_event_source": "client_request",
+            },
+        ),
+        thinking_time_ms=thinking_time_ms,
+        thinking_time_source=thinking_time_source,
+        thinking_time_before_reach_ms=thinking_time_before_reach_ms,
+        thinking_time_before_reach_source=thinking_time_before_reach_source,
+    )
+    discard.event_index = len(state.events) - 1
+    if tracker_discard is not None:
+        tracker_discard.event_index = discard.event_index
+    return event
+
+
 def parse_discard(state: GameState, timestamp: Optional[float], parsed: ParsedTag) -> Event:
     """Parse D/E/F/G discard tags into the active seat view."""
 
@@ -2130,6 +2410,18 @@ def parse_discard(state: GameState, timestamp: Optional[float], parsed: ParsedTa
     seat = _source_seat_to_storage_seat(state, source_seat)
     tile_136 = int(match.group(3))
     round_state = state.ensure_round()
+    if _latest_matching_client_discard_request(round_state, seat, tile_136) is not None:
+        return _confirm_client_discard_request(
+            state,
+            round_state,
+            timestamp,
+            parsed,
+            seat=seat,
+            tile_136=tile_136,
+            delay_ms=delay_ms,
+            delay_source=delay_source,
+            delay_confidence=delay_confidence,
+        )
     _resolve_pending_response_discard_on_next_discard(state, round_state, timestamp)
     tsumogiri, is_tsumogiri_estimated = _classify_tsumogiri(round_state, seat, tile_136, parsed.tag_name)
     (
@@ -2188,29 +2480,13 @@ def parse_discard(state: GameState, timestamp: Optional[float], parsed: ParsedTa
     _begin_pending_response_discard(round_state, seat, timestamp)
 
     _sync_live_state(state)
-    event_attrs = {
-        **_copy_attr_dict(parsed.attrs),
-        "tsumogiri": tsumogiri,
-        "is_tsumogiri_estimated": is_tsumogiri_estimated,
-        "tsumogiri_flag": discard.tsumogiri_flag,
-        "riichi_marker_before": riichi_marker_before,
-        "concealed_tile_count_before_discard": len(pre_discard_hand_tiles_136),
-        "delay_confidence": delay_confidence,
-        "lagged": LAG_FLAG_UNKNOWN,
-        "round_discard_index": discard.round_discard_index,
-    }
-    if delay_ms is not None:
-        event_attrs["action_delay_ms"] = delay_ms
-    if delay_source is not None:
-        event_attrs["delay_source"] = delay_source
-    if thinking_time_ms is not None:
-        event_attrs["thinking_time_ms"] = thinking_time_ms
-    if thinking_time_source is not None:
-        event_attrs["thinking_time_source"] = thinking_time_source
-    if thinking_time_before_reach_ms is not None:
-        event_attrs["thinking_time_before_reach_ms"] = thinking_time_before_reach_ms
-    if thinking_time_before_reach_source is not None:
-        event_attrs["thinking_time_before_reach_source"] = thinking_time_before_reach_source
+    event_attrs = _build_discard_event_attrs(
+        parsed.attrs,
+        discard,
+        delay_ms=delay_ms,
+        delay_source=delay_source,
+        delay_confidence=delay_confidence,
+    )
     event = state.add_event(
         timestamp,
         "discard",
@@ -2576,14 +2852,7 @@ def parse_fragment(state: CaptureState, timestamp: Optional[float], fragment: st
 
     # Client-originated command packets show up in decrypted CSV captures as plain JSON objects.
     if tag_name in {"D", "E", "F", "G"} and "p" in parsed.attrs:
-        return state.add_event(
-            timestamp,
-            "client_discard_request",
-            seat=DISCARD_SEAT_MAP[tag_name],
-            tile_136=_safe_int(parsed.attrs.get("p")),
-            raw_tag=parsed.raw_tag,
-            attrs=_copy_attr_dict(parsed.attrs),
-        )
+        return parse_client_discard_request(state, timestamp, parsed)
 
     return _record_unknown(state, timestamp, parsed.raw_tag, "Unsupported tag", parsed.attrs)
 

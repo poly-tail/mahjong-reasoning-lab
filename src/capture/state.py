@@ -772,6 +772,7 @@ class GameState:
         thinking_time_source: Optional[str] = None,
         thinking_time_before_reach_ms: Optional[float] = None,
         thinking_time_before_reach_source: Optional[str] = None,
+        mark_live_update: bool = True,
     ) -> Event:
         """Append a normalised event to the global and round-local histories."""
 
@@ -800,7 +801,8 @@ class GameState:
         self.raw_events.append(event)
         if self.current_round is not None:
             self.current_round.events.append(event)
-        self.mark_live_update()
+        if mark_live_update:
+            self.mark_live_update()
         self.prune_live_history()
         return event
 
