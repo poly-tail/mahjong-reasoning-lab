@@ -1,4 +1,4 @@
-# 手牌分析仕様
+﻿# 手牌分析仕様
 
 `src/logic/hand_analysis.py` の現在仕様をまとめる。主用途は `discard_fact` の分析列計算であり、打牌時 snapshot からシャンテン数、待ち牌、両面固定判定を求める。
 
@@ -29,14 +29,14 @@
 - `shanten_after_discard` 系は legacy 名だが、値は打牌前 concealed hand snapshot 基準
 - `wait_tiles_after_discard_mspz` は実際の打牌後手牌を復元してから待ちを計算する
 - snapshot と打牌牌が不整合な場合は待ち列を空欄 fallback する
-- 列ごとの説明は `docs/reference/shanten_columns.md` を参照する
+- 列ごとの説明は [shanten_columns.md](../../reference/shanten_columns.md) を参照する
 
 ## 6. 文字列表現
 - DB の待ちは `mspz` grouped text へ変換して保存する
 - 例: `36m`, `258p`, `14z`
 
 ## 7. 関連文書
-- `docs/reference/csv_db_design.md`: `discard_fact` 保存列の定義
-- `docs/analysis/db_analysis_rules.md`: DB 分析時の共通除外条件
-- `docs/mahjong/hand_analysis_terms.md`: 用語集
-- `docs/reference/shanten_columns.md`: シャンテン関連列の意味
+- [csv_db_design.md](../../reference/csv_db_design.md): `discard_fact` 保存列の定義
+- [db_analysis_rules.md](../../analysis/db_analysis_rules.md): DB 分析時の共通除外条件
+- [hand_analysis_terms.md](../reference/hand_analysis_terms.md): 用語集
+- [shanten_columns.md](../../reference/shanten_columns.md): シャンテン関連列の意味

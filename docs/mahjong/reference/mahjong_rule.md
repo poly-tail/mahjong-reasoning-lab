@@ -1,4 +1,4 @@
-# AI向け：日本リーチ麻雀（4人）ルール＋進行（開始可能版）＋質問テンプレ
+﻿# AI向け：日本リーチ麻雀（4人）ルール＋進行（開始可能版）＋質問テンプレ
 
 この文書は、本プロジェクト内で麻雀ルール全体を参照するときの基準文書です。
 個別ロジックは別文書へ分けつつ、ここではゲーム進行、鳴き、和了、点数、質問テンプレートまでをまとめて扱います。
@@ -7,8 +7,8 @@
 - 追加指定：切り上げ満貫＝採用
 
 ## 関連文書
-- 鳴き可否とラグ判定は `docs/mahjong/mahjong_call_rules.md`
-- 危険度ロジックは `docs/mahjong/mahjong_danger.md`
+- 鳴き可否とラグ判定は [mahjong_call_rules.md](mahjong_call_rules.md)
+- 危険度ロジックは [mahjong_danger.md](../logic/mahjong_danger.md)
 
 ## A. 用語（席風・相対位置）
 - 席風：`east / south / west / north`

@@ -1,4 +1,4 @@
-# Tenhou Hojo Helper Requirements v1.9
+﻿# Tenhou Hojo Helper Requirements v1.9
 
 ## 1. Positioning
 - This version inherits `requirements_v1.8.md` and adds the 2026-04-10 follow-up for pystyle-driven self alerts, opponent-panel alert sounds, and dual `Remain` display.
@@ -24,7 +24,7 @@
 
 ## 4. Operations / Documentation
 - `REQ-OPS-11`: `requirements/current.md`, `specs/current.md`, and `screen_specs/current.md` must point to `v1.9`.
-- `REQ-OPS-12`: `docs/changelog.md`, `docs/architecture/project_guide.md`, `docs/architecture/source_overview.md`, `docs/integrations/pystyle_simulator_protocol.md`, and `docs/mahjong/mahjong_danger.md` must reflect the v1.9 alert/remain changes.
+- `REQ-OPS-12`: `docs/changelog.md`, `docs/architecture/project_guide.md`, `docs/architecture/source_overview.md`, `docs/integrations/pystyle_simulator_protocol.md`, and `docs/mahjong/logic/mahjong_danger.md` must reflect the v1.9 alert/remain changes.
 
 ## 5. Maintenance Requirements
 - `NFR-MAINT-12`: Raw EV display logic and alert-only adjusted EV logic must remain separate so the UI cannot drift between shown value and alert threshold semantics.

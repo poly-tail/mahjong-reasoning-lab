@@ -1,4 +1,4 @@
-# DB分析の基本ルール
+﻿# DB分析の基本ルール
 
 この文書は、`csv_db/` の CSV DB を使って統計・傾向分析をするときの共通前提を定義する。
 特に、思考時間系とラグ系の分析で毎回ぶれないように、最初に掛ける除外条件を固定する。
@@ -81,6 +81,6 @@ AND player_name NOT IN ('パシフィック', 's6u')
 ## 関連
 
 - DB schema: `docs/reference/csv_db_design.md`
-- 牌姿・危険度ロジック: `docs/mahjong/mahjong_danger.md`
+- 牌姿・危険度ロジック: `docs/mahjong/logic/mahjong_danger.md`
 - 汎用グラフCLI: `docs/analysis/db_graph_tool.md`
 - ラグ分析前提: `docs/analysis/lag_analysis.md`

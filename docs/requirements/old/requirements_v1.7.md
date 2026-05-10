@@ -1,4 +1,4 @@
-# Tenhou Hojo Helper 要件定義書 v1.7
+﻿# Tenhou Hojo Helper 要件定義書 v1.7
 
 ## 1. 文書の位置づけ
 - 本版は `requirements_v1.6.md` を継承し、2026-04-07 時点の DB 待ち牌保存と `Layout Tuning` window の視認性改善を反映する。
@@ -32,7 +32,7 @@
 ## 5. 実装運用要件
 - `REQ-OPS-05`: 軽微な UI 配置調整は、原則として GUI tuning で試せる状態を保つこと。
 - `REQ-OPS-06`: `requirements/current.md`, `specs/current.md`, `screen_specs/current.md` は `v1.7` を指すこと。
-- `REQ-OPS-07`: 手牌分析の正本ドキュメントは `docs/mahjong/hand_analysis.md` とし、DB 側の待ち牌保存と同時に追従更新すること。
+- `REQ-OPS-07`: 手牌分析の正本ドキュメントは `docs/mahjong/logic/hand_analysis.md` とし、DB 側の待ち牌保存と同時に追従更新すること。
 - `REQ-OPS-08`: 本件に関係するプロジェクト文書、ソース概要、フォルダ構成、changelog を同一更新単位で追従させること。
 
 ## 6. 非機能要件

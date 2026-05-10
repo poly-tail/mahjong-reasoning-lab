@@ -15,7 +15,7 @@
 - `panel.detail`: 右側の共有詳細パネル
 - `panel.detail.visible3`: 3見え一覧
 - `panel.detail.visible4`: 4見え一覧
-- `panel.detail.content`: 詳細本文。`DETAIL / FORM / SAFE / RISK / MORE` の共有表示先
+- `panel.detail.content`: 詳細本文。`DETAIL / STATUS / プレイヤー補正 / 条件表示 / lag marker details` の共有表示先
 - `panel.round_center`: ドラ表示と局情報の中央パネル
 - `panel.bottom.reserve`: 画面下辺の予約帯。現在は描画契約だけ持つ
 - `hand.self`: 自家手牌 strip
@@ -34,13 +34,14 @@
 - `panel.player.*.alert`: 各プレイヤーパネルの `ALERT` セクション
 - `panel.player.*.buttons`: 各プレイヤーパネルの `BUTTONS` セクション
 - `button.player.detail`
-- `button.player.form`
-- `button.player.safe`
-- `button.player.risk`
-- `button.player.more`
+- `button.player.status`
+- `button.player.adjustment`
+- `button.player.score_condition`
 - `detail.visible3.grid`
 - `detail.visible4.grid`
 - `detail.player_memo.editor`
+- `detail.player_status.summary`
+- `detail.player_status.nodocchi_link`
 - `detail.placeholder.message`
 - `hand.ai_top3.button`
 - `hand.ai_top3.panel`

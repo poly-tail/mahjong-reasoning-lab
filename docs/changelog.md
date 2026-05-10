@@ -1,9 +1,14 @@
-# 変更履歴
+﻿# 変更履歴
+
+## 2026-05-10 STATUS 成績表示・麻雀文書再構成
+- CH-167: `src/app/nodocchi_stats.py`, `src/ui/table_renderer.py`, `tests/test_nodocchi_stats.py` を追加・更新し、相手パネルの `STATUS` から Nodocchi 鳳凰卓4人打ち成績を取得して右詳細領域に表示できるようにした。取得は background thread と canvas queue で UI thread に戻し、同一プレイヤーは cache して多重リクエストを避ける。失敗時・データなし時も `Nodocchiで開く` 外部リンクを残す。
+- CH-168: `docs/mahjong-theory/` を `docs/mahjong/theory/` へ統合し、旧 `docs/mahjong/*.md` を `logic/`, `reference/`, `research/` に再分類した。`docs/mahjong/README.md` と各サブフォルダ README を追加し、学習セオリー、実装ロジック、基礎参照、研究メモの棲み分けを明文化した。
+- CH-169: `docs/requirements/current.md`, `docs/requirements/requirements_v2.1.md`, `docs/specs/current.md`, `docs/specs/api_spec_v2.1.md`, `docs/screen_specs/current.md`, `docs/screen_specs/screen_spec_v2.1.md`, `docs/screen_specs/alerts_and_panels.md`, `docs/architecture/*` を更新し、STATUS 成績表示と麻雀文書再構成を現行 docs へ同期した。
 
 ## 2026-04-23 Push 表示条件同期修正
-- CH-164: `src/ui/table_renderer.py`, `tests/test_player_panel_alerts.py`, `tests/test_discard_borders.py`, `docs/screen_specs/alerts_and_panels.md`, `docs/mahjong/mahjong_danger.md` を更新し、相手パネルの `Push` と河の `P` が同じ latest-discard 条件で点灯するよう揃えた。従来の卓全体現打牌ゲートで panel `Push` が落ちていたケースを解消しつつ、panel 側だけ `3巡` 保持と `Push解除` を継続する。
+- CH-164: `src/ui/table_renderer.py`, `tests/test_player_panel_alerts.py`, `tests/test_discard_borders.py`, `docs/screen_specs/alerts_and_panels.md`, `docs/mahjong/logic/mahjong_danger.md` を更新し、相手パネルの `Push` と河の `P` が同じ latest-discard 条件で点灯するよう揃えた。従来の卓全体現打牌ゲートで panel `Push` が落ちていたケースを解消しつつ、panel 側だけ `3巡` 保持と `Push解除` を継続する。
 - CH-165: `src/logic/danger_suji.py`, `src/ui/table_renderer.py`, `src/capture/storage.py`, `tests/test_player_panel_alerts.py`, `tests/test_discard_borders.py` を更新し、`Push` の実効閾値を payload 化した。通常は `9%`、対象にリーチ者が含まれる成立だけ `6%` で `Push` / 河の `P` / agari snapshot alert を出す。
-- CH-166: `src/visible_tiles.py`, `tests/test_discard_borders.py`, `docs/mahjong/mahjong_danger.md`, `docs/screen_specs/river_display.md` を更新し、茶色 tint を「その牌を通る全形が塞がる」判定から、「3スーツ x 123..789 の 21 通りのうち 4見えで物理否定された 3 連形へ属する手出し牌」判定へ変更した。牌自身が `4見え` の場合は引き続き紫が優先する。
+- CH-166: `src/visible_tiles.py`, `tests/test_discard_borders.py`, `docs/mahjong/logic/mahjong_danger.md`, `docs/screen_specs/river_display.md` を更新し、茶色 tint を「その牌を通る全形が塞がる」判定から、「3スーツ x 123..789 の 21 通りのうち 4見えで物理否定された 3 連形へ属する手出し牌」判定へ変更した。牌自身が `4見え` の場合は引き続き紫が優先する。
 
 ## 2026-04-21 自家字牌表示・文書運用更新
 - CH-161: `src/ui/table_renderer.py` と `tests/test_player_panel_alerts.py` を更新し、自家の `2見え以下字牌` 一覧を自河中央ではなく自副露帯寄りへ少し下げて表示するようにした。表示ラベルも `字牌2見え以下` に統一した。
@@ -120,7 +125,7 @@
 - CH-094: `Layout Tuning` window の `side_discard_extra_height` slider ラベルを `Side discard height` へ変更し、左右河高さの調整項目として分かりやすくした。現行仕様書 `screen_spec_v1.7.md` と `api_spec_v1.7.md` の表記も合わせて更新した。
 
 ## 2026-04-07 文書更新
-- CH-093: `requirements_v1.7.md`, `api_spec_v1.7.md`, `screen_spec_v1.7.md` を追加し、`wait_tiles_after_discard_mspz` と `Layout Tuning` window の 2 列化を current 正本へ反映した。`project_guide.md`, `source_overview.md`, `folder_structure.md`, `context.md`, `src_call_graph.md`, `docs/mahjong/hand_analysis.md` も合わせて更新した。
+- CH-093: `requirements_v1.7.md`, `api_spec_v1.7.md`, `screen_spec_v1.7.md` を追加し、`wait_tiles_after_discard_mspz` と `Layout Tuning` window の 2 列化を current 正本へ反映した。`project_guide.md`, `source_overview.md`, `folder_structure.md`, `context.md`, `src_call_graph.md`, `docs/mahjong/logic/hand_analysis.md` も合わせて更新した。
 
 ## 2026-04-07 テンプレートワークスペース
 - CH-092: `docs/templates/` の管理ドキュメント雛形を拡充し、他案件へそのままコピーできる `template_workspace/` を新設した。workspace には `docs/`, `src/`, `tests/`, `assets/`, `cli/`, `logs/`, `analysis_output/` の雛形と Mermaid graph 用の最小セットを含めた。
@@ -132,7 +137,7 @@
 - CH-089: `LAYOUT` tuning に、捨て牌牌画像スケール、上下/左右の捨て牌スペース、副露牌画像スケール、上下副露帯高さ、左右副露最小幅、上副露最小幅、プレイヤーパネルの summary/alert 比率、summary 本文上端、tile rank サイズと行間を追加し、preview のまま卓上各領域をより細かく調整できるよう更新した。
 
 ## 2026-04-07 比較痕跡読み追加
-- CH-088: 比較痕跡ベースで他家読みを整理する `docs/mahjong/comparison_trace_reading_engine.md` を追加し、`ShapeValue / RoleValue / BlockValue / SafetyValue / LocalComboValue` の 5 軸、feature 分類表、4 カテゴリ分類、既存 `danger` / `tenpai_readiness_score` / `hand_value_score` / alert 群への接続先、`danger` へ direct 加点しない原則と限定 bridge 条件を文書化した。あわせて `folder_structure.md`、`project_guide.md`、`source_overview.md`、`opponent_tenpai_readiness.md` の参照導線を同期した。
+- CH-088: 比較痕跡ベースで他家読みを整理する `docs/mahjong/logic/comparison_trace_reading_engine.md` を追加し、`ShapeValue / RoleValue / BlockValue / SafetyValue / LocalComboValue` の 5 軸、feature 分類表、4 カテゴリ分類、既存 `danger` / `tenpai_readiness_score` / `hand_value_score` / alert 群への接続先、`danger` へ direct 加点しない原則と限定 bridge 条件を文書化した。あわせて `folder_structure.md`、`project_guide.md`、`source_overview.md`、`opponent_tenpai_readiness.md` の参照導線を同期した。
 
 ## 2026-04-04 危険度切り順補足
 - CH-087: 卓レイアウトの主要寸法と余白を GUI から微調整できる `LAYOUT` ボタンと tuning window を追加し、slider 変更を即時 preview、`Save` で `csv_db/ui_layout_tuning.json` へ保存して次回起動時も再利用できるよう更新した。
@@ -184,7 +189,7 @@
 - CH-048: 自家手牌の筋本数危険度表示を `%` テキストから 3 本の色バーへ変更し、上家=青、対面=黄色、下家=緑で長さ表示に統一した。
 - CH-039: live `tshark` capture のメモリ肥大化対策として packet を逐次処理し、`player_live` / `spectator_live` の `GameState` 履歴を `rounds=4`, `raw_events=4096`, `unknown_tags=256`, `diagnostics=256`, `chats=128` に制限。
 - CH-040: live / replay capture の tshark payload 取得を `websocket.payload.text` 優先へ変更し、`text` フィールド由来の `Timestamps,` 前置きや長文 truncation で `UN` / `REINIT` が壊れる問題を修正。任意プレイヤーの capture でも player metadata と手牌 snapshot が復元されるようにした。
-- CH-041: 筋ベースの危険度ロジックを `src/logic/danger_suji.py` へ分離し、跨ぎ筋補正つきの `%` 指標を自家手牌の各牌の下へ表示。ロジック文書 `docs/mahjong/mahjong_danger.md` を追加。
+- CH-041: 筋ベースの危険度ロジックを `src/logic/danger_suji.py` へ分離し、跨ぎ筋補正つきの `%` 指標を自家手牌の各牌の下へ表示。ロジック文書 `docs/mahjong/logic/mahjong_danger.md` を追加。
 - CH-042: DB の現行仕様書を CSV DB 前提へ再同期し、`パケット解析.md` を現在の `docs/integrations/packet_capture.md` 系統へつながる capture 仕様文書として整理した。関連する current / v1.4 文書の参照先も更新。
 - CH-043: 思考時間の牌色補正を全体緑寄せから、牌画像の下半分だけにかかる黄→赤グラデーションへ変更した。
 - CH-044: 思考時間の色遷移を `無加工 → 黄色 → 赤` へ調整し、上家下家でも回転前牌画像基準で同じルールになるよう明文化した。
@@ -261,7 +266,7 @@
 | 2026-04-01 | CH-037 | 実装/文書 | 打牌から次の `draw` または一致する open meld `call` までの packet arrival 差分が 5ms 以上なら discard をラグ牌として記録し、4見え青丸の左隣へ黄色丸を回転追従で描画 | codex | `fragment_parser.py` / `state.py` / `sutehai.py` / `table_renderer.py` と仕様・要件追補を更新 |
 | 2026-04-01 | CH-038 | 実装/文書 | `REINIT` / `INITBYLOG` snapshot の `kawa` が既存 discard 列の prefix を含むとき、手出し/ツモ切りとラグ等の discard metadata を引き継いで差分だけ追加するよう更新 | codex | `fragment_parser.py` と仕様・要件 addendum を更新 |
 # 2026-04-03 分析/ロジック文書更新
-- CH-082: added `docs/analysis/db_analysis_rules.md` for DB-side baseline filters and `docs/mahjong/opponent_tenpai_readiness.md` for opponent tenpai-readiness logic notes.
+- CH-082: added `docs/analysis/db_analysis_rules.md` for DB-side baseline filters and `docs/mahjong/logic/opponent_tenpai_readiness.md` for opponent tenpai-readiness logic notes.
 
 ## 2026-04-03 v1.5 文書更新
 - CH-083: `requirements_v1.5.md`, `api_spec_v1.5.md`, `screen_spec_v1.5.md` を追加し、`current.md` 群を v1.5 へ切り替えた。管理文書として `project_guide.md`, `source_overview.md`, `folder_structure.md`, `src_call_graph.md` も同期更新した。

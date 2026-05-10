@@ -1,4 +1,4 @@
-# プロジェクト文脈
+﻿# プロジェクト文脈
 
 ## 概要
 - プロジェクト名: Tenhou Hojo Helper
@@ -13,7 +13,7 @@
 - プロジェクト概要: `docs/architecture/project_guide.md`
 - ソースコード概要: `docs/architecture/source_overview.md`
 - フォルダ構成: `docs/architecture/folder_structure.md`
-- 手牌分析仕様: `docs/mahjong/hand_analysis.md`
+- 手牌分析仕様: `docs/mahjong/logic/hand_analysis.md`
 - 変更履歴: `docs/changelog.md`
 
 ## 作業原則

@@ -11,7 +11,7 @@
 
 ## 1. temp あり / no-temp の入口差
 
-![temp/no-temp entry split](../graphs/generated/suji_temp_no_temp_entry.svg)
+![temp/no-temp entry split](../../graphs/generated/suji_temp_no_temp_entry.svg)
 
 要点:
 
@@ -21,7 +21,7 @@
 
 ## 2. 全体パイプライン
 
-![suji pipeline](../graphs/generated/suji_temp_no_temp_pipeline.svg)
+![suji pipeline](../../graphs/generated/suji_temp_no_temp_pipeline.svg)
 
 要点:
 
@@ -33,7 +33,7 @@
 
 ## 3. Phase 3 の補正
 
-![phase3 modifiers](../graphs/generated/suji_temp_no_temp_phase3.svg)
+![phase3 modifiers](../../graphs/generated/suji_temp_no_temp_phase3.svg)
 
 要点:
 
@@ -44,7 +44,7 @@
 
 ## 4. remain(temp) / remain(no-temp) の意味
 
-![remain interpretation](../graphs/generated/suji_temp_no_temp_remain.svg)
+![remain interpretation](../../graphs/generated/suji_temp_no_temp_remain.svg)
 
 要点:
 

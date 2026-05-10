@@ -1,6 +1,6 @@
 # API / 管理仕様 v2.1
 
-更新日: `2026-04-21`
+更新日: `2026-05-10`
 
 ## 1. ランタイムスナップショット
 
@@ -65,14 +65,56 @@ UI popup は `expected_value_text + win_probability` を表示する。
 - `inferred visible`: キャンバスごとの常駐ワーカー
 - `awaseuchi confirm`: 暫定ヒット時だけキュー投入
 - `pystyle fetch`: リクエストごとのバックグラウンド取得
+- `Nodocchi status fetch`: `STATUS` 押下ごとのバックグラウンド取得。UI 反映は canvas queue 経由
 
-## 7. 再生成・保存
+## 7. Nodocchi プレイヤー成績
+
+### Adapter
+
+- owner: `src/app/nodocchi_stats.py`
+- public search URL: `https://nodocchi.moe/tenhoulog/#!&name=<encoded player name>`
+- JSON endpoint: `https://nodocchi.moe/api/phoenix_status.php?all=1&username=<encoded player name>`
+- cache TTL: `NODOCCHI_STATS_CACHE_TTL_SECONDS`
+
+### `NodocchiPlayerStats`
+
+主な fields:
+
+- `playerName`
+- `mode`: `4man`
+- `table`: `phoenix`
+- `sourceUrl`
+- `fetchedAt`
+- `categories`
+- `summary`
+
+### 表示用分類
+
+- `概要`
+- `順位`
+- `アガリ`
+- `リーチ`
+- `放銃`
+- `副露 / 仕掛け`
+- `役`
+- `ドラ`
+- `その他`
+
+### エラー契約
+
+- プレイヤー名が空なら UI に軽いエラーを出す
+- Nodocchi に `s4` が無い、または `totalrecord <= 0` なら `not_found`
+- HTTP、JSON、形式不一致は `error`
+- いずれの場合も `sourceUrl` を残し、外部ページを開けるようにする
+
+## 8. 再生成・保存
 
 - Mermaid 図は `scripts/render_docs_graphs.py` で再生成する
 - ワークスペース ZIP は `scripts/package_workspace.py` で作成する
 
-## 8. 同期先
+## 9. 同期先
 
 - 要件: [../requirements/requirements_v2.1.md](../requirements/requirements_v2.1.md)
 - 画面仕様: [../screen_specs/screen_spec_v2.1.md](../screen_specs/screen_spec_v2.1.md)
 - データ構造: [../architecture/data_structures.md](../architecture/data_structures.md)
+- Nodocchi 連携: [../integrations/nodocchi_status.md](../integrations/nodocchi_status.md)

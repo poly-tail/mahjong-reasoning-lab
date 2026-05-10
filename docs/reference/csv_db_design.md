@@ -1,4 +1,4 @@
-# CSV DB 管理ドキュメント
+﻿# CSV DB 管理ドキュメント
 
 ## 1. 位置づけ
 
@@ -112,7 +112,7 @@ live 自動判定で新規付与するのは `0` / `1` / `2` / `6`。
 - ここでいう全員には自分も含む
 - 下家がチー可能、または打牌者以外の誰かがポン可能なら `lagged = 3`
 - 誰もチーもポンもできないなら `lagged = 5`
-- 判定ルールの詳細は `docs/mahjong/mahjong_call_rules.md` を参照する
+- 判定ルールの詳細は `docs/mahjong/reference/mahjong_call_rules.md` を参照する
 
 ## 7. 主キー設計
 

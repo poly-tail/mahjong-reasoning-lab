@@ -12,6 +12,7 @@ import time
 import tkinter
 import tkinter.font as tkfont
 from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
+import webbrowser
 
 try:
     import winsound
@@ -20,6 +21,14 @@ except ImportError:  # pragma: no cover - non-Windows fallback
 
 from PIL import Image, ImageTk
 
+from app.nodocchi_stats import (
+    NODOCCHI_STATS_CACHE_TTL_SECONDS,
+    NodocchiPlayerStats,
+    NodocchiStatsError,
+    NodocchiStatsNotFound,
+    build_nodocchi_search_url,
+    fetch_nodocchi_player_stats,
+)
 from app.pystyle_simulator_protocol import PystyleDisplayContext
 from app.tenhou_ui_bridge_protocol import TenhouUiBridgeStatus
 from capture.storage import load_player_profile, save_player_profile_user_memo
@@ -557,6 +566,7 @@ def _reset_transient_canvas_draw_state(canvas: tkinter.Canvas) -> None:
     canvas.detail_images = []
     canvas.center_panel_images = []
     canvas.player_panel_button_specs = []
+    canvas.nodocchi_status_link_specs = []
     canvas.lag_marker_reference_button_specs = []
     canvas.inferred_visible_candidate_button_specs = []
     canvas.inferred_visible_tile_count_click_specs = []
@@ -649,6 +659,9 @@ DETAIL_EDITOR_INNER_MARGIN = 12
 DETAIL_EDITOR_TITLE_HEIGHT = 36
 DETAIL_EDITOR_ACTION_HEIGHT = 28
 PLAYER_PANEL_BUTTON_LABELS = ("DETAIL", "STATUS", "プレイヤー補正")
+PLAYER_STATUS_VIEW_KIND = "player_status"
+NODOCCHI_STATUS_LINK_LABEL = "Nodocchiで開く"
+NODOCCHI_STATUS_RESULT_POLL_MS = 100
 RESPONSIVE_TRIGGER_SCREEN_WIDTH_RATIO = 0.5
 RESPONSIVE_FALLBACK_TRIGGER_WIDTH = 960.0
 RESPONSIVE_MIN_SCALE = 0.65
@@ -702,6 +715,12 @@ class PlayerPanelButtonSpec:
     seat: int
     label: str
     rect: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class NodocchiStatusLinkSpec:
+    rect: tuple[float, float, float, float]
+    url: str
 
 
 @dataclass(frozen=True)
@@ -851,6 +870,7 @@ class LiveAsyncRenderState:
 class SidePanelRenderCache:
     signature: object
     player_panel_button_specs: tuple[PlayerPanelButtonSpec, ...] = ()
+    nodocchi_status_link_specs: tuple[NodocchiStatusLinkSpec, ...] = ()
     lag_marker_reference_button_specs: tuple[LagMarkerReferenceButtonSpec, ...] = ()
     detail_images: tuple[ImageTk.PhotoImage, ...] = ()
 
@@ -3117,6 +3137,11 @@ def create_canvas(
     board_canvas.inferred_visible_tile_image_cache = {}
     board_canvas.detail_panel_state = detail_panel_state
     board_canvas.player_panel_button_specs = []
+    board_canvas.nodocchi_status_link_specs = []
+    board_canvas.nodocchi_status_results_by_name = {}
+    board_canvas.nodocchi_status_in_flight_names = set()
+    board_canvas.nodocchi_status_result_queue = queue.Queue()
+    board_canvas.nodocchi_status_poll_job = None
     board_canvas.lag_marker_reference_button_specs = []
     board_canvas.inferred_visible_candidate_button_specs = []
     board_canvas.inferred_visible_tile_count_click_specs = []
@@ -4088,6 +4113,7 @@ def create_canvas(
             or _handle_selected_inferred_visible_delete_button_click(board_canvas, event.x, event.y)
             or _handle_inferred_visible_delete_button_click(board_canvas, event.x, event.y)
             or _handle_inferred_visible_candidate_button_click(board_canvas, event.x, event.y)
+            or _handle_nodocchi_status_link_click(board_canvas, event.x, event.y)
             or _handle_player_panel_button_click(board_canvas, event.x, event.y)
             or _handle_hand_response_button_click(board_canvas, event.x, event.y)
             or _handle_hand_betaori_response_button_click(board_canvas, event.x, event.y)
@@ -4149,6 +4175,10 @@ def create_canvas(
         if memo_background_poll_job is not None:
             board_canvas.after_cancel(memo_background_poll_job)
             board_canvas.memo_background_poll_job = None
+        nodocchi_status_poll_job = getattr(board_canvas, "nodocchi_status_poll_job", None)
+        if nodocchi_status_poll_job is not None:
+            board_canvas.after_cancel(nodocchi_status_poll_job)
+            board_canvas.nodocchi_status_poll_job = None
         bridge_status_tick_job = getattr(board_canvas, "bridge_status_tick_job", None)
         if bridge_status_tick_job is not None:
             board_canvas.after_cancel(bridge_status_tick_job)
@@ -8409,7 +8439,190 @@ def _detail_state_for_button(seat: int, label: str) -> DetailPanelState:
 
     if label == "DETAIL":
         return DetailPanelState(view_kind="player_memo", seat=seat, button_label=label)
+    if label == "STATUS":
+        return DetailPanelState(view_kind=PLAYER_STATUS_VIEW_KIND, seat=seat, button_label=label)
     return DetailPanelState(view_kind="panel_placeholder", seat=seat, button_label=label)
+
+
+def _player_name_for_status_seat(canvas: tkinter.Canvas, seat: int | None) -> str:
+    if seat is None:
+        return ""
+    player_names_by_seat = getattr(canvas, "current_player_names_by_seat", {})
+    if not isinstance(player_names_by_seat, Mapping):
+        return ""
+    return str(player_names_by_seat.get(int(seat), "")).strip()
+
+
+def _request_canvas_redraw(canvas: tkinter.Canvas) -> None:
+    canvas.side_panel_render_cache = None
+    redraw_action = getattr(canvas, "redraw_action", None)
+    if callable(redraw_action):
+        redraw_action()
+
+
+def _request_player_status_fetch(canvas: tkinter.Canvas, seat: int | None) -> None:
+    """Start a background Nodocchi status fetch for the selected player if needed."""
+
+    player_name = _player_name_for_status_seat(canvas, seat)
+    if not player_name:
+        results_by_name = dict(getattr(canvas, "nodocchi_status_results_by_name", {}))
+        results_by_name[""] = {
+            "state": "error",
+            "player_name": "",
+            "source_url": build_nodocchi_search_url(""),
+            "error": "プレイヤー名が取得できません。",
+            "version": time.monotonic_ns(),
+        }
+        canvas.nodocchi_status_results_by_name = results_by_name
+        _request_canvas_redraw(canvas)
+        return
+
+    results_by_name = dict(getattr(canvas, "nodocchi_status_results_by_name", {}))
+    current_entry = results_by_name.get(player_name)
+    if isinstance(current_entry, Mapping) and current_entry.get("state") == "success":
+        try:
+            completed_monotonic_s = float(current_entry.get("completed_monotonic_s", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            completed_monotonic_s = 0.0
+        if time.monotonic() - completed_monotonic_s <= NODOCCHI_STATS_CACHE_TTL_SECONDS:
+            return
+    in_flight_names = set(getattr(canvas, "nodocchi_status_in_flight_names", set()))
+    if player_name in in_flight_names:
+        return
+
+    results_by_name[player_name] = {
+        "state": "loading",
+        "player_name": player_name,
+        "source_url": build_nodocchi_search_url(player_name),
+        "error": "",
+        "version": time.monotonic_ns(),
+    }
+    in_flight_names.add(player_name)
+    canvas.nodocchi_status_results_by_name = results_by_name
+    canvas.nodocchi_status_in_flight_names = in_flight_names
+    _schedule_nodocchi_status_poll(canvas)
+
+    # Network I/O must stay off Tk's UI thread; results come back through the
+    # canvas queue and are applied by `_poll_nodocchi_status_results`.
+    def worker() -> None:
+        result_queue = getattr(canvas, "nodocchi_status_result_queue", None)
+        if result_queue is None:
+            return
+        try:
+            stats = fetch_nodocchi_player_stats(player_name)
+        except NodocchiStatsNotFound as exc:
+            result_queue.put(
+                {
+                    "state": "not_found",
+                    "player_name": player_name,
+                    "source_url": build_nodocchi_search_url(player_name),
+                    "error": str(exc),
+                }
+            )
+        except NodocchiStatsError as exc:
+            result_queue.put(
+                {
+                    "state": "error",
+                    "player_name": player_name,
+                    "source_url": build_nodocchi_search_url(player_name),
+                    "error": str(exc),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive background guard
+            result_queue.put(
+                {
+                    "state": "error",
+                    "player_name": player_name,
+                    "source_url": build_nodocchi_search_url(player_name),
+                    "error": f"想定外のエラー: {exc}",
+                }
+            )
+        else:
+            result_queue.put(
+                {
+                    "state": "success",
+                    "player_name": player_name,
+                    "source_url": stats.sourceUrl,
+                    "stats": stats,
+                }
+            )
+
+    thread = threading.Thread(target=worker, name=f"nodocchi-status-{player_name}", daemon=True)
+    thread.start()
+    _request_canvas_redraw(canvas)
+
+
+def _schedule_nodocchi_status_poll(canvas: tkinter.Canvas) -> None:
+    if getattr(canvas, "nodocchi_status_poll_job", None) is not None:
+        return
+    if not canvas.winfo_exists():
+        return
+    try:
+        canvas.nodocchi_status_poll_job = canvas.after(
+            NODOCCHI_STATUS_RESULT_POLL_MS,
+            lambda: _poll_nodocchi_status_results(canvas),
+        )
+    except tkinter.TclError:
+        canvas.nodocchi_status_poll_job = None
+
+
+def _poll_nodocchi_status_results(canvas: tkinter.Canvas) -> None:
+    canvas.nodocchi_status_poll_job = None
+    result_queue = getattr(canvas, "nodocchi_status_result_queue", None)
+    if result_queue is None:
+        return
+    processed = False
+    results_by_name = dict(getattr(canvas, "nodocchi_status_results_by_name", {}))
+    in_flight_names = set(getattr(canvas, "nodocchi_status_in_flight_names", set()))
+    while True:
+        try:
+            item = result_queue.get_nowait()
+        except queue.Empty:
+            break
+        player_name = str(item.get("player_name", "")).strip()
+        if player_name:
+            in_flight_names.discard(player_name)
+        # The side-panel render cache includes this version, so async completion
+        # invalidates only the affected shared-detail view.
+        results_by_name[player_name] = {
+            "state": item.get("state", "error"),
+            "player_name": player_name,
+            "source_url": item.get("source_url") or build_nodocchi_search_url(player_name),
+            "stats": item.get("stats"),
+            "error": item.get("error", ""),
+            "completed_monotonic_s": time.monotonic(),
+            "version": time.monotonic_ns(),
+        }
+        processed = True
+
+    canvas.nodocchi_status_results_by_name = results_by_name
+    canvas.nodocchi_status_in_flight_names = in_flight_names
+    if processed:
+        _request_canvas_redraw(canvas)
+    if in_flight_names:
+        _schedule_nodocchi_status_poll(canvas)
+
+
+def _nodocchi_status_detail_signature(
+    canvas: tkinter.Canvas,
+    detail_panel_state: DetailPanelState,
+    player_names_by_seat: PlayerNamesBySeat,
+) -> object:
+    if detail_panel_state.view_kind != PLAYER_STATUS_VIEW_KIND or detail_panel_state.seat is None:
+        return None
+    player_name = str(player_names_by_seat.get(detail_panel_state.seat, "")).strip()
+    entry = getattr(canvas, "nodocchi_status_results_by_name", {}).get(player_name)
+    if not isinstance(entry, Mapping):
+        return (player_name, "empty")
+    stats = entry.get("stats")
+    fetched_at = stats.fetchedAt if isinstance(stats, NodocchiPlayerStats) else None
+    return (
+        player_name,
+        entry.get("state"),
+        entry.get("version"),
+        entry.get("error"),
+        fetched_at,
+    )
 
 
 def _player_has_saved_memo(
@@ -10360,6 +10573,23 @@ def _filter_inferred_visible_entries_for_display(
     ]
 
 
+def _handle_nodocchi_status_link_click(
+    canvas: tkinter.Canvas,
+    click_x: float,
+    click_y: float,
+) -> bool:
+    """Open the Nodocchi source page from the status detail view."""
+
+    link_specs = getattr(canvas, "nodocchi_status_link_specs", ())
+    for spec in link_specs:
+        left, top, right, bottom = spec.rect
+        if not (left <= click_x <= right and top <= click_y <= bottom):
+            continue
+        webbrowser.open_new_tab(spec.url)
+        return True
+    return False
+
+
 def _handle_player_panel_button_click(
     canvas: tkinter.Canvas,
     click_x: float,
@@ -10385,6 +10615,8 @@ def _handle_player_panel_button_click(
         canvas.detail_panel_state = next_state
         if next_state.view_kind != "player_memo":
             _hide_detail_memo_editor(canvas)
+        if next_state.view_kind == PLAYER_STATUS_VIEW_KIND:
+            _request_player_status_fetch(canvas, next_state.seat)
         return True
     return False
 
@@ -11680,6 +11912,11 @@ def _build_side_panel_render_signature(
             getattr(canvas, "lag_marker_reference_kind", LAG_MARKER_REFERENCE_KIND_BLUE)
         ),
         "detail_panel_state": detail_panel_state,
+        "nodocchi_status": _nodocchi_status_detail_signature(
+            canvas,
+            detail_panel_state,
+            player_names_by_seat,
+        ),
         "memo_presence": memo_presence,
         "player_names_by_seat": player_names_by_seat,
         "player_score_diffs_by_seat": player_score_diffs_by_seat,
@@ -11704,6 +11941,7 @@ def _restore_side_panel_render_cache(canvas: tkinter.Canvas) -> bool:
     if not isinstance(cache, SidePanelRenderCache):
         return False
     canvas.player_panel_button_specs = list(cache.player_panel_button_specs)
+    canvas.nodocchi_status_link_specs = list(cache.nodocchi_status_link_specs)
     canvas.lag_marker_reference_button_specs = list(cache.lag_marker_reference_button_specs)
     canvas.detail_images = list(cache.detail_images)
     return True
@@ -11719,6 +11957,9 @@ def _remember_side_panel_render_cache(
     canvas.side_panel_render_cache = SidePanelRenderCache(
         signature=signature,
         player_panel_button_specs=tuple(getattr(canvas, "player_panel_button_specs", ())),
+        nodocchi_status_link_specs=tuple(
+            getattr(canvas, "nodocchi_status_link_specs", ())
+        ),
         lag_marker_reference_button_specs=tuple(
             getattr(canvas, "lag_marker_reference_button_specs", ())
         ),
@@ -11777,6 +12018,7 @@ def _redraw_side_panels_if_needed(
         return False
 
     canvas.player_panel_button_specs = []
+    canvas.nodocchi_status_link_specs = []
     canvas.lag_marker_reference_button_specs = []
     canvas.detail_images = []
     _delete_canvas_items_by_tags(canvas, _LIVE_ASYNC_SIDE_PANEL_TAG)
@@ -13476,6 +13718,21 @@ def _draw_score_content(
     )
 
 
+def _is_player_panel_button_active(
+    detail_panel_state: DetailPanelState,
+    *,
+    seat: int,
+    label: str,
+) -> bool:
+    if detail_panel_state.seat != seat or detail_panel_state.button_label != label:
+        return False
+    if label == "DETAIL":
+        return detail_panel_state.view_kind == "player_memo"
+    if label == "STATUS":
+        return detail_panel_state.view_kind == PLAYER_STATUS_VIEW_KIND
+    return detail_panel_state.view_kind == "panel_placeholder"
+
+
 def _draw_button_group(
     canvas: tkinter.Canvas,
     rect: tuple[float, float, float, float],
@@ -13501,13 +13758,10 @@ def _draw_button_group(
             # パネル下端を越えるボタンは描かない。
             if current_top + button_height > bottom - PLAYER_PANEL_HORIZONTAL_BUTTON_BOTTOM_MARGIN:
                 break
-            is_active = (
-                detail_panel_state.seat == seat
-                and detail_panel_state.button_label == label
-                and (
-                    (label == "DETAIL" and detail_panel_state.view_kind == "player_memo")
-                    or (label != "DETAIL" and detail_panel_state.view_kind == "panel_placeholder")
-                )
+            is_active = _is_player_panel_button_active(
+                detail_panel_state,
+                seat=seat,
+                label=label,
             )
             current_button_fill = "#29415d" if is_active else button_fill
             current_button_outline = button_outline
@@ -13558,13 +13812,10 @@ def _draw_button_group(
             # パネル下端を越えるボタンは描かない。
             if current_top + button_height > bottom - PLAYER_PANEL_VERTICAL_BUTTON_BOTTOM_MARGIN:
                 break
-            is_active = (
-                detail_panel_state.seat == seat
-                and detail_panel_state.button_label == label
-                and (
-                    (label == "DETAIL" and detail_panel_state.view_kind == "player_memo")
-                    or (label != "DETAIL" and detail_panel_state.view_kind == "panel_placeholder")
-                )
+            is_active = _is_player_panel_button_active(
+                detail_panel_state,
+                seat=seat,
+                label=label,
             )
             current_button_fill = "#29415d" if is_active else button_fill
             current_button_outline = button_outline
@@ -13700,6 +13951,126 @@ def _draw_lag_marker_reference_buttons(
     return label_top + 14
 
 
+def _format_nodocchi_status_detail_body(
+    entry: Mapping[str, object] | None,
+    player_name: str,
+) -> str:
+    if not player_name:
+        return (
+            "プレイヤー名が取得できません。\n\n"
+            "天鳳IDが分かる状態で STATUS を押してください。"
+        )
+    if not isinstance(entry, Mapping):
+        return (
+            "成績取得を開始します...\n\n"
+            "表示が変わらない場合は STATUS を押し直してください。"
+        )
+    state = str(entry.get("state", "error"))
+    if state == "loading":
+        return (
+            "鳳凰卓分析 / 4人打ち\n\n"
+            "成績を取得中...\n"
+            "連打しても同一プレイヤーへの多重リクエストは行いません。"
+        )
+    if state == "not_found":
+        return (
+            "鳳凰卓分析 / 4人打ち\n\n"
+            "このプレイヤーの鳳凰卓4人打ち成績が見つかりませんでした。"
+        )
+    if state == "success" and isinstance(entry.get("stats"), NodocchiPlayerStats):
+        return _format_nodocchi_success_status_body(entry["stats"])
+
+    error_text = str(entry.get("error", "")).strip()
+    if error_text:
+        return (
+            "鳳凰卓分析 / 4人打ち\n\n"
+            "Nodocchiの成績を取得できませんでした。\n\n"
+            f"理由: {error_text}"
+        )
+    return "鳳凰卓分析 / 4人打ち\n\nNodocchiの成績を取得できませんでした。"
+
+
+def _format_nodocchi_success_status_body(stats: NodocchiPlayerStats) -> str:
+    summary = stats.summary
+    lines: list[str] = [
+        "鳳凰卓分析 / 4人打ち",
+        f"取得: {_compact_iso_datetime(stats.fetchedAt)}",
+        "",
+        f"対局数: {summary.get('games') or '-'}",
+        f"平均順位: {summary.get('averageRank') or '-'}",
+        f"和了率: {summary.get('winRate') or '-'} / 放銃率: {summary.get('dealInRate') or '-'}",
+        f"副露率: {summary.get('callRate') or '-'} / リーチ率: {summary.get('riichiRate') or '-'}",
+        "",
+    ]
+    for category in stats.categories:
+        if category.title == "概要":
+            continue
+        lines.append(f"[{category.title}]")
+        for metric in category.metrics:
+            suffix_parts = []
+            if metric.percentile not in (None, ""):
+                suffix_parts.append(f"分布 {metric.percentile}")
+            if metric.rank not in (None, ""):
+                suffix_parts.append(f"順位 {metric.rank}")
+            suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+            lines.append(f"{metric.label}: {metric.value}{suffix}")
+        lines.append("")
+    max_lines = 34
+    if len(lines) <= max_lines:
+        return "\n".join(lines).rstrip()
+    return "\n".join(lines[: max_lines - 2] + ["...", "続きは Nodocchiで開く"]).rstrip()
+
+
+def _compact_iso_datetime(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    return text.replace("T", " ")
+
+
+def _draw_nodocchi_status_link_button(
+    canvas: tkinter.Canvas,
+    *,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    source_url: str,
+    button_fill: str,
+    button_outline: str,
+    button_text: str,
+) -> None:
+    if not source_url or right <= left or bottom <= top:
+        return
+    _draw_detail_button(
+        canvas,
+        left,
+        top,
+        right,
+        bottom,
+        button_fill,
+        button_outline,
+        button_text,
+    )
+    fitted_label = _fit_text_to_width(
+        canvas,
+        NODOCCHI_STATUS_LINK_LABEL,
+        ("Yu Gothic UI", 8, "bold"),
+        max(right - left - 12, 24),
+    )
+    canvas.create_text(
+        (left + right) / 2,
+        (top + bottom) / 2,
+        text=fitted_label,
+        anchor=tkinter.CENTER,
+        fill=button_text,
+        font=("Yu Gothic UI", 8, "bold"),
+    )
+    canvas.nodocchi_status_link_specs.append(
+        NodocchiStatusLinkSpec(rect=(left, top, right, bottom), url=source_url)
+    )
+
+
 def _draw_detail_toggle_group(
     canvas: tkinter.Canvas,
     img_table: TileImageTable,
@@ -13719,6 +14090,7 @@ def _draw_detail_toggle_group(
     visible3_rect = layout["visible3_rect"]
     visible4_rect = layout["visible4_rect"]
     detail_content_rect = layout["detail_content_rect"]
+    canvas.nodocchi_status_link_specs = []
     # 3見え/4見えセクションの境界線を引く。
     canvas.create_line(left + 1, visible3_rect[3], right - 1, visible3_rect[3], fill=button_outline, width=1)
     canvas.create_line(left + 1, visible4_rect[3], right - 1, visible4_rect[3], fill=button_outline, width=1)
@@ -13783,6 +14155,8 @@ def _draw_detail_toggle_group(
     )
     detail_title_top = detail_content_rect[1] + 18
     detail_body_top = detail_content_rect[1] + 42
+    detail_body_font = ("Yu Gothic UI", 9)
+    nodocchi_source_url = ""
     if detail_panel_state.view_kind == "visible":
         detail_title, detail_body = _lag_marker_reference_copy(
             getattr(canvas, "lag_marker_reference_kind", LAG_MARKER_REFERENCE_KIND_BLUE)
@@ -13806,6 +14180,20 @@ def _draw_detail_toggle_group(
             f"Editing: {player_name or seat_title}\n\n"
             "Changes are saved automatically when you switch to another player-panel button or close the window."
         )
+    elif detail_panel_state.view_kind == PLAYER_STATUS_VIEW_KIND and detail_panel_state.seat is not None:
+        seat_title = PLAYER_PANEL_TITLE_BY_SEAT.get(detail_panel_state.seat, "PLAYER")
+        player_name = str(player_names_by_seat.get(detail_panel_state.seat, "")).strip()
+        results_by_name = getattr(canvas, "nodocchi_status_results_by_name", {})
+        entry = results_by_name.get(player_name if player_name else "")
+        if isinstance(entry, Mapping):
+            nodocchi_source_url = str(
+                entry.get("source_url") or build_nodocchi_search_url(player_name)
+            )
+        else:
+            nodocchi_source_url = build_nodocchi_search_url(player_name)
+        detail_title = f"{seat_title} Player Status"
+        detail_body = _format_nodocchi_status_detail_body(entry, player_name)
+        detail_body_font = ("Yu Gothic UI", 8)
 
     canvas.create_text(
         left + 16,
@@ -13823,8 +14211,25 @@ def _draw_detail_toggle_group(
         anchor=tkinter.NW,
         width=max(right - left - 32, 40),
         fill=text_muted,
-        font=("Yu Gothic UI", 9),
+        font=detail_body_font,
     )
+
+    if nodocchi_source_url:
+        link_bottom = detail_content_rect[3] - 10
+        link_top = max(link_bottom - 22, detail_body_top + 28)
+        # The button remains available for loading/error/not-found states, so
+        # the user can always inspect the source page in Nodocchi.
+        _draw_nodocchi_status_link_button(
+            canvas,
+            left=left + 16,
+            top=link_top,
+            right=right - 16,
+            bottom=link_bottom,
+            source_url=nodocchi_source_url,
+            button_fill=button_fill,
+            button_outline=button_outline,
+            button_text=button_text,
+        )
 
 
 def _draw_visible_tiles(
@@ -18299,6 +18704,7 @@ def _redraw_live_async_regions_if_possible(
     layout = render_state.layout
     detail_panel_state = getattr(canvas, "detail_panel_state", DetailPanelState())
     canvas.player_panel_button_specs = []
+    canvas.nodocchi_status_link_specs = []
     canvas.lag_marker_reference_button_specs = []
     canvas.inferred_visible_tile_count_click_specs = []
     canvas.discard_tile_selection_click_specs = []

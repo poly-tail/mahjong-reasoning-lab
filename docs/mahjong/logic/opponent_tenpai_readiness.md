@@ -1,4 +1,4 @@
-# 他家聴牌度合いロジック
+﻿# 他家聴牌度合いロジック
 
 この文書は、他家の「いまどれくらい聴牌に近いか」を見るためのロジック方針をまとめる。
 ここで直接ほしいのは厳密な `聴牌率` ではなく、まずは `聴牌に近い度合い` や `手牌価値度合い` に近い内部指標である。
@@ -97,7 +97,7 @@
 
 ## 関連
 
-- 危険度ロジック: `docs/mahjong/mahjong_danger.md`
-- 鳴き判定: `docs/mahjong/mahjong_call_rules.md`
-- 牌姿分析: `docs/mahjong/hand_analysis.md`
-- 比較痕跡仕様: `docs/mahjong/comparison_trace_reading_engine.md`
+- 危険度ロジック: [mahjong_danger.md](mahjong_danger.md)
+- 鳴き判定: [mahjong_call_rules.md](../reference/mahjong_call_rules.md)
+- 牌姿分析: [hand_analysis.md](hand_analysis.md)
+- 比較痕跡仕様: [comparison_trace_reading_engine.md](comparison_trace_reading_engine.md)

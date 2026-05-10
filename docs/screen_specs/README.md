@@ -1,6 +1,6 @@
 # 画面仕様書
 
-updated: `2026-04-21`
+updated: `2026-05-10`
 
 このディレクトリでは、現行画面仕様を「読む人の作業単位」で分割して管理します。
 
@@ -11,7 +11,7 @@ updated: `2026-04-21`
 - [river_display.md](./river_display.md)
   - 河の枠、記号、tint、awaseuchi
 - [alerts_and_panels.md](./alerts_and_panels.md)
-  - `AI TOP3`, `SELF`, 相手パネル、状況表
+  - `AI TOP3`, `SELF`, 相手パネル、`STATUS`, 状況表
 - [controls_and_bridge.md](./controls_and_bridge.md)
   - app 側ボタン、Bridge、右クリック、toggle
 - [visible_counts_ui.md](./visible_counts_ui.md)

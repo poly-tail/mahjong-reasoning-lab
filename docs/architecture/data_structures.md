@@ -1,6 +1,6 @@
 # データ構造
 
-updated: `2026-04-15`
+updated: `2026-05-10`
 
 この文書は、現行 runtime data structure の正本です。
 
@@ -118,6 +118,51 @@ owner: `src/ui/table_renderer.py`
 - `candidate_seats`
 - `active_candidate_seats`
 - `inactive_candidate_seats`
+
+## 4. Nodocchi Player Status
+
+### `NodocchiPlayerStats`
+
+owner: `src/app/nodocchi_stats.py`
+
+意味:
+
+- Nodocchi 鳳凰卓4人打ち成績を renderer がそのまま描画できる形へ整形した payload
+
+主な fields:
+
+- `playerName`
+- `mode`
+- `table`
+- `sourceUrl`
+- `fetchedAt`
+- `categories`
+- `summary`
+
+### `NodocchiStatsCategory`
+
+意味:
+
+- `概要`, `順位`, `アガリ`, `リーチ`, `放銃`, `副露 / 仕掛け`, `役`, `ドラ`, `その他` などの表示グループ
+
+主な fields:
+
+- `title`
+- `metrics`
+
+### `NodocchiMetric`
+
+意味:
+
+- 1 つの表示指標
+
+主な fields:
+
+- `label`
+- `value`
+- `percentile`
+- `rank`
+- `raw`
 - `revealed_candidate_seats`
 - `seat_adjustments_34_index`
 - `total_adjustment`

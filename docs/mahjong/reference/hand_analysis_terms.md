@@ -1,4 +1,4 @@
-# 手牌用語
+﻿# 手牌用語
 
 `src/logic/hand_analysis.py` は、打牌前 hand snapshot からシャンテン数と待ち候補を出し、`discard_fact` の 1 行がどの局面だったかを後から追えるようにする。
 
@@ -14,7 +14,7 @@
 
 - `after_discard` は「その打牌をしたあとの手牌」を基準にする。
 - 実値は `shanten_*_after_discard` と `wait_tiles_after_discard_mspz` を組で読む。
-- 列の詳細は [shanten_columns.md](c:/Users/weath/OneDrive/ドキュメント/tenhou_hojo/docs/reference/shanten_columns.md) を参照。
+- 列の詳細は [shanten_columns.md](../../reference/shanten_columns.md) を参照。
 
 ## 打牌種別用語
 
@@ -56,7 +56,7 @@
 - 跨ぎ筋:
   - 数牌 `n` の手出しに対して、`(n-2, n+1)` と `(n-1, n+2)` の筋線だけを跨ぎ筋候補として警戒する読み。
   - 端に寄るほど候補は減る。`2s` の跨ぎ筋は `1-4s` の 1 本だけ、`1s` の跨ぎ筋はない。
-  - このプロジェクトでは [mahjong_danger.md](c:/Users/weath/OneDrive/ドキュメント/tenhou_hojo/docs/mahjong/mahjong_danger.md) の跨ぎ筋ルールを使い、最新手出しほど重く、古い候補ほど軽く扱う。
+  - このプロジェクトでは [mahjong_danger.md](../logic/mahjong_danger.md) の跨ぎ筋ルールを使い、最新手出しほど重く、古い候補ほど軽く扱う。
   - 赤5切りだけは `3-6` と `4-7` を各 `0.25本` として弱く数える。
 
 - 裏筋:
@@ -87,8 +87,8 @@
 
 ## 関連文書
 
-- [hand_analysis.md](c:/Users/weath/OneDrive/ドキュメント/tenhou_hojo/docs/mahjong/hand_analysis.md): シャンテン数と両面候補の仕様。
-- [shanten_columns.md](c:/Users/weath/OneDrive/ドキュメント/tenhou_hojo/docs/reference/shanten_columns.md): `discard_fact` のシャンテン列定義。
-- [mahjong_danger.md](c:/Users/weath/OneDrive/ドキュメント/tenhou_hojo/docs/mahjong/mahjong_danger.md): 跨ぎ筋、裏筋、見え枚数補正、河 marker の危険度仕様。
-- [db_analysis_rules.md](c:/Users/weath/OneDrive/ドキュメント/tenhou_hojo/docs/analysis/db_analysis_rules.md): DB 分析時の前提。
-- [opponent_tenpai_readiness.md](c:/Users/weath/OneDrive/ドキュメント/tenhou_hojo/docs/mahjong/opponent_tenpai_readiness.md): 打牌から聴牌近さを読む側の整理。
+- [hand_analysis.md](../logic/hand_analysis.md): シャンテン数と両面候補の仕様。
+- [shanten_columns.md](../../reference/shanten_columns.md): `discard_fact` のシャンテン列定義。
+- [mahjong_danger.md](../logic/mahjong_danger.md): 跨ぎ筋、裏筋、見え枚数補正、河 marker の危険度仕様。
+- [db_analysis_rules.md](../../analysis/db_analysis_rules.md): DB 分析時の前提。
+- [opponent_tenpai_readiness.md](../logic/opponent_tenpai_readiness.md): 打牌から聴牌近さを読む側の整理。

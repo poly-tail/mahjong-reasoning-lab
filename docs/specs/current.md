@@ -5,7 +5,7 @@
 ## 現行版
 
 - 版: `v2.1`
-- 更新日: `2026-04-21`
+- 更新日: `2026-05-10`
 - 継承元: `old/api_spec_v2.0.md`
 
 ## 現在の重点
@@ -13,6 +13,8 @@
 - `LiveTableSnapshot` を UI 描画専用の一貫スナップショットとして扱う
 - `VisibleTileSummary` と `VisibleTileInferenceSummary` の責務を分ける
 - Bridge スナップショットの poll / follow-up / coalescing を仕様として固定する
+- Nodocchi 鳳凰卓4人打ち成績は `src/app/nodocchi_stats.py` で取得・整形し、renderer へ構造化データだけ渡す
+- `STATUS` 取得は background thread + canvas queue で UI に戻し、同一プレイヤーは短時間 cache する
 - グラフ再生成とワークスペース ZIP 化の再実行導線を明文化する
 
 ## 関連文書
@@ -21,3 +23,4 @@
 - 要件定義 現行版: [../requirements/current.md](../requirements/current.md)
 - 画面仕様書 現行版: [../screen_specs/current.md](../screen_specs/current.md)
 - データ構造: [../architecture/data_structures.md](../architecture/data_structures.md)
+- Nodocchi 成績連携: [../integrations/nodocchi_status.md](../integrations/nodocchi_status.md)

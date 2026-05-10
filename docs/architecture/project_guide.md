@@ -1,6 +1,6 @@
 # プロジェクトガイド
 
-更新日: `2026-04-21`
+更新日: `2026-05-10`
 
 ## 目的
 
@@ -11,6 +11,7 @@
 - `src/tenhou_hojo.py`: 互換エントリ
 - `src/app/main.py`: アプリ全体の起動・分岐・連携
 - `src/ui/table_renderer.py`: 画面描画本体
+- `src/app/nodocchi_stats.py`: Nodocchi プレイヤー成績の取得・整形
 - `src/visible_tiles.py`: 実見え枚数の集計
 - `src/logic/danger_suji.py`: remain / push / tint のロジック
 
@@ -34,9 +35,9 @@
 
 ## 今回の更新点
 
-- 自家の `2見え以下字牌` 一覧を自副露帯寄りへ微調整した
-- ドキュメントグラフ再生成を `scripts/render_docs_graphs.py` に統一した
-- ワークスペース退避用 ZIP を `scripts/package_workspace.py` で作れるようにした
+- 相手パネルの `STATUS` から Nodocchi 鳳凰卓4人打ち成績を取得し、右詳細領域に表示できるようにした
+- Nodocchi 取得は renderer から分離した adapter で処理し、UI thread へは canvas queue で戻す
+- 麻雀ドメイン文書を `docs/mahjong/theory`, `logic`, `reference`, `research` に再構成した
 
 ## 更新時の同期先
 

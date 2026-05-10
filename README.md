@@ -10,6 +10,8 @@
 - [画面仕様書 現行版](docs/screen_specs/current.md)
 - [プロジェクトガイド](docs/architecture/project_guide.md)
 - [ソース概要](docs/architecture/source_overview.md)
+- [麻雀ドメイン文書](docs/mahjong/README.md)
+- [Nodocchi プレイヤー成績連携](docs/integrations/nodocchi_status.md)
 - [src コールグラフ](docs/architecture/src_call_graph.md)
 - [Tenhou UI Bridge 連携](docs/integrations/tenhou_ui_bridge.md)
 - [通常起動チェックリスト](docs/operations/live_startup_checklist.md)

@@ -1,6 +1,6 @@
 # ソース概要
 
-updated: `2026-04-21`
+updated: `2026-05-10`
 
 ## モジュール構成
 
@@ -8,6 +8,7 @@ updated: `2026-04-21`
 
 - `main.py`: 起動分岐、snapshot 組み立て、Bridge / AI / renderer 連携
 - `hand_recommendation_service.py`: AI 推奨リクエストと応答整形
+- `nodocchi_stats.py`: Nodocchi 鳳凰卓4人打ち成績の取得、cache、表示用整形
 - `tenhou_ui_bridge_*`: Bridge の protocol / server / client / probe
 
 ### `src/capture/`
@@ -35,6 +36,8 @@ updated: `2026-04-21`
 ## 更新メモ
 
 - 自家の `2見え以下字牌` 一覧は `src/ui/table_renderer.py` の専用配置ロジックで自副露帯寄りへ寄せる
+- プレイヤーパネルの `STATUS` は `src/ui/table_renderer.py` で UI 状態を持ち、Nodocchi 取得自体は `src/app/nodocchi_stats.py` に分離する
+- Nodocchi 取得結果は canvas queue 経由で UI thread に戻し、side-panel render cache の署名に status state を含める
 - Mermaid 図の正本は `docs/graphs/src/*.mmd`
 - SVG 再生成は `scripts/render_docs_graphs.py`
 - ZIP 作成は `scripts/package_workspace.py`

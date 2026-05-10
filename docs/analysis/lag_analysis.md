@@ -1,4 +1,4 @@
-# ラグ分析の前提
+﻿# ラグ分析の前提
 
 `discard_fact` の `lagged` / `lag_delay_ms` を使ってラグ傾向を集計するときの前提をまとめる。
 
@@ -42,7 +42,7 @@ AND player_name NOT IN ('パシフィック', 's6u')
 - `550ms` 以下を除外するのは、DB 記録を消すという意味ではない
 - あくまで「分析用サンプルから外れ値として除外する」という意味で使う
 - 新しいデータでは `lagged = 6` が付くが、旧データ互換のため分析条件は `lag_delay_ms > 550` ベースでも書ける
-- `lagged` の意味自体は `docs/reference/csv_db_design.md` と `docs/mahjong/mahjong_call_rules.md` を参照する
+- `lagged` の意味自体は `docs/reference/csv_db_design.md` と `docs/mahjong/reference/mahjong_call_rules.md` を参照する
 
 ## 関連
 

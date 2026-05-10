@@ -1,6 +1,6 @@
 # src コールグラフ
 
-updated: `2026-04-21`
+updated: `2026-05-10`
 
 `src/` 配下の主要な呼び出し関係と Mermaid 図の見方をまとめます。
 
@@ -35,3 +35,4 @@ Windows だけで運用する場合は `cli/render_src_call_graph.ps1` も使え
 - packet 系の入口は `src/packet_capture.py` と `src/capture/*`
 - 見え枚数系の正本は `src/visible_tiles.py`
 - 自家の `2見え以下字牌` 一覧位置は `src/ui/table_renderer.py` の専用レイアウトロジックで決まる
+- `STATUS` 成績表示は `src/ui/table_renderer.py -> src/app/nodocchi_stats.py` の向きで呼び出し、Nodocchi 取得結果は canvas queue で UI thread に戻る

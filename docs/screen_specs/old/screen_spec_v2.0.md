@@ -1,4 +1,4 @@
-# Screen Spec v2.0
+﻿# Screen Spec v2.0
 
 ## 1. Positioning
 
@@ -64,4 +64,4 @@
 
 - detail reference: `docs/screen_specs/alert_flag_reference.md`
 - shared rules: `ui_principles.md` / `screen_map.md` / `invariants.md` / `change_request.md`
-- logic references: `docs/mahjong/mahjong_danger.md` / `docs/integrations/pystyle_simulator_protocol.md`
+- logic references: `docs/mahjong/logic/mahjong_danger.md` / `docs/integrations/pystyle_simulator_protocol.md`

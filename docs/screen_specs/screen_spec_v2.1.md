@@ -1,6 +1,6 @@
 # 画面仕様書 v2.1
 
-updated: `2026-04-21`
+updated: `2026-05-10`
 
 ## 1. スコープ
 
@@ -20,6 +20,8 @@ updated: `2026-04-21`
 
 - `AI TOP3` は `pt + 和了率` を表示する
 - 1 位以外でも `top EV - 50pt` 以内は緑表示にする
+- 相手パネルの `STATUS` は右詳細領域を `Player Status` に切り替え、Nodocchi 鳳凰卓4人打ち成績を表示する
+- `STATUS` 成績ビューは `Nodocchiで開く` 外部リンクを常に持つ
 - 河の記号は `L`, `Pl`, `P`
 - `Visible x3/x4` は actual / inferred の統合グリッド
 - inferred only の加算は青系の境界で区別する

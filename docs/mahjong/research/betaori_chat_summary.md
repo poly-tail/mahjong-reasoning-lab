@@ -181,26 +181,26 @@ q_total = 1 - (1 - 0.05) * (1 - q_side)
 
 ## 残り5巡
 
-![Boundary remaining 5](images/boundary_remaining_5.png){width=90%}
+> 図は元チャット添付由来のため、このリポジトリには未収録。境界値は本文と表を参照。
 
 ## 残り6巡
 
-![Boundary remaining 6](images/boundary_remaining_6.png){width=90%}
+> 図は元チャット添付由来のため、このリポジトリには未収録。境界値は本文と表を参照。
 
 ## 残り7巡
 
-![Boundary remaining 7](images/boundary_remaining_7.png){width=90%}
+> 図は元チャット添付由来のため、このリポジトリには未収録。境界値は本文と表を参照。
 
 ## 残り8巡
 
-![Boundary remaining 8](images/boundary_remaining_8.png){width=90%}
+> 図は元チャット添付由来のため、このリポジトリには未収録。境界値は本文と表を参照。
 
 # 7. 2枚ある牌 vs 3枚ある牌
 
 3枚ある牌は、2枚ある牌よりも1巡ぶん多く現物資源を作れます。  
 ただし、残り巡数が長ければ常に一方的に3枚有利になるわけではありません。追加1巡の価値は、救済抽選、尾部リスク、そこまで生存している確率で割り引かれます。
 
-![3 copies vs 2 copies](images/boundary_3copies_vs_2copies.png){width=90%}
+> 図は元チャット添付由来のため、このリポジトリには未収録。境界値は下表を参照。
 
 表にすると次の通りです。
 
