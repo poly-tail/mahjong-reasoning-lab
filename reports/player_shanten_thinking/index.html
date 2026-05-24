@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>思考時間 x シャンテン数 プレイヤー別分析</title>
+  <style>
+    body { font-family: "Yu Gothic UI", Meiryo, system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
+    h1 { font-size: 24px; margin: 0 0 12px; }
+    h2 { font-size: 18px; margin: 28px 0 10px; }
+    p, li { line-height: 1.6; }
+    .note { color: #475569; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; align-items: start; }
+    figure { margin: 0; padding: 12px; background: white; border: 1px solid #dbe3ef; border-radius: 8px; }
+    figcaption { color: #475569; font-size: 13px; margin-top: 8px; }
+    img { display: block; max-width: 100%; height: auto; }
+    table { border-collapse: collapse; background: white; margin: 8px 0 20px; font-size: 13px; }
+    th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: right; }
+    th { background: #e2e8f0; }
+    td:first-child, th:first-child { text-align: left; }
+    code { font-family: Consolas, monospace; background: #eef2ff; padding: 1px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>思考時間 x シャンテン数 プレイヤー別分析</h1>
+  <p class="note">source_files=discard_fact_202604.csv, discard_fact_202605.csv / hanchan_master=csv_db/hanchan_master.csv / all_rows=127870 / valid_rows=40539 / qualified_players=58 / min_samples=80 / shanten=0..4</p>
+  <h2>見方</h2>
+  <ul>
+    <li>相関は <code>shanten_after_discard</code> と <code>log1p(thinking seconds)</code> の Spearman ρ。負なら「シャンテン数が低いほど長考寄り」、正なら「シャンテン数が高いほど長考寄り」。</li>
+    <li>思考時間は外れ値が強いので、プレイヤープロファイルは平均ではなく中央値を主に見ています。</li>
+    <li>プレイヤー別比較はサンプル数 80 件以上、かつシャンテン種類が複数あるプレイヤーだけに絞っています。</li>
+  </ul>
+  <h2>全体サマリ</h2>
+  <ul>
+    <li>プレイヤー別 Spearman ρ: mean=0.122, sd=0.157, min=-0.315, median=0.127, max=0.424</li>
+    <li>ρ のIQR: 0.190</li>
+  </ul>
+  <div class="grid">
+    <figure><img src="player_correlation_ranking.png" alt="Player correlation ranking"><figcaption>プレイヤー別の相関ランキング。左に長いほど低シャンテンで長考しやすい傾向。</figcaption></figure>
+    <figure><img src="player_shanten_median_heatmap.png" alt="Player shanten median heatmap"><figcaption>サンプル上位プレイヤーの、シャンテン別中央値秒。</figcaption></figure>
+    <figure><img src="player_shanten_profile_lines.png" alt="Player shanten profile lines"><figcaption>プレイヤーごとの中央値ライン。灰色は全対象、色線は相関の極端なプレイヤー。</figcaption></figure>
+    <figure><img src="player_variability_boxplot.png" alt="Player variability boxplot"><figcaption>シャンテン別に見たプレイヤー間の中央値のバラつき。</figcaption></figure>
+    <figure><img src="player_sample_balance.png" alt="Player sample balance"><figcaption>サンプル数の偏り。ログスケール。</figcaption></figure>
+  </div>
+  <h2>負の相関が強いプレイヤー</h2>
+  <table><thead><tr><th>player_name</th><th>table_affiliation</th><th>n</th><th>hanchan_count</th><th>spearman_shanten_vs_log1p_thinking_s</th><th>thinking_median_s</th><th>median_s_range_across_shanten</th><th>near_ready_delta_s</th></tr></thead><tbody><tr><td>NoName</td><td>一般卓 (16/32半荘)</td><td>558</td><td>32</td><td>-0.315</td><td>1.918</td><td>1.514</td><td>1.151</td></tr><tr><td>kuroo</td><td>特上卓 (1/1半荘)</td><td>124</td><td>1</td><td>-0.209</td><td>2.560</td><td>4.348</td><td>3.080</td></tr><tr><td>しんせんじにく</td><td>特上卓 (1/2半荘)</td><td>119</td><td>2</td><td>-0.193</td><td>1.954</td><td>0.474</td><td>0.367</td></tr><tr><td>skybit</td><td>鳳凰卓 (1/2半荘)</td><td>88</td><td>2</td><td>-0.177</td><td>2.501</td><td>1.287</td><td>0.422</td></tr><tr><td>Tak1984</td><td>特上卓 (1/1半荘)</td><td>164</td><td>1</td><td>-0.162</td><td>2.266</td><td>1.584</td><td>1.374</td></tr><tr><td>風林火川</td><td>特上卓 (1/1半荘)</td><td>125</td><td>1</td><td>-0.107</td><td>2.408</td><td>0.584</td><td>0.302</td></tr><tr><td>綿雪</td><td>特上卓 (1/1半荘)</td><td>86</td><td>1</td><td>-0.042</td><td>2.199</td><td>1.084</td><td>0.401</td></tr><tr><td>FridaW89</td><td>特上卓 (1/2半荘)</td><td>179</td><td>2</td><td>-0.031</td><td>2.083</td><td>1.298</td><td>0.310</td></tr></tbody></table>
+  <h2>正の相関が強いプレイヤー</h2>
+  <table><thead><tr><th>player_name</th><th>table_affiliation</th><th>n</th><th>hanchan_count</th><th>spearman_shanten_vs_log1p_thinking_s</th><th>thinking_median_s</th><th>median_s_range_across_shanten</th><th>near_ready_delta_s</th></tr></thead><tbody><tr><td>markino!</td><td>特上卓 (1/1半荘)</td><td>95</td><td>1</td><td>0.424</td><td>2.347</td><td>2.687</td><td>0.555</td></tr><tr><td>なかざわーるどう</td><td>特上卓 (1/2半荘)</td><td>126</td><td>2</td><td>0.421</td><td>2.135</td><td>2.401</td><td>-0.833</td></tr><tr><td>Kanako_</td><td>特上卓 (1/2半荘)</td><td>181</td><td>2</td><td>0.373</td><td>2.245</td><td>1.454</td><td>-0.103</td></tr><tr><td>ごきげんよう！！</td><td>特上卓 (1/1半荘)</td><td>127</td><td>1</td><td>0.348</td><td>2.675</td><td>2.910</td><td>-0.123</td></tr><tr><td>Ds.</td><td>上級卓 (1/1半荘)</td><td>94</td><td>1</td><td>0.331</td><td>2.430</td><td>2.326</td><td>-0.639</td></tr><tr><td>怪我の功名</td><td>特上卓 (1/1半荘)</td><td>120</td><td>1</td><td>0.316</td><td>1.961</td><td>1.510</td><td>0.066</td></tr><tr><td>福瑞</td><td>特上卓 (1/1半荘)</td><td>111</td><td>1</td><td>0.295</td><td>1.600</td><td>1.210</td><td>0.322</td></tr><tr><td>天江衣</td><td>特上卓 (2/2半荘)</td><td>119</td><td>2</td><td>0.294</td><td>2.278</td><td>2.325</td><td>0.504</td></tr></tbody></table>
+  <h2>シャンテン別中央値の起伏が大きいプレイヤー</h2>
+  <table><thead><tr><th>player_name</th><th>table_affiliation</th><th>n</th><th>hanchan_count</th><th>median_s_range_across_shanten</th><th>median_s_cv_across_shanten</th><th>spearman_shanten_vs_log1p_thinking_s</th><th>median_s_by_shanten_json</th></tr></thead><tbody><tr><td>欧陽</td><td>特上卓 (1/3半荘)</td><td>85</td><td>3</td><td>5.550</td><td>0.525</td><td>0.129</td><td>{&quot;0&quot;: 0.802, &quot;1&quot;: 5.292, &quot;2&quot;: 3.182, &quot;3&quot;: 2.888, &quot;4&quot;: 6.352}</td></tr><tr><td>kuroo</td><td>特上卓 (1/1半荘)</td><td>124</td><td>1</td><td>4.348</td><td>0.554</td><td>-0.209</td><td>{&quot;0&quot;: 0.832, &quot;1&quot;: 5.179, &quot;2&quot;: 2.959, &quot;3&quot;: 2.439, &quot;4&quot;: 1.76}</td></tr><tr><td>s7055</td><td>特上卓 (1/1半荘)</td><td>95</td><td>1</td><td>2.998</td><td>0.373</td><td>0.253</td><td>{&quot;0&quot;: 0.791, &quot;1&quot;: 3.789, &quot;2&quot;: 3.384, &quot;3&quot;: 3.703, &quot;4&quot;: 3.311}</td></tr><tr><td>ぴかーる</td><td>特上卓 (1/1半荘)</td><td>91</td><td>1</td><td>2.927</td><td>0.372</td><td>0.287</td><td>{&quot;0&quot;: 0.914, &quot;1&quot;: 3.267, &quot;2&quot;: 3.034, &quot;3&quot;: 2.406, &quot;4&quot;: 3.841}</td></tr><tr><td>ごきげんよう！！</td><td>特上卓 (1/1半荘)</td><td>127</td><td>1</td><td>2.910</td><td>0.390</td><td>0.348</td><td>{&quot;0&quot;: 0.927, &quot;1&quot;: 2.806, &quot;2&quot;: 2.772, &quot;3&quot;: 3.837, &quot;4&quot;: 2.02}</td></tr><tr><td>markino!</td><td>特上卓 (1/1半荘)</td><td>95</td><td>1</td><td>2.687</td><td>0.384</td><td>0.424</td><td>{&quot;0&quot;: 0.822, &quot;1&quot;: 3.509, &quot;2&quot;: 2.428, &quot;3&quot;: 2.458, &quot;4&quot;: 3.449}</td></tr><tr><td>なかざわーるどう</td><td>特上卓 (1/2半荘)</td><td>126</td><td>2</td><td>2.401</td><td>0.370</td><td>0.421</td><td>{&quot;0&quot;: 0.752, &quot;1&quot;: 2.04, &quot;2&quot;: 2.242, &quot;3&quot;: 2.593, &quot;4&quot;: 3.153}</td></tr><tr><td>yoshipin</td><td>特上卓 (1/1半荘)</td><td>124</td><td>1</td><td>2.360</td><td>0.376</td><td>0.009</td><td>{&quot;0&quot;: 0.811, &quot;1&quot;: 3.171, &quot;2&quot;: 2.061, &quot;3&quot;: 2.043, &quot;4&quot;: 1.876}</td></tr><tr><td>Ds.</td><td>上級卓 (1/1半荘)</td><td>94</td><td>1</td><td>2.326</td><td>0.306</td><td>0.331</td><td>{&quot;0&quot;: 1.134, &quot;1&quot;: 2.669, &quot;2&quot;: 2.663, &quot;3&quot;: 3.157, &quot;4&quot;: 3.46}</td></tr><tr><td>天江衣</td><td>特上卓 (2/2半荘)</td><td>119</td><td>2</td><td>2.325</td><td>0.338</td><td>0.294</td><td>{&quot;0&quot;: 0.837, &quot;1&quot;: 3.161, &quot;2&quot;: 2.402, &quot;3&quot;: 2.656, &quot;4&quot;: 2.658}</td></tr></tbody></table>
+  <h2>プレイヤー間バラつき</h2>
+  <table><thead><tr><th>shanten_after_discard</th><th>player_count</th><th>player_median_of_medians_s</th><th>player_sd_of_medians_s</th><th>player_iqr_of_medians_s</th><th>player_min_median_s</th><th>player_max_median_s</th></tr></thead><tbody><tr><td>0.000</td><td>58.000</td><td>1.396</td><td>0.536</td><td>0.762</td><td>0.719</td><td>2.864</td></tr><tr><td>1.000</td><td>58.000</td><td>2.464</td><td>0.714</td><td>0.800</td><td>1.664</td><td>5.292</td></tr><tr><td>2.000</td><td>58.000</td><td>2.394</td><td>0.508</td><td>0.764</td><td>1.582</td><td>3.695</td></tr><tr><td>3.000</td><td>58.000</td><td>2.176</td><td>0.595</td><td>0.799</td><td>1.399</td><td>3.837</td></tr><tr><td>4.000</td><td>55.000</td><td>1.958</td><td>0.895</td><td>0.982</td><td>0.895</td><td>6.352</td></tr></tbody></table>
+</body>
+</html>

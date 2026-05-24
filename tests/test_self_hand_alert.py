@@ -369,6 +369,32 @@ class SelfHandAlertStateTest(unittest.TestCase):
 
         self.assertEqual(canvas.bell_calls, 2)
 
+    def test_self_alert_sound_queues_worker_when_winsound_is_available(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_self_hand_value_alert_kind = HAND_SELF_ALERT_KIND_NONE
+                self.last_self_low_ev_sound_round_token = ""
+                self.last_self_hand_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", object()), patch(
+            "ui.table_renderer._queue_alert_sound_job",
+            return_value=True,
+        ) as queue_sound:
+            _play_self_hand_value_alert_sound_if_needed(
+                canvas,
+                SelfHandValueAlertState(kind=HAND_SELF_ALERT_KIND_WARNING),
+            )
+
+        self.assertEqual(canvas.bell_calls, 0)
+        queue_sound.assert_called_once()
+        self.assertEqual(queue_sound.call_args.args[1], HAND_SELF_ALERT_KIND_WARNING)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -105,6 +105,156 @@ class LiveCaptureAgariStorageTest(unittest.TestCase):
             )
         )
 
+    def test_hanchan_master_room_class_falls_back_to_live_game_id(self) -> None:
+        with self._temporary_db_dir() as temp_dir_text:
+            database = CsvDatabase(db_dir=Path(temp_dir_text), bootstrap_logical_tables=())
+            self.addCleanup(database.close)
+            state = CaptureState()
+            state.game_id = "2026052115gm-00a9-0000-627a47cd"
+            state.current_round = RoundState(started_from_init_like=True)
+            for seat, name in enumerate(("self", "shimo", "toi", "kami")):
+                state.players[seat].name = name
+            event = Event(timestamp=1779338668.0, event_type="init", raw_tag="INIT")
+
+            database.persist_event(state, event)
+            rows = database._store("hanchan_master").iter_rows()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["room_class_label"], "鳳凰卓")
+
+    def test_hanchan_master_room_class_updates_when_go_arrives_after_init(self) -> None:
+        with self._temporary_db_dir() as temp_dir_text:
+            database = CsvDatabase(db_dir=Path(temp_dir_text), bootstrap_logical_tables=())
+            self.addCleanup(database.close)
+            state = CaptureState()
+            state.current_round = RoundState(started_from_init_like=True)
+            for seat, name in enumerate(("self", "shimo", "toi", "kami")):
+                state.players[seat].name = name
+            init_event = Event(timestamp=1779338668.0, event_type="init", raw_tag="INIT")
+            database.persist_event(state, init_event)
+
+            state.go_type = 169
+            state.room_class_label = "鳳凰卓"
+            go_event = Event(timestamp=1779338669.0, event_type="go", raw_tag="GO")
+            database.persist_event(state, go_event)
+            rows = database._store("hanchan_master").iter_rows()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["room_class_label"], "鳳凰卓")
+
+    def test_reinit_snapshot_discards_are_persisted_to_discard_fact(self) -> None:
+        with self._temporary_db_dir() as temp_dir_text:
+            database = CsvDatabase(db_dir=Path(temp_dir_text), bootstrap_logical_tables=())
+            self.addCleanup(database.close)
+            state = CaptureState()
+            state.game_id = "2026052115gm-00a9-0000-627a47cd"
+            for seat, name in enumerate(("self", "shimo", "toi", "kami")):
+                state.players[seat].name = name
+            round_state = RoundState(
+                kyoku_index=0,
+                honba=0,
+                kyotaku=0,
+                oya=0,
+                started_from_init_like=True,
+            )
+            round_state.discards[0].append(
+                Discard(
+                    tile_136=12,
+                    round_discard_index=0,
+                    raw_tag="REINIT_KAWA:12",
+                )
+            )
+            round_state.discards[1].append(
+                Discard(
+                    tile_136=48,
+                    round_discard_index=1,
+                    raw_tag="REINIT_KAWA:48",
+                )
+            )
+            state.current_round = round_state
+            state.rounds.append(round_state)
+            event = Event(timestamp=1779338668.0, event_type="reinit", raw_tag="REINIT")
+            state.events.append(event)
+            round_state.events.append(event)
+
+            database.persist_event(state, event)
+            rows = database._store("discard_fact", "202605").iter_rows()
+
+        self.assertEqual([row["discard_tile_136"] for row in rows], ["12", "48"])
+        self.assertTrue(all(row["discard_epoch_s"] for row in rows))
+        self.assertEqual(rows[0]["room_class_label"], "鳳凰卓")
+
+    def test_async_persist_waits_for_state_lock_instead_of_dropping_event(self) -> None:
+        with self._temporary_db_dir() as temp_dir_text:
+            database = CsvDatabase(
+                db_dir=Path(temp_dir_text),
+                bootstrap_logical_tables=(),
+                async_persist=True,
+            )
+            self.addCleanup(database.close)
+            state = CaptureState()
+            round_state = RoundState(started_from_init_like=True, round_id="round-busy")
+            state.current_round = round_state
+            state.rounds.append(round_state)
+            state.sync_current_round_context()
+            event = Event(timestamp=1.0, event_type="discard", seat=0)
+            state.events.append(event)
+            round_state.events.append(event)
+
+            persisted_call_count = 0
+
+            def count_persist_now(
+                self: CsvDatabase,
+                snapshot_state: CaptureState,
+                snapshot_event: Event,
+            ) -> None:
+                nonlocal persisted_call_count
+                persisted_call_count += 1
+
+            with patch.object(CsvDatabase, "_persist_event_now", new=count_persist_now):
+                state.state_lock.acquire()
+                persist_done = threading.Event()
+                persist_error: list[BaseException] = []
+
+                def run_persist() -> None:
+                    try:
+                        database.persist_event(state, event)
+                    except BaseException as exc:  # noqa: BLE001 - test captures thread errors.
+                        persist_error.append(exc)
+                    finally:
+                        persist_done.set()
+
+                persist_thread = threading.Thread(target=run_persist)
+                try:
+                    persist_thread.start()
+                    self.assertFalse(persist_done.wait(timeout=0.05))
+                finally:
+                    state.state_lock.release()
+                persist_thread.join(timeout=1.0)
+                database.wait_for_pending_writes()
+
+        self.assertFalse(persist_error)
+        self.assertEqual(persisted_call_count, 1)
+
+    def test_async_persist_skips_non_csv_event_types(self) -> None:
+        with self._temporary_db_dir() as temp_dir_text:
+            database = CsvDatabase(
+                db_dir=Path(temp_dir_text),
+                bootstrap_logical_tables=(),
+                async_persist=True,
+            )
+            self.addCleanup(database.close)
+            state = CaptureState()
+            state.current_round = RoundState(started_from_init_like=True)
+            state.rounds.append(state.current_round)
+            event = Event(timestamp=1.0, event_type="draw", seat=0)
+
+            with patch.object(CsvDatabase, "_persist_event_now") as persist_now:
+                database.persist_event(state, event)
+                database.wait_for_pending_writes()
+
+        persist_now.assert_not_called()
+
     def test_agari_row_includes_suji_snapshot_and_discard_flags(self) -> None:
         with self._temporary_db_dir() as temp_dir_text:
             database = CsvDatabase(db_dir=Path(temp_dir_text), bootstrap_logical_tables=())

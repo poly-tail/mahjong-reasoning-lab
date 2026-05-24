@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import queue
 import random
+import sys
 import threading
 import time
 import tkinter
@@ -49,6 +50,7 @@ from logic.danger_suji import (
 from runtime_paths import DEFAULT_LIVE_CAPTURE_LOG_PATH
 from sutehai import Discard, DrawType, Player, SutehaiTracker
 from visible_tiles import (
+    RED_DORA_TILE_IDS_37,
     THREE_VISIBLE_TILES_ENABLED,
     VisibleTileInferenceSummary,
     VisibleTileSummary,
@@ -61,13 +63,11 @@ from visible_tiles import (
 from ui.tile_images import (
     PLAYER_ROTATIONS,
     TileImageTable,
-    build_tile_photoimage_from_base_overlay,
     build_tile_photoimage,
     initialize_image,
     logical_tile_id_to_asset_tile_id,
     resolve_tiles_dir as _resolve_tiles_dir,
     tile_size as _tile_size,
-    warm_unrotated_tile_overlay_bases,
 )
 
 # 37種表現の牌画像を読み込む前提なので、赤5を含めた総数を固定値で持つ。
@@ -109,6 +109,16 @@ CENTER_PANEL = "#11161f"
 CENTER_PANEL_BORDER = "#737f93"
 TEXT_PRIMARY = "#f2f4f8"
 TEXT_SECONDARY = "#b9c0d0"
+NAGA_AUTO_PANEL_FILL = "#0f1722"
+NAGA_AUTO_PANEL_OUTLINE = "#334155"
+NAGA_AUTO_PANEL_TEXT = "#e5edf8"
+NAGA_AUTO_PANEL_MUTED = "#9fb0c6"
+NAGA_AUTO_PANEL_STATUS_COLORS = {
+    "ready": "#7dd3fc",
+    "loading": "#fbbf24",
+    "error": "#fb7185",
+    "waiting": "#9fb0c6",
+}
 # 捨て牌エリアや影など盤面部品の配色定義。
 ZONE_FILL = "#223f6c"
 ZONE_OUTLINE = "#3d5d90"
@@ -117,6 +127,7 @@ WALL_TILE = "#d8dce4"
 WALL_EDGE = "#8f98ab"
 WALL_DARK = "#1f2430"
 # 河の牌は画像の透明余白ぶんだけ少し重ねて、間延びを防ぐ。
+DISCARD_ROW_TILE_COUNT = 6
 DISCARD_X_TIGHTEN = 4
 DISCARD_Y_TIGHTEN = 6
 HAND_TILE_GAP = 0
@@ -406,6 +417,10 @@ THREAD_ACTIVITY_NOTICE_TEXT = "#d7deea"
 THREAD_ACTIVITY_NOTICE_REDRAW_MIN_INTERVAL_S = 0.25
 PLAYER_PANEL_ALERT_SOUND_MIN_INTERVAL_S = 0.9
 SELF_HAND_ALERT_SOUND_MIN_INTERVAL_S = 0.9
+MELD_DORA_ALERT_SOUND_MIN_INTERVAL_S = 0.9
+MELD_DORA_ALERT_THRESHOLD = 2
+ALERT_SOUND_ASSET_DIR = Path(__file__).resolve().parents[2] / "assets" / "audio"
+ALERT_SOUND_WORKER_QUEUE_MAXSIZE = 16
 BRIDGE_STATUS_TICK_MS = 250
 BRIDGE_PERIODIC_SNAPSHOT_ENABLED = False
 BRIDGE_SNAPSHOT_POLL_S = 0.8
@@ -415,9 +430,13 @@ BRIDGE_TABLE_SNAPSHOT_READY_RETRY_LIMIT = 6
 BRIDGE_STATUS_SUCCESS_TTL_S = 3.0
 BRIDGE_STATUS_ERROR_TTL_S = 6.0
 SLOW_REDRAW_LOG_THRESHOLD_MS = 250.0
+SLOW_SIDE_PANEL_LOG_THRESHOLD_MS = 80.0
+SLOW_DISCARD_LOG_THRESHOLD_MS = 80.0
 UI_AUTO_REINIT_STALL_THRESHOLD_S = 15.0
 UI_AUTO_REINIT_COOLDOWN_S = 15.0
 UI_REDRAW_WATCHDOG_THREAD_POLL_S = 1.0
+DEFAULT_REFRESH_WATCH_MS = 100
+MIN_REDRAW_INTERVAL_MS = 80
 HAND_HONOR_VISIBLE_COUNT_TEXT = "#111827"
 HAND_SELF_ALERT_FILL = "#171f2b"
 HAND_SELF_ALERT_OUTLINE = "#3b4c63"
@@ -459,6 +478,42 @@ def _append_phase_timing(
 
     elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
     timings.append((str(label), elapsed_ms))
+
+
+def _append_elapsed_phase_timing(
+    timings: list[PhaseTiming],
+    label: str,
+    elapsed_ms: float,
+) -> None:
+    """Append one pre-aggregated timing entry in milliseconds."""
+
+    timings.append((str(label), max(0.0, float(elapsed_ms))))
+
+
+def _font_cache_key(font_spec: object) -> object:
+    if isinstance(font_spec, tuple):
+        return ("tuple", font_spec)
+    if isinstance(font_spec, list):
+        return ("tuple", tuple(font_spec))
+    return ("repr", repr(font_spec))
+
+
+def _font_for_canvas(canvas: tkinter.Canvas, font_spec: object) -> tkfont.Font:
+    """Return a cached Tk font wrapper for repeated measure/metrics calls."""
+
+    cache = getattr(canvas, "_ui_font_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            canvas._ui_font_cache = cache
+        except (AttributeError, tkinter.TclError):
+            return tkfont.Font(root=canvas, font=font_spec)
+    key = _font_cache_key(font_spec)
+    font = cache.get(key)
+    if font is None:
+        font = tkfont.Font(root=canvas, font=font_spec)
+        cache[key] = font
+    return font
 
 
 def _format_phase_timing_breakdown(
@@ -527,6 +582,110 @@ def _delete_canvas_items_by_tags(canvas: tkinter.Canvas, *tags: str) -> None:
             delete(tag)
         except tkinter.TclError:
             continue
+
+
+def _normalize_canvas_tags(tags: object) -> tuple[str, ...]:
+    """Return a Canvas-compatible tag tuple from a string or iterable."""
+
+    if tags is None:
+        return ()
+    if isinstance(tags, str):
+        return (tags,) if tags else ()
+    try:
+        return tuple(str(tag) for tag in tags if str(tag))
+    except TypeError:
+        normalized = str(tags)
+        return (normalized,) if normalized else ()
+
+
+def _merge_canvas_tags(existing_tags: object, extra_tags: Sequence[str]) -> tuple[str, ...]:
+    """Merge Canvas tags while preserving order and dropping duplicates."""
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for tag in (*_normalize_canvas_tags(existing_tags), *extra_tags):
+        if tag in seen:
+            continue
+        seen.add(tag)
+        merged.append(tag)
+    return tuple(merged)
+
+
+class _TaggedCanvasProxy:
+    """Canvas proxy that attaches stable tags at item creation time."""
+
+    def __init__(self, canvas: tkinter.Canvas, *tags: str) -> None:
+        # Discard redraw is the hottest Canvas path.  The proxy lets existing marker helpers keep
+        # calling create_* while still tagging every new item at creation time.
+        self._canvas = canvas
+        self._tags = tuple(str(tag) for tag in tags if str(tag))
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._canvas, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in {"_canvas", "_tags"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._canvas, name, value)
+
+    def _with_tags(self, kwargs: dict[str, object]) -> dict[str, object]:
+        if not self._tags:
+            return kwargs
+        tagged_kwargs = dict(kwargs)
+        tagged_kwargs["tags"] = _merge_canvas_tags(tagged_kwargs.get("tags"), self._tags)
+        return tagged_kwargs
+
+    def create_image(self, *args: object, **kwargs: object) -> int:
+        return self._canvas.create_image(*args, **self._with_tags(kwargs))
+
+    def create_text(self, *args: object, **kwargs: object) -> int:
+        return self._canvas.create_text(*args, **self._with_tags(kwargs))
+
+    def create_rectangle(self, *args: object, **kwargs: object) -> int:
+        return self._canvas.create_rectangle(*args, **self._with_tags(kwargs))
+
+    def create_oval(self, *args: object, **kwargs: object) -> int:
+        return self._canvas.create_oval(*args, **self._with_tags(kwargs))
+
+    def create_polygon(self, *args: object, **kwargs: object) -> int:
+        return self._canvas.create_polygon(*args, **self._with_tags(kwargs))
+
+    def create_line(self, *args: object, **kwargs: object) -> int:
+        return self._canvas.create_line(*args, **self._with_tags(kwargs))
+
+
+def _discard_item_canvas_tag(player: Player | int, local_index: int) -> str:
+    """Return the stable Canvas tag for one seat/local discard slot."""
+
+    # Per-tile tags are what make `P` marker updates cheap: the redraw only deletes the tile that
+    # changed instead of clearing all rivers.
+    return f"{_LIVE_ASYNC_DISCARD_TAG}_{int(player)}_{int(local_index)}"
+
+
+def _discard_render_cache(canvas: tkinter.Canvas) -> dict[tuple[int, int], object]:
+    """Return the per-discard render signature cache attached to the Canvas."""
+
+    cache = getattr(canvas, "discard_render_cache_by_key", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        canvas.discard_render_cache_by_key = cache
+    return cache
+
+
+def _reset_discard_render_cache(canvas: tkinter.Canvas) -> None:
+    """Forget per-discard signatures after a full tagged discard delete."""
+
+    # A full redraw has already removed the Canvas items.  Keeping signatures after that would make
+    # the next incremental pass think missing tiles are still visible.
+    canvas.discard_render_cache_by_key = {}
+    canvas.last_discard_render_stats = {
+        "active": 0,
+        "drawn": 0,
+        "skipped": 0,
+        "stale_deleted": 0,
+        "changed": 0,
+    }
 
 
 def _stable_render_signature(value: object) -> object:
@@ -601,13 +760,13 @@ PLAYER_PANEL_TILE_RANK_TILE_GAP = 1
 PLAYER_PANEL_TILE_RANK_HORIZONTAL_ROW_GAP = 0
 PLAYER_PANEL_TILE_RANK_VERTICAL_ROW_GAP = 0
 PLAYER_PANEL_SUMMARY_LINE_ROW_GAP = 1
-# 対面横長パネルは SUMMARY をやや広く、ALERT は少し詰めてボタン幅を確保する。
-PLAYER_PANEL_HORIZONTAL_SUMMARY_RATIO = 0.62
-PLAYER_PANEL_HORIZONTAL_ALERT_RATIO = 0.74
+# 対面横長パネルは SCORE を詰め、SUMMARY の可読領域を優先する。
+PLAYER_PANEL_HORIZONTAL_SUMMARY_RATIO = 0.66
+PLAYER_PANEL_HORIZONTAL_ALERT_RATIO = 0.78
 # 左右縦長パネルは SUMMARY を上下2ブロックで使い、ALERT はより小さくする。
 # 左右縦長パネルは高さを詰める前提なので、ALERT を小さくして BUTTONS を確保する。
-PLAYER_PANEL_VERTICAL_SUMMARY_RATIO = 0.56
-PLAYER_PANEL_VERTICAL_ALERT_RATIO = 0.63
+PLAYER_PANEL_VERTICAL_SUMMARY_RATIO = 0.60
+PLAYER_PANEL_VERTICAL_ALERT_RATIO = 0.67
 PLAYER_PANEL_NAME_FONT = ("Yu Gothic UI", 8, "bold")
 PLAYER_PANEL_TILE_RANK_HEADING = "危険ランク"
 PLAYER_PANEL_FALLBACK_NAME_BY_SEAT = {
@@ -632,15 +791,15 @@ PLAYER_PANEL_SECTION_MARGIN = 8
 PLAYER_PANEL_SECTION_GAP = 8
 PLAYER_PANEL_VERTICAL_SUMMARY_MIN_HEIGHT = 160
 PLAYER_PANEL_VERTICAL_ALERT_MIN_HEIGHT = 68
-PLAYER_PANEL_VERTICAL_SCORE_MIN_HEIGHT = 74
-PLAYER_PANEL_HORIZONTAL_SCORE_WIDTH = 86
+PLAYER_PANEL_VERTICAL_SCORE_MIN_HEIGHT = 56
+PLAYER_PANEL_HORIZONTAL_SCORE_WIDTH = 70
 PLAYER_PANEL_SCORE_VALUE_FONT = ("Consolas", 11, "bold")
 PLAYER_PANEL_SCORE_CAPTION_FONT = ("Yu Gothic UI", 7, "bold")
 PLAYER_PANEL_SCORE_POSITIVE_TEXT = "#fca5a5"
 PLAYER_PANEL_SCORE_NEGATIVE_TEXT = "#86efac"
 PLAYER_PANEL_SCORE_NEUTRAL_TEXT = "#d7deea"
 PLAYER_PANEL_SCORE_BUTTON_LABEL = "条件表示"
-PLAYER_PANEL_SCORE_BUTTON_TOP_MARGIN = 48
+PLAYER_PANEL_SCORE_BUTTON_TOP_MARGIN = 34
 PLAYER_PANEL_SCORE_BUTTON_BOTTOM_MARGIN = 6
 PLAYER_PANEL_HORIZONTAL_BUTTON_HEIGHT = 12
 PLAYER_PANEL_HORIZONTAL_BUTTON_GAP = 4
@@ -662,6 +821,18 @@ PLAYER_PANEL_BUTTON_LABELS = ("DETAIL", "STATUS", "プレイヤー補正")
 PLAYER_STATUS_VIEW_KIND = "player_status"
 NODOCCHI_STATUS_LINK_LABEL = "Nodocchiで開く"
 NODOCCHI_STATUS_RESULT_POLL_MS = 100
+NODOCCHI_STATUS_HIGHLIGHT_LABELS = frozenset(
+    {"和了率", "副露率", "リーチ率"}
+)
+NODOCCHI_STATUS_HIGHLIGHT_TEXT = "#fca5a5"
+NODOCCHI_STATUS_NORMAL_TEXT = TEXT_PRIMARY
+NODOCCHI_INLINE_STATUS_HIGHLIGHT_LABELS = frozenset({"和了", "副露", "立直"})
+NODOCCHI_INLINE_STATUS_LABEL_FONT = ("Yu Gothic UI", 6, "bold")
+NODOCCHI_INLINE_STATUS_VALUE_FONT = ("Consolas", 7, "bold")
+NODOCCHI_INLINE_STATUS_ROW_GAP = 2
+NODOCCHI_INLINE_STATUS_COLUMN_GAP = 10
+NODOCCHI_INLINE_STATUS_MIN_WIDTH = 44
+NODOCCHI_INLINE_STATUS_MIN_HEIGHT = 26
 RESPONSIVE_TRIGGER_SCREEN_WIDTH_RATIO = 0.5
 RESPONSIVE_FALLBACK_TRIGGER_WIDTH = 960.0
 RESPONSIVE_MIN_SCALE = 0.65
@@ -690,6 +861,37 @@ class RoundInfoPanelData:
     kyotaku_text: str = "0"
     bootstrap_text: str = ""
     seat_wind_labels_by_seat: dict[int, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class NagaAutoPanelData:
+    """Compact auto NAGA dan-point summary shown in the bottom strip."""
+
+    visible: bool = False
+    title_text: str = ""
+    lines: tuple[str, ...] = ()
+    status_kind: str = "waiting"
+
+
+def _normalize_naga_auto_panel_data(value: object | None) -> NagaAutoPanelData:
+    if isinstance(value, NagaAutoPanelData):
+        return value
+    if isinstance(value, Mapping):
+        raw_lines = value.get("lines", ())
+        if isinstance(raw_lines, str):
+            lines = (raw_lines,)
+        else:
+            try:
+                lines = tuple(str(line) for line in raw_lines if str(line or "").strip())
+            except TypeError:
+                lines = ()
+        return NagaAutoPanelData(
+            visible=bool(value.get("visible", False)),
+            title_text=str(value.get("title_text", "") or ""),
+            lines=lines,
+            status_kind=str(value.get("status_kind", "waiting") or "waiting"),
+        )
+    return NagaAutoPanelData()
 
 
 @dataclass(frozen=True)
@@ -864,6 +1066,9 @@ class LiveAsyncRenderState:
     player_names_by_seat: dict[int, str]
     round_events: tuple[object, ...]
     self_hand_value_alert: SelfHandValueAlertState
+    naga_auto_panel: NagaAutoPanelData = field(default_factory=NagaAutoPanelData)
+    table_situation_auto_scores_by_seat: dict[int, tuple[float, ...]] = field(default_factory=dict)
+    same_jun_marker_indices_by_seat: dict[int, frozenset[int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -873,6 +1078,17 @@ class SidePanelRenderCache:
     nodocchi_status_link_specs: tuple[NodocchiStatusLinkSpec, ...] = ()
     lag_marker_reference_button_specs: tuple[LagMarkerReferenceButtonSpec, ...] = ()
     detail_images: tuple[ImageTk.PhotoImage, ...] = ()
+
+
+@dataclass(frozen=True)
+class DefaultStatusRenderCache:
+    signature: object
+
+
+@dataclass(frozen=True)
+class TableFrameRenderCache:
+    signature: object
+    center_panel_images: tuple[ImageTk.PhotoImage, ...] = ()
 
 
 @dataclass
@@ -980,10 +1196,10 @@ class LayoutTuningSettings:
     top_meld_width: int = 900
     bottom_meld_width: int = 900
     panel_summary_top: int = 17
-    top_summary_ratio: float = 0.62
-    top_alert_ratio: float = 0.74
-    side_summary_ratio: float = 0.56
-    side_alert_ratio: float = 0.63
+    top_summary_ratio: float = PLAYER_PANEL_HORIZONTAL_SUMMARY_RATIO
+    top_alert_ratio: float = PLAYER_PANEL_HORIZONTAL_ALERT_RATIO
+    side_summary_ratio: float = PLAYER_PANEL_VERTICAL_SUMMARY_RATIO
+    side_alert_ratio: float = PLAYER_PANEL_VERTICAL_ALERT_RATIO
     panel_tile_rank_scale: float = 0.24
     top_tile_rank_row_gap: int = 0
     side_tile_rank_row_gap: int = 0
@@ -1007,6 +1223,12 @@ class LayoutTuningSettings:
 
 
 _THREAD_ACTIVITY_NOTICE_ACTIVE_CANVAS: tkinter.Canvas | None = None
+_THREAD_ACTIVITY_NOTICE_EVENT_QUEUE: queue.Queue[tuple[str, int | None]] = queue.Queue()
+_ALERT_SOUND_WORKER_LOCK = threading.Lock()
+_ALERT_SOUND_WORKER_THREAD: threading.Thread | None = None
+_ALERT_SOUND_JOB_QUEUE: queue.Queue[
+    tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
+] | None = None
 _INFERRED_VISIBLE_WORKER_STOP = object()
 _SELECTED_INFERRED_VISIBLE_POPUP_ENTRY_KIND = "selected_inferred_visible_popup"
 _ALERT_AUDIO_REFRESH_TOKEN_UNSET = object()
@@ -1014,9 +1236,11 @@ _HAND_RESPONSE_UI_TAG = "hand_response_ui"
 _LIVE_BACKGROUND_TAG = "live_background"
 _LIVE_FRAME_TAG = "live_frame"
 _LIVE_ASYNC_SIDE_PANEL_TAG = "live_async_side_panels"
+_LIVE_ASYNC_DEFAULT_STATUS_TAG = "live_async_default_status"
 _LIVE_ASYNC_DISCARD_TAG = "live_async_discards"
 _LIVE_DETAIL_OVERLAY_TAG = "live_detail_overlays"
 _LIVE_ASYNC_HAND_TAG = "live_async_hand"
+_LIVE_NAGA_AUTO_PANEL_TAG = "live_naga_auto_panel"
 _LIVE_LAYOUT_DRAG_TAG = "live_layout_drag"
 _THREAD_ACTIVITY_NOTICE_TAG = "thread_activity_notice"
 
@@ -1496,6 +1720,9 @@ def _force_manual_ui_reinit(
     canvas.last_render_layout_signature = None
     canvas.last_render_detail_content_rect = None
     canvas.side_panel_render_cache = None
+    canvas.default_status_render_cache = None
+    canvas.table_frame_render_cache = None
+    _reset_discard_render_cache(canvas)
     reasons.append("cleared_ui_render_cache")
     if callable(request_redraw):
         request_redraw(replace_pending=True)
@@ -2765,19 +2992,31 @@ def _should_evaluate_alert_audio_for_refresh_token(
 
 def _split_combined_refresh_token(
     refresh_token: object | None,
-) -> tuple[object | None, int | None]:
-    """Split one `(base_refresh_token, recommendation_update_sequence)` token."""
+) -> tuple[object | None, int | None, object | None]:
+    """Split one refresh token combined with recommendation and optional UI update tokens."""
 
-    if not isinstance(refresh_token, tuple) or len(refresh_token) != 2:
-        return refresh_token, None
+    if not isinstance(refresh_token, tuple) or len(refresh_token) not in {2, 3}:
+        return refresh_token, None, None
     recommendation_token = refresh_token[1]
     if isinstance(recommendation_token, bool):
-        return refresh_token, None
+        return refresh_token, None, None
     try:
         normalized_recommendation_token = int(recommendation_token)
     except (TypeError, ValueError):
-        return refresh_token, None
-    return refresh_token[0], normalized_recommendation_token
+        return refresh_token, None, None
+    extra_token = refresh_token[2] if len(refresh_token) == 3 else None
+    if isinstance(extra_token, bool):
+        normalized_extra_token: object | None = extra_token
+    else:
+        try:
+            normalized_extra_token = (
+                int(extra_token)
+                if extra_token is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            normalized_extra_token = extra_token
+    return refresh_token[0], normalized_recommendation_token, normalized_extra_token
 
 
 def _split_live_refresh_token(
@@ -2803,14 +3042,15 @@ def _should_use_hand_response_only_refresh(
 ) -> bool:
     """Return whether only the recommendation-side token changed."""
 
-    previous_base_token, previous_recommendation_token = _split_combined_refresh_token(
+    previous_base_token, previous_recommendation_token, previous_extra_token = _split_combined_refresh_token(
         previous_refresh_token
     )
-    next_base_token, next_recommendation_token = _split_combined_refresh_token(next_refresh_token)
+    next_base_token, next_recommendation_token, next_extra_token = _split_combined_refresh_token(next_refresh_token)
     return (
         previous_recommendation_token is not None
         and next_recommendation_token is not None
         and previous_base_token == next_base_token
+        and previous_extra_token == next_extra_token
         and previous_recommendation_token != next_recommendation_token
     )
 
@@ -2821,11 +3061,14 @@ def _should_use_live_async_only_refresh(
 ) -> bool:
     """Return whether only the live async-bundle token changed."""
 
-    previous_base_token, previous_recommendation_token = _split_combined_refresh_token(
+    previous_base_token, previous_recommendation_token, previous_extra_token = _split_combined_refresh_token(
         previous_refresh_token
     )
-    next_base_token, next_recommendation_token = _split_combined_refresh_token(next_refresh_token)
-    if previous_recommendation_token != next_recommendation_token:
+    next_base_token, next_recommendation_token, next_extra_token = _split_combined_refresh_token(next_refresh_token)
+    if (
+        previous_recommendation_token != next_recommendation_token
+        or previous_extra_token != next_extra_token
+    ):
         return False
     previous_live_token, previous_async_token = _split_live_refresh_token(previous_base_token)
     next_live_token, next_async_token = _split_live_refresh_token(next_base_token)
@@ -2869,10 +3112,49 @@ def _should_play_low_ev_self_hand_alert_sound_for_round(
     return normalized_round_token != str(last_low_ev_sound_round_token or "").strip()
 
 
+def _play_alert_sound_asset(asset_name: str) -> bool:
+    """Play one bundled WAV alert sound when the platform supports it."""
+
+    if winsound is None:
+        return False
+    play_sound = getattr(winsound, "PlaySound", None)
+    if not callable(play_sound):
+        return False
+    normalized_name = str(asset_name or "").strip()
+    if not normalized_name:
+        return False
+    sound_path = ALERT_SOUND_ASSET_DIR / f"{normalized_name}.wav"
+    if not sound_path.exists():
+        return False
+    flags = int(getattr(winsound, "SND_FILENAME", 0x00020000)) | int(
+        getattr(winsound, "SND_ASYNC", 0x0001)
+    )
+    try:
+        play_sound(str(sound_path), flags)
+    except (RuntimeError, OSError):
+        return False
+    return True
+
+
+def _self_hand_alert_sound_asset_name(alert_kind: str) -> str:
+    """Return the WAV asset name for one self-hand alert kind."""
+
+    normalized_kind = str(alert_kind or HAND_SELF_ALERT_KIND_NONE).strip().lower()
+    if normalized_kind == HAND_SELF_ALERT_KIND_LOW:
+        return "alert_self_low_ev"
+    if normalized_kind == HAND_SELF_ALERT_KIND_WARNING:
+        return "alert_self_ev_warning"
+    if normalized_kind == HAND_SELF_ALERT_KIND_HIGH:
+        return "alert_self_ev_high"
+    return "alert_panel_default"
+
+
 def _play_self_hand_value_alert_sound_worker(alert_kind: str) -> None:
     """Emit one short platform sound for the current self-hand alert kind."""
 
     if winsound is None:
+        return
+    if _play_alert_sound_asset(_self_hand_alert_sound_asset_name(alert_kind)):
         return
 
     frequency_hz, duration_ms = {
@@ -2932,12 +3214,7 @@ def _play_self_hand_value_alert_sound_if_needed(
         except tkinter.TclError:
             return
         return
-    _start_tracked_background_thread(
-        label="self alert sound",
-        name="self-hand-alert-sound",
-        target=_play_self_hand_value_alert_sound_worker,
-        args=(current_kind,),
-    )
+    _queue_alert_sound_job(_play_self_hand_value_alert_sound_worker, current_kind)
 
 
 def _build_self_hand_value_alert_state(
@@ -3026,6 +3303,7 @@ def create_canvas(
     meld_tiles: Sequence[int] | None = None,
     dora_indicator_tiles: Sequence[int] | None = None,
     round_info_panel: RoundInfoPanelData | None = None,
+    naga_auto_panel: NagaAutoPanelData | Mapping[str, object] | None = None,
     auto_refresh_ms: int | None = None,
     hand_tiles_provider: Callable[[], Sequence[int]] | None = None,
     hand_draw_tile_provider: Callable[[], int | None] | None = None,
@@ -3054,6 +3332,7 @@ def create_canvas(
     meld_tiles_provider: Callable[[], Sequence[int]] | None = None,
     dora_indicator_tiles_provider: Callable[[], Sequence[int]] | None = None,
     round_info_panel_provider: Callable[[], RoundInfoPanelData] | None = None,
+    naga_auto_panel_provider: Callable[[], NagaAutoPanelData | Mapping[str, object] | None] | None = None,
     melds_by_player: SeatMeldMap | None = None,
     melds_by_player_provider: Callable[[], SeatMeldMap] | None = None,
     visible_summary: VisibleTileSummary | None = None,
@@ -3064,7 +3343,7 @@ def create_canvas(
     table_snapshot_reinit_action: Callable[[], object | None] | None = None,
     refresh_token: object | None = None,
     refresh_token_provider: Callable[[], object | None] | None = None,
-    refresh_watch_ms: int = 16,
+    refresh_watch_ms: int = DEFAULT_REFRESH_WATCH_MS,
 ) -> None:
     """天鳳風レイアウトの卓 Canvas を 1 枚描画する。"""
 
@@ -3115,6 +3394,7 @@ def create_canvas(
         if round_info_panel is not None
         else RoundInfoPanelData()
     )
+    current_naga_auto_panel = _normalize_naga_auto_panel_data(naga_auto_panel)
     current_melds_by_player = _normalize_meld_map(melds_by_player)
     detail_panel_state = DetailPanelState()
 
@@ -3132,8 +3412,12 @@ def create_canvas(
     board_canvas.image_table = img_table
     board_canvas.scaled_image_table_cache = {1.0: img_table}
     board_canvas.thinking_tile_image_cache = {}
+    board_canvas.discard_base_tile_image_cache = {}
+    board_canvas.discard_render_cache_by_key = {}
     board_canvas.hand_danger_tile_image_cache = {}
     board_canvas.hand_response_tile_image_cache = {}
+    board_canvas.detail_visible_tile_image_cache = {}
+    board_canvas.center_dora_tile_image_cache = {}
     board_canvas.inferred_visible_tile_image_cache = {}
     board_canvas.detail_panel_state = detail_panel_state
     board_canvas.player_panel_button_specs = []
@@ -3234,10 +3518,20 @@ def create_canvas(
     board_canvas.last_player_panel_alert_keys_by_seat = {
         seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
+    board_canvas.last_player_panel_audible_alert_keys_by_seat = {
+        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    board_canvas.last_player_panel_sounded_alert_keys_by_seat = {
+        seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
     board_canvas.last_player_panel_remain_sound_level_by_seat = {
         seat: 0 for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
     board_canvas.last_player_panel_alert_sound_monotonic_s = 0.0
+    board_canvas.last_meld_dora_alert_counts_by_seat = {
+        int(player): 0 for player in Player
+    }
+    board_canvas.last_meld_dora_alert_sound_monotonic_s = 0.0
     board_canvas.last_thread_activity_notice_redraw_monotonic_s = 0.0
     board_canvas.same_jun_match_cache_key = None
     board_canvas.same_jun_match_cache_value = {}
@@ -3268,8 +3562,8 @@ def create_canvas(
     board_canvas.live_async_render_state = None
     board_canvas.table_snapshot_reinit_action = table_snapshot_reinit_action
     board_canvas.current_player_names_by_seat = current_player_names_by_seat
+    board_canvas.current_naga_auto_panel = current_naga_auto_panel
     board_canvas.current_ui_scale = 1.0
-    board_canvas.discard_tint_base_prewarm_scale_keys = set()
     board_canvas.current_round_identity = round_identity
     board_canvas.current_refresh_token = refresh_token
     board_canvas.last_alert_audio_refresh_token = _ALERT_AUDIO_REFRESH_TOKEN_UNSET
@@ -3314,12 +3608,10 @@ def create_canvas(
     board_canvas.last_render_layout_signature = None
     board_canvas.last_render_detail_content_rect = None
     board_canvas.side_panel_render_cache = None
+    board_canvas.default_status_render_cache = None
+    board_canvas.table_frame_render_cache = None
     global _THREAD_ACTIVITY_NOTICE_ACTIVE_CANVAS
     _THREAD_ACTIVITY_NOTICE_ACTIVE_CANVAS = board_canvas
-    _ensure_discard_tint_base_prewarm(
-        board_canvas,
-        float(_current_layout_tuning(board_canvas).discard_tile_scale),
-    )
 
     # リサイズ連打時に再描画が過剰発火しないよう after ID を持つ。
     resize_job: str | None = None
@@ -3363,15 +3655,13 @@ def create_canvas(
             board_canvas.scaled_image_table_cache = scaled_image_table_cache
         if getattr(board_canvas, "current_ui_scale", 1.0) != ui_scale:
             board_canvas.thinking_tile_image_cache = {}
+            board_canvas.discard_base_tile_image_cache = {}
+            _reset_discard_render_cache(board_canvas)
             board_canvas.hand_danger_tile_image_cache = {}
             board_canvas.hand_response_tile_image_cache = {}
             board_canvas.inferred_visible_tile_image_cache = {}
         board_canvas.current_ui_scale = ui_scale
         layout_tuning_settings = _current_layout_tuning(board_canvas)
-        _ensure_discard_tint_base_prewarm(
-            board_canvas,
-            ui_scale * float(layout_tuning_settings.discard_tile_scale),
-        )
         board_canvas.image_table = active_image_table
         _append_phase_timing(redraw_phase_timings, "ui_scale_setup", phase_started_at)
         phase_started_at = time.perf_counter()
@@ -3623,6 +3913,9 @@ def create_canvas(
         latest_global_discard_index = _latest_global_discard_index_from_discard_map(
             dynamic_discard_map
         )
+        latest_global_discard_actor_seat = (
+            _latest_global_discard_actor_seat_from_discard_map(dynamic_discard_map)
+        )
         push_marker_alert_percentages = _push_marker_alerts_for_render(
             raw_player_push_alert_percentages,
             getattr(board_canvas, "player_push_marker_latches_by_seat", {}),
@@ -3698,6 +3991,12 @@ def create_canvas(
                 else current_round_info_panel
             )
         )
+        dynamic_naga_auto_panel = _normalize_naga_auto_panel_data(
+            naga_auto_panel_provider()
+            if naga_auto_panel_provider is not None
+            else current_naga_auto_panel
+        )
+        board_canvas.current_naga_auto_panel = dynamic_naga_auto_panel
         dynamic_round_events = (
             list(getattr(table_snapshot, "round_events", ()))
             if table_snapshot is not None and AWASEUCHI_MARKERS_ENABLED
@@ -3712,6 +4011,16 @@ def create_canvas(
                 else visible_summary
             )
         )
+        dynamic_table_situation_auto_scores_by_seat = (
+            getattr(table_snapshot, "table_situation_auto_scores_by_seat", None)
+            if table_snapshot is not None
+            else None
+        )
+        dynamic_same_jun_marker_indices_by_seat = (
+            getattr(table_snapshot, "same_jun_marker_indices_by_seat", None)
+            if table_snapshot is not None
+            else None
+        )
         dynamic_self_hand_value_alert = _build_self_hand_value_alert_state(
             dynamic_hand_recommendation_panel,
             recommendation_request_tiles,
@@ -3719,22 +4028,6 @@ def create_canvas(
             dynamic_self_melds,
         )
         _append_phase_timing(redraw_phase_timings, "state_prepare", phase_started_at)
-        phase_started_at = time.perf_counter()
-        if _should_evaluate_alert_audio_for_refresh_token(
-            board_canvas,
-            getattr(board_canvas, "current_refresh_token", None),
-        ):
-            _play_self_hand_value_alert_sound_if_needed(
-                board_canvas,
-                dynamic_self_hand_value_alert,
-            )
-            _play_player_panel_alert_sound_if_needed(
-                board_canvas,
-                dynamic_opponent_suji_panel_summaries,
-                dynamic_player_push_alert_percentages,
-                alert_indicators_by_seat=dynamic_player_alert_indicators_by_seat,
-            )
-        _append_phase_timing(redraw_phase_timings, "alert_audio", phase_started_at)
         phase_started_at = time.perf_counter()
         board_canvas.current_player_names_by_seat = dynamic_player_names_by_seat
         board_canvas.current_player_alert_indicators_by_seat = dynamic_player_alert_indicators_by_seat
@@ -3773,6 +4066,9 @@ def create_canvas(
                 dynamic_melds_by_player,
                 dynamic_visible_summary,
                 dynamic_self_hand_value_alert,
+                dynamic_naga_auto_panel,
+                dynamic_table_situation_auto_scores_by_seat,
+                dynamic_same_jun_marker_indices_by_seat,
             )
             if not reused_cached_layout:
                 full_redraw_reason = (
@@ -3805,6 +4101,9 @@ def create_canvas(
                 dynamic_melds_by_player,
                 dynamic_visible_summary,
                 dynamic_self_hand_value_alert,
+                dynamic_naga_auto_panel,
+                dynamic_table_situation_auto_scores_by_seat,
+                dynamic_same_jun_marker_indices_by_seat,
                 ui_scale=ui_scale,
                 layout_tuning=layout_tuning_settings,
             )
@@ -3816,6 +4115,28 @@ def create_canvas(
         _place_bridge_toggle_controls_frame(board_canvas)
         _place_bridge_action_controls_frame(board_canvas)
         _append_phase_timing(redraw_phase_timings, "overlay", phase_started_at)
+        phase_started_at = time.perf_counter()
+        if _should_evaluate_alert_audio_for_refresh_token(
+            board_canvas,
+            getattr(board_canvas, "current_refresh_token", None),
+        ):
+            _play_self_hand_value_alert_sound_if_needed(
+                board_canvas,
+                dynamic_self_hand_value_alert,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                board_canvas,
+                dynamic_opponent_suji_panel_summaries,
+                dynamic_player_push_alert_percentages,
+                alert_indicators_by_seat=dynamic_player_alert_indicators_by_seat,
+                latest_discard_actor_seat=latest_global_discard_actor_seat,
+            )
+            _play_meld_dora_alert_sound_if_needed(
+                board_canvas,
+                dynamic_melds_by_player,
+                dynamic_dora_indicator_tiles,
+            )
+        _append_phase_timing(redraw_phase_timings, "alert_audio", phase_started_at)
         live_async_layout = getattr(board_canvas, "last_render_layout", None)
         if isinstance(live_async_layout, dict):
             board_canvas.live_async_render_state = LiveAsyncRenderState(
@@ -3841,6 +4162,15 @@ def create_canvas(
                 player_names_by_seat=dict(dynamic_player_names_by_seat),
                 round_events=tuple(dynamic_round_events),
                 self_hand_value_alert=dynamic_self_hand_value_alert,
+                naga_auto_panel=dynamic_naga_auto_panel,
+                table_situation_auto_scores_by_seat=dict(
+                    _normalize_table_situation_display_scores_by_seat(
+                        dynamic_table_situation_auto_scores_by_seat
+                    )
+                ),
+                same_jun_marker_indices_by_seat=_normalize_same_jun_marker_indices_by_seat(
+                    dynamic_same_jun_marker_indices_by_seat
+                ),
             )
         board_canvas.last_redraw_phase_timings = tuple(redraw_phase_timings)
 
@@ -3895,6 +4225,21 @@ def create_canvas(
         nonlocal redraw_job
         if not board_canvas.winfo_exists():
             return
+        resolved_delay_ms = max(0, int(delay_ms))
+        if resolved_delay_ms <= 0 and not replace_pending:
+            last_finished_monotonic_s = float(
+                getattr(board_canvas, "last_redraw_finished_monotonic_s", 0.0) or 0.0
+            )
+            elapsed_since_last_ms = (
+                (time.monotonic() - last_finished_monotonic_s) * 1000.0
+                if last_finished_monotonic_s > 0.0
+                else float(MIN_REDRAW_INTERVAL_MS)
+            )
+            if elapsed_since_last_ms < MIN_REDRAW_INTERVAL_MS:
+                resolved_delay_ms = max(
+                    1,
+                    int(round(MIN_REDRAW_INTERVAL_MS - elapsed_since_last_ms)),
+                )
         if redraw_job is not None:
             if not replace_pending:
                 return
@@ -3913,13 +4258,13 @@ def create_canvas(
             if not board_canvas.winfo_exists():
                 return
             if bool(getattr(board_canvas, "redraw_in_progress", False)):
-                request_redraw(delay_ms=16)
+                request_redraw(delay_ms=MIN_REDRAW_INTERVAL_MS)
                 return
             _run_redraw_safely()
 
         try:
-            if int(delay_ms) > 0:
-                redraw_job = board_canvas.after(int(delay_ms), _run_requested_redraw)
+            if resolved_delay_ms > 0:
+                redraw_job = board_canvas.after(resolved_delay_ms, _run_requested_redraw)
             else:
                 redraw_job = board_canvas.after_idle(_run_requested_redraw)
             board_canvas.redraw_request_pending = True
@@ -3955,6 +4300,7 @@ def create_canvas(
         watch_job = None
         schedule_refresh_watch()
         now_monotonic = time.monotonic()
+        _drain_thread_activity_notice_event_queue(board_canvas)
         queue_changed = _drain_hand_auto_mode_result_queue(board_canvas)
         queue_changed = (
             _drain_redraw_watchdog_result_queue(
@@ -4024,6 +4370,11 @@ def create_canvas(
                         latest_global_discard_index = _latest_global_discard_index_from_discard_map(
                             getattr(partial_snapshot, "discard_map", {})
                         )
+                        latest_global_discard_actor_seat = (
+                            _latest_global_discard_actor_seat_from_discard_map(
+                                getattr(partial_snapshot, "discard_map", {})
+                            )
+                        )
                         push_marker_alert_percentages = _push_marker_alerts_for_render(
                             raw_player_push_alert_percentages,
                             getattr(board_canvas, "player_push_marker_latches_by_seat", {}),
@@ -4054,18 +4405,11 @@ def create_canvas(
                                     dynamic_player_push_alert_percentages,
                                 )
                             )
-                        if _should_evaluate_alert_audio_for_refresh_token(
-                            board_canvas,
-                            next_refresh_token,
-                        ):
-                            _play_player_panel_alert_sound_if_needed(
-                                board_canvas,
-                                dynamic_opponent_suji_panel_summaries,
-                                dynamic_player_push_alert_percentages,
-                                alert_indicators_by_seat=dynamic_player_alert_indicators_by_seat,
-                            )
                         if not _redraw_live_async_regions_if_possible(
                             board_canvas,
+                            discard_map=getattr(partial_snapshot, "discard_map", None),
+                            visible_summary=getattr(partial_snapshot, "visible_summary", None),
+                            round_events=getattr(partial_snapshot, "round_events", None),
                             hand_danger_percentages=dynamic_hand_danger_percentages,
                             opponent_suji_panel_summaries=dynamic_opponent_suji_panel_summaries,
                             player_push_alert_percentages=dynamic_player_push_alert_percentages,
@@ -4074,9 +4418,30 @@ def create_canvas(
                             discard_red_tint_indices_by_seat=_normalize_discard_red_tint_indices_by_seat(
                                 getattr(partial_snapshot, "discard_red_tint_indices_by_seat", {})
                             ),
+                            table_situation_auto_scores_by_seat=getattr(
+                                partial_snapshot,
+                                "table_situation_auto_scores_by_seat",
+                                None,
+                            ),
+                            same_jun_marker_indices_by_seat=getattr(
+                                partial_snapshot,
+                                "same_jun_marker_indices_by_seat",
+                                None,
+                            ),
                         ):
                             request_redraw()
                         else:
+                            if _should_evaluate_alert_audio_for_refresh_token(
+                                board_canvas,
+                                next_refresh_token,
+                            ):
+                                _play_player_panel_alert_sound_if_needed(
+                                    board_canvas,
+                                    dynamic_opponent_suji_panel_summaries,
+                                    dynamic_player_push_alert_percentages,
+                                    alert_indicators_by_seat=dynamic_player_alert_indicators_by_seat,
+                                    latest_discard_actor_seat=latest_global_discard_actor_seat,
+                                )
                             _mark_ui_refresh_completed(
                                 board_canvas,
                                 refresh_token=next_refresh_token,
@@ -5083,6 +5448,7 @@ def _normalize_player_push_alert_percentages(
             raw_threshold_percent = raw_value.get("threshold_percent", 9.0)
             raw_tile_label = raw_value.get("tile_label", "")
             raw_discard_index = raw_value.get("discard_index")
+            raw_seat_discard_index = raw_value.get("seat_discard_index")
             raw_is_current = raw_value.get("is_current", False)
             raw_kind = raw_value.get("kind")
             raw_target_seats = raw_value.get("target_seats", ())
@@ -5093,6 +5459,7 @@ def _normalize_player_push_alert_percentages(
             raw_threshold_percent = getattr(raw_value, "threshold_percent", 9.0)
             raw_tile_label = getattr(raw_value, "tile_label", "")
             raw_discard_index = getattr(raw_value, "discard_index", None)
+            raw_seat_discard_index = getattr(raw_value, "seat_discard_index", None)
             raw_is_current = getattr(raw_value, "is_current", False)
             raw_kind = getattr(raw_value, "kind", None)
             raw_target_seats = getattr(raw_value, "target_seats", ())
@@ -5125,6 +5492,10 @@ def _normalize_player_push_alert_percentages(
             normalized[target_seat]["discard_index"] = int(raw_discard_index)
         except (TypeError, ValueError):
             normalized[target_seat]["discard_index"] = None
+        try:
+            normalized[target_seat]["seat_discard_index"] = int(raw_seat_discard_index)
+        except (TypeError, ValueError):
+            normalized[target_seat]["seat_discard_index"] = None
         normalized[target_seat]["is_current"] = bool(raw_is_current)
         normalized[target_seat]["kind"] = str(raw_kind or "").strip().lower()
         if not normalized[target_seat]["kind"]:
@@ -5242,6 +5613,7 @@ def _empty_player_push_alert_payload(seat: int) -> dict[str, object]:
         "threshold_percent": 9.0,
         "tile_label": "",
         "discard_index": None,
+        "seat_discard_index": None,
         "is_current": False,
         "kind": "none",
         "target_seats": (),
@@ -5338,6 +5710,57 @@ def _latest_global_discard_index_from_discard_map(
     return discard_count - 1
 
 
+def _latest_global_discard_actor_seat_from_discard_map(
+    discard_map: Mapping[object, Iterable[object]],
+) -> int | None:
+    """Return the latest discard actor seat when the discard map carries ordering metadata."""
+
+    best_round_index: int | None = None
+    best_round_seat: int | None = None
+    best_event_index: int | None = None
+    best_event_seat: int | None = None
+    best_timestamp: float | None = None
+    best_timestamp_seat: int | None = None
+    for raw_seat, discards in discard_map.items():
+        try:
+            seat = int(raw_seat)
+        except (TypeError, ValueError):
+            continue
+        for discard in discards or ():
+            try:
+                round_index = int(getattr(discard, "round_discard_index", None))
+            except (TypeError, ValueError):
+                round_index = None
+            if round_index is not None:
+                if best_round_index is None or round_index > best_round_index:
+                    best_round_index = round_index
+                    best_round_seat = seat
+                continue
+            try:
+                event_index = int(getattr(discard, "event_index", None))
+            except (TypeError, ValueError):
+                event_index = None
+            if event_index is not None and event_index >= 0:
+                if best_event_index is None or event_index > best_event_index:
+                    best_event_index = event_index
+                    best_event_seat = seat
+                continue
+            try:
+                timestamp = float(getattr(discard, "timestamp", None))
+            except (TypeError, ValueError):
+                timestamp = None
+            if timestamp is not None and (
+                best_timestamp is None or timestamp > best_timestamp
+            ):
+                best_timestamp = timestamp
+                best_timestamp_seat = seat
+    if best_round_seat is not None:
+        return best_round_seat
+    if best_event_seat is not None:
+        return best_event_seat
+    return best_timestamp_seat
+
+
 def _push_alert_is_latchable(
     alert_data: Mapping[str, object],
     *,
@@ -5400,6 +5823,7 @@ def _push_release_payload(
         "threshold_percent": _player_push_alert_threshold_percent(previous_alert),
         "tile_label": str(current_alert.get("tile_label", "") or "").strip(),
         "discard_index": current_discard_index,
+        "seat_discard_index": current_alert.get("seat_discard_index"),
         "is_current": True,
         "kind": "release",
         "target_seats": resolved_target_seats,
@@ -5603,6 +6027,99 @@ def _effective_visible_dora_count_for_alert(
     return normalized_visible_count
 
 
+def _dora_tile34_indices_from_indicator_tiles(
+    dora_indicator_tiles: Sequence[int],
+) -> frozenset[int]:
+    """Return canonical dora tile ids from UI-facing dora indicator tile ids."""
+
+    return frozenset(
+        dora_tile_34
+        for dora_tile_34 in (
+            _dora_tile34_index_from_indicator_tile37(int(tile_37))
+            for tile_37 in dora_indicator_tiles
+        )
+        if dora_tile_34 is not None
+    )
+
+
+def _tile37_dora_count_for_meld_alert(
+    tile_37: int | None,
+    dora_tile34_indices: Collection[int],
+) -> int:
+    """Return alert-side dora value for one visible meld tile."""
+
+    if tile_37 is None:
+        return 0
+    try:
+        normalized_tile_37 = int(tile_37)
+    except (TypeError, ValueError):
+        return 0
+    tile_34_index = tile37_to_tile34_index(normalized_tile_37)
+    dora_count = 1 if tile_34_index in dora_tile34_indices else 0
+    if normalized_tile_37 in RED_DORA_TILE_IDS_37:
+        dora_count += 1
+    return dora_count
+
+
+def _tile34_dora_count_for_meld_alert(
+    tile_34: int | None,
+    dora_tile34_indices: Collection[int],
+) -> int:
+    """Return indicator-only dora value when red-five identity is unavailable."""
+
+    try:
+        normalized_tile_34 = int(tile_34)
+    except (TypeError, ValueError):
+        return 0
+    return 1 if normalized_tile_34 in dora_tile34_indices else 0
+
+
+def _meld_dora_count_for_alert(
+    meld: Meld,
+    dora_tile34_indices: Collection[int],
+) -> int:
+    """Return dora count visible in one meld, including red dora."""
+
+    tiles_136 = list(getattr(meld, "tiles_136", ()) or ())
+    if tiles_136:
+        return sum(
+            _tile37_dora_count_for_meld_alert(
+                tile136_to_tile37(tile_136),
+                dora_tile34_indices,
+            )
+            for tile_136 in tiles_136
+        )
+
+    tiles_37 = list(getattr(meld, "tiles_37", ()) or ())
+    if tiles_37:
+        return sum(
+            _tile37_dora_count_for_meld_alert(tile_37, dora_tile34_indices)
+            for tile_37 in tiles_37
+        )
+
+    return sum(
+        _tile34_dora_count_for_meld_alert(tile_34, dora_tile34_indices)
+        for tile_34 in (getattr(meld, "tiles_34", ()) or ())
+    )
+
+
+def _meld_dora_counts_by_player(
+    melds_by_player: SeatMeldMap | None,
+    dora_indicator_tiles: Sequence[int],
+) -> dict[int, int]:
+    """Return per-player dora count visible inside that player's melds."""
+
+    normalized_melds_by_player = _normalize_meld_map(melds_by_player)
+    dora_tile34_indices = _dora_tile34_indices_from_indicator_tiles(dora_indicator_tiles)
+    return {
+        int(player): sum(
+            _meld_dora_count_for_alert(meld, dora_tile34_indices)
+            for meld in normalized_melds_by_player.get(player, ())
+        )
+        for player in Player
+    }
+
+
 def _format_visible_dora_tile_count_label(visible_dora_tile_count: int) -> str:
     """Format the compact self-alert-side visible dora count label."""
 
@@ -5736,16 +6253,24 @@ def _fit_text_to_width(
     normalized_text = str(text or "")
     if max_width <= 0:
         return ""
-    font = tkfont.Font(root=canvas, font=font_spec)
+    font = _font_for_canvas(canvas, font_spec)
     if font.measure(normalized_text) <= max_width:
         return normalized_text
     ellipsis = "..."
     if font.measure(ellipsis) > max_width:
         return ""
-    fitted = normalized_text
-    while fitted and font.measure(f"{fitted}{ellipsis}") > max_width:
-        fitted = fitted[:-1]
-    return f"{fitted}{ellipsis}" if fitted else ellipsis
+    low = 0
+    high = len(normalized_text)
+    best_length = 0
+    while low <= high:
+        midpoint = (low + high) // 2
+        candidate = f"{normalized_text[:midpoint]}{ellipsis}"
+        if font.measure(candidate) <= max_width:
+            best_length = midpoint
+            low = midpoint + 1
+        else:
+            high = midpoint - 1
+    return f"{normalized_text[:best_length]}{ellipsis}" if best_length > 0 else ellipsis
 
 
 def _quantize_ui_scale(raw_scale: float) -> float:
@@ -6037,6 +6562,10 @@ def _reset_round_ui_state(canvas: tkinter.Canvas) -> None:
     canvas.hand_response_button_spec = None
     canvas.hand_betaori_response_button_spec = None
     canvas.hand_response_render_state = None
+    canvas.side_panel_render_cache = None
+    canvas.default_status_render_cache = None
+    canvas.table_frame_render_cache = None
+    _reset_discard_render_cache(canvas)
     _reset_hand_auto_mode_volatile_state(canvas)
     canvas.last_self_hand_value_alert_kind = HAND_SELF_ALERT_KIND_NONE
     canvas.last_self_low_ev_sound_round_token = ""
@@ -6044,10 +6573,20 @@ def _reset_round_ui_state(canvas: tkinter.Canvas) -> None:
     canvas.last_player_panel_alert_keys_by_seat = {
         seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
+    canvas.last_player_panel_audible_alert_keys_by_seat = {
+        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    canvas.last_player_panel_sounded_alert_keys_by_seat = {
+        seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
     canvas.last_player_panel_remain_sound_level_by_seat = {
         seat: 0 for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
     canvas.last_player_panel_alert_sound_monotonic_s = 0.0
+    canvas.last_meld_dora_alert_counts_by_seat = {
+        int(player): 0 for player in Player
+    }
+    canvas.last_meld_dora_alert_sound_monotonic_s = 0.0
     canvas.same_jun_match_cache_key = None
     canvas.same_jun_match_cache_value = {}
     canvas.same_jun_public_event_source_state = None
@@ -6539,67 +7078,98 @@ def _update_thread_activity_notice(label: str, active_delta: int | None = None) 
         return
     canvas = _THREAD_ACTIVITY_NOTICE_ACTIVE_CANVAS
     if canvas is None:
+        if threading.current_thread() is not threading.main_thread():
+            _THREAD_ACTIVITY_NOTICE_EVENT_QUEUE.put((text, active_delta))
         return
-
-    def _apply() -> None:
-        if not canvas.winfo_exists():
-            return
-        now_monotonic_s = time.monotonic()
-        expires_monotonic_s = now_monotonic_s + THREAD_ACTIVITY_NOTICE_TTL_S
-        active_entries = [
-            dict(entry)
-            for entry in tuple(getattr(canvas, "thread_activity_notice_entries", ()))
-            if (
-                int(entry.get("active_count", 0) or 0) > 0
-                or float(entry.get("expires_monotonic_s", 0.0) or 0.0) > now_monotonic_s
-            )
-        ]
-        existing_entry: dict[str, object] | None = None
-        remaining_entries: list[dict[str, object]] = []
-        for entry in active_entries:
-            if str(entry.get("text", "") or "").strip() == text and existing_entry is None:
-                existing_entry = entry
-                continue
-            remaining_entries.append(entry)
-        current_active_count = int(existing_entry.get("active_count", 0) or 0) if existing_entry else 0
-        if active_delta is None:
-            next_active_count = current_active_count
-        else:
-            next_active_count = max(0, current_active_count + int(active_delta))
-        if existing_entry is None and active_delta is not None and active_delta < 0:
-            return
-        updated_entry = {
-            "text": text,
-            "count": max(1, next_active_count),
-            "active_count": next_active_count,
-            "expires_monotonic_s": expires_monotonic_s,
-        }
-        active_entries = [updated_entry, *remaining_entries]
-        canvas.thread_activity_notice_entries = active_entries
-        first_entry = active_entries[0] if active_entries else {}
-        canvas.thread_activity_notice_text = str(first_entry.get("text", "") or "")
-        canvas.thread_activity_notice_expires_monotonic_s = float(
-            first_entry.get("expires_monotonic_s", 0.0) or 0.0
-        )
-        last_redraw_monotonic_s = float(
-            getattr(canvas, "last_thread_activity_notice_redraw_monotonic_s", 0.0) or 0.0
-        )
-        should_redraw = (
-            now_monotonic_s - last_redraw_monotonic_s >= THREAD_ACTIVITY_NOTICE_REDRAW_MIN_INTERVAL_S
-        )
-        if not bool(getattr(canvas, "redraw_in_progress", False)) and should_redraw:
-            canvas.last_thread_activity_notice_redraw_monotonic_s = now_monotonic_s
-            redraw_action = getattr(canvas, "redraw_action", None)
-            if callable(redraw_action):
-                redraw_action()
 
     if threading.current_thread() is threading.main_thread():
-        _apply()
+        _apply_thread_activity_notice_event(canvas, text, active_delta)
         return
+    _THREAD_ACTIVITY_NOTICE_EVENT_QUEUE.put((text, active_delta))
     try:
-        canvas.after(0, _apply)
-    except tkinter.TclError:
+        canvas.after(0, lambda: _drain_thread_activity_notice_event_queue(canvas))
+    except (RuntimeError, tkinter.TclError):
         return
+
+
+def _apply_thread_activity_notice_event(
+    canvas: tkinter.Canvas,
+    text: str,
+    active_delta: int | None,
+) -> bool:
+    """Apply one thread-activity event on the Tk thread and request a coalesced redraw."""
+
+    if not canvas.winfo_exists():
+        return False
+    now_monotonic_s = time.monotonic()
+    expires_monotonic_s = now_monotonic_s + THREAD_ACTIVITY_NOTICE_TTL_S
+    active_entries = [
+        dict(entry)
+        for entry in tuple(getattr(canvas, "thread_activity_notice_entries", ()))
+        if (
+            int(entry.get("active_count", 0) or 0) > 0
+            or float(entry.get("expires_monotonic_s", 0.0) or 0.0) > now_monotonic_s
+        )
+    ]
+    existing_entry: dict[str, object] | None = None
+    remaining_entries: list[dict[str, object]] = []
+    for entry in active_entries:
+        if str(entry.get("text", "") or "").strip() == text and existing_entry is None:
+            existing_entry = entry
+            continue
+        remaining_entries.append(entry)
+    current_active_count = int(existing_entry.get("active_count", 0) or 0) if existing_entry else 0
+    if active_delta is None:
+        next_active_count = current_active_count
+    else:
+        next_active_count = max(0, current_active_count + int(active_delta))
+    if existing_entry is None and active_delta is not None and active_delta < 0:
+        return False
+    updated_entry = {
+        "text": text,
+        "count": max(1, next_active_count),
+        "active_count": next_active_count,
+        "expires_monotonic_s": expires_monotonic_s,
+    }
+    active_entries = [updated_entry, *remaining_entries]
+    canvas.thread_activity_notice_entries = active_entries
+    first_entry = active_entries[0] if active_entries else {}
+    canvas.thread_activity_notice_text = str(first_entry.get("text", "") or "")
+    canvas.thread_activity_notice_expires_monotonic_s = float(
+        first_entry.get("expires_monotonic_s", 0.0) or 0.0
+    )
+    last_redraw_monotonic_s = float(
+        getattr(canvas, "last_thread_activity_notice_redraw_monotonic_s", 0.0) or 0.0
+    )
+    should_redraw = (
+        now_monotonic_s - last_redraw_monotonic_s >= THREAD_ACTIVITY_NOTICE_REDRAW_MIN_INTERVAL_S
+    )
+    if not bool(getattr(canvas, "redraw_in_progress", False)) and should_redraw:
+        canvas.last_thread_activity_notice_redraw_monotonic_s = now_monotonic_s
+        redraw_action = getattr(canvas, "redraw_action", None)
+        if callable(redraw_action):
+            redraw_action()
+    return True
+
+
+def _drain_thread_activity_notice_event_queue(canvas: tkinter.Canvas) -> bool:
+    """Move thread-activity updates from worker threads onto the Tk-owned canvas."""
+
+    changed = False
+    while True:
+        try:
+            label, active_delta = _THREAD_ACTIVITY_NOTICE_EVENT_QUEUE.get_nowait()
+        except queue.Empty:
+            break
+        try:
+            changed = _apply_thread_activity_notice_event(
+                canvas,
+                str(label or "").strip(),
+                active_delta,
+            ) or changed
+        finally:
+            _THREAD_ACTIVITY_NOTICE_EVENT_QUEUE.task_done()
+    return changed
 
 
 def _start_tracked_background_thread(
@@ -6627,6 +7197,84 @@ def _start_tracked_background_thread(
     )
     worker_thread.start()
     return worker_thread
+
+
+def _alert_sound_worker_loop(
+    job_queue: queue.Queue[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]],
+) -> None:
+    """Run alert sound playback jobs away from the Tk redraw thread."""
+
+    while True:
+        target, args, kwargs = job_queue.get()
+        begin_thread_activity_notice("alert sound")
+        try:
+            target(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - audio failures must not kill the worker.
+            print(f"Alert sound skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        finally:
+            finish_thread_activity_notice("alert sound")
+            job_queue.task_done()
+
+
+def _ensure_alert_sound_worker() -> queue.Queue[
+    tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
+]:
+    """Return the process-wide alert sound queue, starting its worker when needed."""
+
+    global _ALERT_SOUND_JOB_QUEUE, _ALERT_SOUND_WORKER_THREAD
+    with _ALERT_SOUND_WORKER_LOCK:
+        if _ALERT_SOUND_JOB_QUEUE is None:
+            _ALERT_SOUND_JOB_QUEUE = queue.Queue(maxsize=ALERT_SOUND_WORKER_QUEUE_MAXSIZE)
+        if (
+            _ALERT_SOUND_WORKER_THREAD is None
+            or not _ALERT_SOUND_WORKER_THREAD.is_alive()
+        ):
+            _ALERT_SOUND_WORKER_THREAD = threading.Thread(
+                target=_alert_sound_worker_loop,
+                name="alert-sound-worker",
+                args=(_ALERT_SOUND_JOB_QUEUE,),
+                daemon=True,
+            )
+            _ALERT_SOUND_WORKER_THREAD.start()
+        return _ALERT_SOUND_JOB_QUEUE
+
+
+def _drop_oldest_alert_sound_job(
+    job_queue: queue.Queue[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]],
+) -> None:
+    """Discard one stale queued sound so alerts do not play late under burst load."""
+
+    try:
+        job_queue.get_nowait()
+    except queue.Empty:
+        return
+    try:
+        job_queue.task_done()
+    except ValueError:
+        return
+
+
+def _queue_alert_sound_job(
+    target: Callable[..., object],
+    *args: object,
+    **kwargs: object,
+) -> bool:
+    """Queue one alert sound playback job on the shared audio worker."""
+
+    if winsound is None:
+        return False
+    job_queue = _ensure_alert_sound_worker()
+    job = (target, tuple(args), dict(kwargs))
+    try:
+        job_queue.put_nowait(job)
+        return True
+    except queue.Full:
+        _drop_oldest_alert_sound_job(job_queue)
+    try:
+        job_queue.put_nowait(job)
+    except queue.Full:
+        return False
+    return True
 
 
 def _clear_thread_activity_notice_if_expired(canvas: tkinter.Canvas) -> None:
@@ -6664,6 +7312,7 @@ def _clear_background_queue(task_queue: queue.Queue | None) -> None:
 def _draw_thread_activity_notice(canvas: tkinter.Canvas) -> None:
     """Draw current short-lived background-thread notices near the top-right corner."""
 
+    _drain_thread_activity_notice_event_queue(canvas)
     _delete_canvas_items_by_tags(canvas, _THREAD_ACTIVITY_NOTICE_TAG)
     _clear_thread_activity_notice_if_expired(canvas)
     notice_entries = tuple(getattr(canvas, "thread_activity_notice_entries", ()))
@@ -8453,18 +9102,48 @@ def _player_name_for_status_seat(canvas: tkinter.Canvas, seat: int | None) -> st
     return str(player_names_by_seat.get(int(seat), "")).strip()
 
 
+def _nodocchi_status_stats_for_player(
+    canvas: tkinter.Canvas,
+    player_name: str,
+) -> NodocchiPlayerStats | None:
+    """Return successful cached Nodocchi status stats for one player name."""
+
+    normalized_name = str(player_name).strip()
+    if not normalized_name:
+        return None
+    results_by_name = getattr(canvas, "nodocchi_status_results_by_name", {})
+    if not isinstance(results_by_name, Mapping):
+        return None
+    entry = results_by_name.get(normalized_name)
+    if not isinstance(entry, Mapping) or str(entry.get("state", "")) != "success":
+        return None
+    stats = entry.get("stats")
+    return stats if isinstance(stats, NodocchiPlayerStats) else None
+
+
 def _request_canvas_redraw(canvas: tkinter.Canvas) -> None:
     canvas.side_panel_render_cache = None
+    canvas.default_status_render_cache = None
+    _reset_discard_render_cache(canvas)
     redraw_action = getattr(canvas, "redraw_action", None)
     if callable(redraw_action):
         redraw_action()
 
 
-def _request_player_status_fetch(canvas: tkinter.Canvas, seat: int | None) -> None:
-    """Start a background Nodocchi status fetch for the selected player if needed."""
+def _request_player_status_fetch_by_name(
+    canvas: tkinter.Canvas,
+    player_name: str,
+    *,
+    record_missing_name: bool = True,
+    redraw_on_start: bool = True,
+    retry_failed: bool = True,
+) -> None:
+    """Start a background Nodocchi status fetch for one player name if needed."""
 
-    player_name = _player_name_for_status_seat(canvas, seat)
+    player_name = str(player_name).strip()
     if not player_name:
+        if not record_missing_name:
+            return
         results_by_name = dict(getattr(canvas, "nodocchi_status_results_by_name", {}))
         results_by_name[""] = {
             "state": "error",
@@ -8474,17 +9153,25 @@ def _request_player_status_fetch(canvas: tkinter.Canvas, seat: int | None) -> No
             "version": time.monotonic_ns(),
         }
         canvas.nodocchi_status_results_by_name = results_by_name
-        _request_canvas_redraw(canvas)
+        if redraw_on_start:
+            _request_canvas_redraw(canvas)
         return
 
     results_by_name = dict(getattr(canvas, "nodocchi_status_results_by_name", {}))
     current_entry = results_by_name.get(player_name)
-    if isinstance(current_entry, Mapping) and current_entry.get("state") == "success":
+    if isinstance(current_entry, Mapping):
+        current_state = str(current_entry.get("state", ""))
         try:
             completed_monotonic_s = float(current_entry.get("completed_monotonic_s", 0.0) or 0.0)
         except (TypeError, ValueError):
             completed_monotonic_s = 0.0
-        if time.monotonic() - completed_monotonic_s <= NODOCCHI_STATS_CACHE_TTL_SECONDS:
+        fresh_completed = (
+            completed_monotonic_s > 0.0
+            and time.monotonic() - completed_monotonic_s <= NODOCCHI_STATS_CACHE_TTL_SECONDS
+        )
+        if current_state == "success" and fresh_completed:
+            return
+        if not retry_failed and current_state in {"error", "not_found"}:
             return
     in_flight_names = set(getattr(canvas, "nodocchi_status_in_flight_names", set()))
     if player_name in in_flight_names:
@@ -8549,7 +9236,55 @@ def _request_player_status_fetch(canvas: tkinter.Canvas, seat: int | None) -> No
 
     thread = threading.Thread(target=worker, name=f"nodocchi-status-{player_name}", daemon=True)
     thread.start()
-    _request_canvas_redraw(canvas)
+    if redraw_on_start:
+        _request_canvas_redraw(canvas)
+
+
+def _request_player_status_fetch(canvas: tkinter.Canvas, seat: int | None) -> None:
+    """Start a background Nodocchi status fetch for the selected player if needed."""
+
+    _request_player_status_fetch_by_name(
+        canvas,
+        _player_name_for_status_seat(canvas, seat),
+        record_missing_name=True,
+        redraw_on_start=True,
+        retry_failed=True,
+    )
+
+
+def _request_default_player_status_fetches(
+    canvas: tkinter.Canvas,
+    player_names_by_seat: PlayerNamesBySeat,
+) -> None:
+    """Start one silent default STATUS fetch for visible opponent names."""
+
+    if getattr(canvas, "nodocchi_status_result_queue", None) is None:
+        return
+    if not callable(getattr(canvas, "winfo_exists", None)) or not callable(getattr(canvas, "after", None)):
+        return
+    try:
+        if not canvas.winfo_exists():
+            return
+    except tkinter.TclError:
+        return
+    results_by_name = getattr(canvas, "nodocchi_status_results_by_name", {})
+    in_flight_names = set(getattr(canvas, "nodocchi_status_in_flight_names", set()))
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        raw_player_name = str(player_names_by_seat.get(int(seat), "")).strip()
+        player_name = _player_panel_display_name(int(seat), raw_player_name)
+        if not player_name:
+            continue
+        if player_name in in_flight_names:
+            continue
+        if isinstance(results_by_name, Mapping) and isinstance(results_by_name.get(player_name), Mapping):
+            continue
+        _request_player_status_fetch_by_name(
+            canvas,
+            player_name,
+            record_missing_name=False,
+            redraw_on_start=False,
+            retry_failed=False,
+        )
 
 
 def _schedule_nodocchi_status_poll(canvas: tkinter.Canvas) -> None:
@@ -8625,6 +9360,39 @@ def _nodocchi_status_detail_signature(
     )
 
 
+def _nodocchi_status_inline_signature(
+    canvas: tkinter.Canvas,
+    player_names_by_seat: PlayerNamesBySeat,
+) -> object:
+    """Return status-cache signature for default inline STATUS rendering."""
+
+    results_by_name = getattr(canvas, "nodocchi_status_results_by_name", {})
+    signature_parts: list[tuple[object, ...]] = []
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        raw_player_name = str(player_names_by_seat.get(int(seat), "")).strip()
+        player_name = _player_panel_display_name(int(seat), raw_player_name)
+        if not player_name or not isinstance(results_by_name, Mapping):
+            signature_parts.append((int(seat), player_name, "empty"))
+            continue
+        entry = results_by_name.get(player_name)
+        if not isinstance(entry, Mapping):
+            signature_parts.append((int(seat), player_name, "empty"))
+            continue
+        stats = entry.get("stats")
+        fetched_at = stats.fetchedAt if isinstance(stats, NodocchiPlayerStats) else None
+        signature_parts.append(
+            (
+                int(seat),
+                player_name,
+                entry.get("state"),
+                entry.get("version"),
+                entry.get("error"),
+                fetched_at,
+            )
+        )
+    return tuple(signature_parts)
+
+
 def _player_has_saved_memo(
     canvas: tkinter.Canvas,
     player_name: str,
@@ -8636,6 +9404,15 @@ def _player_has_saved_memo(
         return False
     memo_presence_cache = getattr(canvas, "player_memo_presence_cache", {})
     return bool(memo_presence_cache.get(normalized_name, False))
+
+
+def _player_has_loaded_status(
+    canvas: tkinter.Canvas,
+    player_name: str,
+) -> bool:
+    """Return whether STATUS already has fetched player data for button highlighting."""
+
+    return _nodocchi_status_stats_for_player(canvas, player_name) is not None
 
 
 def _resolved_component_offsets_for_canvas(
@@ -9140,6 +9917,23 @@ def _build_table_situation_auto_scores_by_seat(
             block_scores[block_index] = sum(tile_scores[block_start : block_start + 3]) / 3.0
         auto_scores_by_seat[seat] = tuple(block_scores)
     return auto_scores_by_seat
+
+
+def _resolve_table_situation_auto_scores_by_seat(
+    discard_map: Mapping[Player, Iterable[Discard]],
+    discard_red_tint_indices_by_seat: Mapping[int, Iterable[int]] | None,
+    precomputed_auto_scores_by_seat: Mapping[int, Sequence[object]] | None = None,
+) -> dict[int, tuple[float, ...]]:
+    """Return table-situation auto scores, using worker-precomputed values when available."""
+
+    if precomputed_auto_scores_by_seat is not None:
+        return _normalize_table_situation_display_scores_by_seat(
+            precomputed_auto_scores_by_seat
+        )
+    return _build_table_situation_auto_scores_by_seat(
+        discard_map,
+        discard_red_tint_indices_by_seat,
+    )
 
 
 def _resolve_table_situation_scores_by_seat(
@@ -10775,6 +11569,28 @@ def _player_panel_remain_text_color(summary_data: Mapping[str, object], default_
     return default_color
 
 
+def _player_panel_remain_alert_key_and_color(
+    summary_data: Mapping[str, object],
+) -> tuple[str, str]:
+    """Return the Remain alert key/color using the same no-temp thresholds as SUMMARY."""
+
+    remain_color = _player_panel_remain_text_color(summary_data, "")
+    if remain_color == PLAYER_ALERT_PURPLE:
+        return "remain_purple", remain_color
+    if remain_color == PLAYER_ALERT_RED:
+        return "remain_red", remain_color
+    if remain_color == PLAYER_ALERT_YELLOW:
+        return "remain_yellow", remain_color
+    return "", ""
+
+
+def _player_panel_remain_alert_label(summary_data: Mapping[str, object]) -> str:
+    """Return the compact Remain alert label matching the SUMMARY value text."""
+
+    _label_text, value_text = _split_player_panel_remain_text(summary_data)
+    return f"Remain {value_text}"
+
+
 def _format_player_panel_line_summary_text(
     line_summary: Mapping[str, object],
     *,
@@ -10962,6 +11778,9 @@ def _render_table_using_cached_layout_if_possible(
     melds_by_player: SeatMeldMap,
     visible_summary: VisibleTileSummary | None = None,
     self_hand_value_alert: SelfHandValueAlertState | None = None,
+    naga_auto_panel: NagaAutoPanelData | None = None,
+    table_situation_auto_scores_by_seat: Mapping[int, Sequence[object]] | None = None,
+    same_jun_marker_indices_by_seat: Mapping[int, Collection[int]] | None = None,
 ) -> tuple[bool, tuple[float, float, float, float]]:
     """Redraw dynamic table layers in-place when the previous layout is still reusable."""
 
@@ -11008,9 +11827,10 @@ def _render_table_using_cached_layout_if_possible(
         manual_table_situation_scores_by_seat = _normalize_table_situation_scores_by_seat(
             getattr(canvas, "table_situation_scores_by_seat", {})
         )
-        auto_table_situation_scores_by_seat = _build_table_situation_auto_scores_by_seat(
+        auto_table_situation_scores_by_seat = _resolve_table_situation_auto_scores_by_seat(
             discard_map,
             discard_red_tint_indices_by_seat,
+            table_situation_auto_scores_by_seat,
         )
         resolved_table_situation_scores_by_seat = _resolve_table_situation_scores_by_seat(
             manual_table_situation_scores_by_seat,
@@ -11052,23 +11872,47 @@ def _render_table_using_cached_layout_if_possible(
     _append_phase_timing(render_phase_timings, "side_panels", phase_started_at)
 
     phase_started_at = time.perf_counter()
-    _delete_canvas_items_by_tags(canvas, _LIVE_FRAME_TAG)
-    frame_previous_items = _capture_canvas_item_ids(canvas)
-    _draw_center_panel(canvas, layout["center_panel"], dora_indicator_tiles, round_info_panel)
-    _draw_meld_zones(canvas, layout)
-    _draw_discard_zones(canvas, layout)
-    _draw_seat_labels(canvas, layout, round_info_panel)
-    _draw_melds(canvas, img_table, melds_by_player, layout)
-    _tag_new_canvas_items(
+    table_frame_signature = _build_table_frame_render_signature(
         canvas,
-        tag=_LIVE_FRAME_TAG,
-        previous_item_ids=frame_previous_items,
+        layout=layout,
+        dora_indicator_tiles=dora_indicator_tiles,
+        round_info_panel=round_info_panel,
+        melds_by_player=melds_by_player,
     )
+    table_frame_cache = getattr(canvas, "table_frame_render_cache", None)
+    if (
+        isinstance(table_frame_cache, TableFrameRenderCache)
+        and table_frame_cache.signature == table_frame_signature
+        and _restore_table_frame_render_cache(canvas)
+    ):
+        pass
+    else:
+        _delete_canvas_items_by_tags(canvas, _LIVE_FRAME_TAG)
+        frame_previous_items = _capture_canvas_item_ids(canvas)
+        _draw_table_frame(
+            canvas,
+            img_table,
+            layout,
+            dora_indicator_tiles,
+            round_info_panel,
+            melds_by_player,
+        )
+        _tag_new_canvas_items(
+            canvas,
+            tag=_LIVE_FRAME_TAG,
+            previous_item_ids=frame_previous_items,
+        )
+        _remember_table_frame_render_cache(
+            canvas,
+            signature=table_frame_signature,
+        )
     _append_phase_timing(render_phase_timings, "table_frame", phase_started_at)
 
     phase_started_at = time.perf_counter()
-    _delete_canvas_items_by_tags(canvas, _LIVE_ASYNC_DISCARD_TAG)
-    discard_previous_items = _capture_canvas_item_ids(canvas)
+    discard_phase_timings: list[PhaseTiming] = []
+    discard_started_at = time.perf_counter()
+    discard_subphase_started_at = time.perf_counter()
+    discard_previous_items = len(_discard_render_cache(canvas))
     _draw_discards(
         canvas,
         img_table,
@@ -11079,11 +11923,15 @@ def _render_table_using_cached_layout_if_possible(
         push_marker_alert_percentages,
         melds_by_player,
         round_events,
+        same_jun_marker_indices_by_seat=same_jun_marker_indices_by_seat,
+        phase_timings=discard_phase_timings,
     )
-    _tag_new_canvas_items(
+    _append_phase_timing(discard_phase_timings, "draw_incremental", discard_subphase_started_at)
+    _log_slow_discard_redraw(
         canvas,
-        tag=_LIVE_ASYNC_DISCARD_TAG,
-        previous_item_ids=discard_previous_items,
+        elapsed_ms=(time.perf_counter() - discard_started_at) * 1000.0,
+        phase_timings=discard_phase_timings,
+        previous_item_count=discard_previous_items,
     )
     _append_phase_timing(render_phase_timings, "discards", phase_started_at)
 
@@ -11129,6 +11977,17 @@ def _render_table_using_cached_layout_if_possible(
         previous_item_ids=hand_previous_items,
     )
     _append_phase_timing(render_phase_timings, "hand", phase_started_at)
+
+    phase_started_at = time.perf_counter()
+    _delete_canvas_items_by_tags(canvas, _LIVE_NAGA_AUTO_PANEL_TAG)
+    naga_previous_items = _capture_canvas_item_ids(canvas)
+    _draw_naga_auto_panel(canvas, layout, naga_auto_panel)
+    _tag_new_canvas_items(
+        canvas,
+        tag=_LIVE_NAGA_AUTO_PANEL_TAG,
+        previous_item_ids=naga_previous_items,
+    )
+    _append_phase_timing(render_phase_timings, "naga_auto_panel", phase_started_at)
     canvas.current_player_names_by_seat = player_names_by_seat
     canvas.current_player_alert_indicators_by_seat = player_alert_indicators_by_seat
     canvas.last_render_table_phase_timings = tuple(render_phase_timings)
@@ -11158,6 +12017,9 @@ def _render_table(
     melds_by_player: SeatMeldMap,
     visible_summary: VisibleTileSummary | None = None,
     self_hand_value_alert: SelfHandValueAlertState | None = None,
+    naga_auto_panel: NagaAutoPanelData | None = None,
+    table_situation_auto_scores_by_seat: Mapping[int, Sequence[object]] | None = None,
+    same_jun_marker_indices_by_seat: Mapping[int, Collection[int]] | None = None,
     *,
     ui_scale: float = 1.0,
     layout_tuning: LayoutTuningSettings | Mapping[str, object] | None = None,
@@ -11171,16 +12033,21 @@ def _render_table(
         _LIVE_BACKGROUND_TAG,
         _LIVE_FRAME_TAG,
         _LIVE_ASYNC_SIDE_PANEL_TAG,
+        _LIVE_ASYNC_DEFAULT_STATUS_TAG,
         _LIVE_ASYNC_DISCARD_TAG,
         _LIVE_DETAIL_OVERLAY_TAG,
         _LIVE_ASYNC_HAND_TAG,
         _HAND_RESPONSE_UI_TAG,
+        _LIVE_NAGA_AUTO_PANEL_TAG,
         _LIVE_LAYOUT_DRAG_TAG,
         _THREAD_ACTIVITY_NOTICE_TAG,
     )
     # 動的に生成した PhotoImage の参照も毎回入れ替える。
     _reset_transient_canvas_draw_state(canvas)
     canvas.side_panel_render_cache = None
+    canvas.default_status_render_cache = None
+    canvas.table_frame_render_cache = None
+    _reset_discard_render_cache(canvas)
     _append_phase_timing(render_phase_timings, "clear", phase_started_at)
 
     # 実ウィンドウサイズと最小サイズの大きい方を採用する。
@@ -11237,9 +12104,10 @@ def _render_table(
         manual_table_situation_scores_by_seat = _normalize_table_situation_scores_by_seat(
             getattr(canvas, "table_situation_scores_by_seat", {})
         )
-        auto_table_situation_scores_by_seat = _build_table_situation_auto_scores_by_seat(
+        auto_table_situation_scores_by_seat = _resolve_table_situation_auto_scores_by_seat(
             discard_map,
             discard_red_tint_indices_by_seat,
+            table_situation_auto_scores_by_seat,
         )
         resolved_table_situation_scores_by_seat = _resolve_table_situation_scores_by_seat(
             manual_table_situation_scores_by_seat,
@@ -11286,19 +12154,35 @@ def _render_table(
     _append_phase_timing(render_phase_timings, "side_panels", phase_started_at)
     phase_started_at = time.perf_counter()
     frame_previous_items = _capture_canvas_item_ids(canvas)
-    _draw_center_panel(canvas, layout["center_panel"], dora_indicator_tiles, round_info_panel)
-    _draw_meld_zones(canvas, layout)
-    _draw_discard_zones(canvas, layout)
-    _draw_seat_labels(canvas, layout, round_info_panel)
-    _draw_melds(canvas, img_table, melds_by_player, layout)
+    _draw_table_frame(
+        canvas,
+        img_table,
+        layout,
+        dora_indicator_tiles,
+        round_info_panel,
+        melds_by_player,
+    )
     _tag_new_canvas_items(
         canvas,
         tag=_LIVE_FRAME_TAG,
         previous_item_ids=frame_previous_items,
     )
+    _remember_table_frame_render_cache(
+        canvas,
+        signature=_build_table_frame_render_signature(
+            canvas,
+            layout=layout,
+            dora_indicator_tiles=dora_indicator_tiles,
+            round_info_panel=round_info_panel,
+            melds_by_player=melds_by_player,
+        ),
+    )
     _append_phase_timing(render_phase_timings, "table_frame", phase_started_at)
     phase_started_at = time.perf_counter()
-    discard_previous_items = _capture_canvas_item_ids(canvas)
+    discard_phase_timings: list[PhaseTiming] = []
+    discard_started_at = time.perf_counter()
+    discard_subphase_started_at = time.perf_counter()
+    discard_previous_items = len(_discard_render_cache(canvas))
     _draw_discards(
         canvas,
         img_table,
@@ -11309,11 +12193,15 @@ def _render_table(
         push_marker_alert_percentages,
         melds_by_player,
         round_events,
+        same_jun_marker_indices_by_seat=same_jun_marker_indices_by_seat,
+        phase_timings=discard_phase_timings,
     )
-    _tag_new_canvas_items(
+    _append_phase_timing(discard_phase_timings, "draw_incremental", discard_subphase_started_at)
+    _log_slow_discard_redraw(
         canvas,
-        tag=_LIVE_ASYNC_DISCARD_TAG,
-        previous_item_ids=discard_previous_items,
+        elapsed_ms=(time.perf_counter() - discard_started_at) * 1000.0,
+        phase_timings=discard_phase_timings,
+        previous_item_count=discard_previous_items,
     )
     _append_phase_timing(render_phase_timings, "discards", phase_started_at)
     phase_started_at = time.perf_counter()
@@ -11354,6 +12242,15 @@ def _render_table(
         tag=_LIVE_ASYNC_HAND_TAG,
         previous_item_ids=hand_previous_items,
     )
+    _append_phase_timing(render_phase_timings, "hand", phase_started_at)
+    phase_started_at = time.perf_counter()
+    naga_previous_items = _capture_canvas_item_ids(canvas)
+    _draw_naga_auto_panel(canvas, layout, naga_auto_panel)
+    _tag_new_canvas_items(
+        canvas,
+        tag=_LIVE_NAGA_AUTO_PANEL_TAG,
+        previous_item_ids=naga_previous_items,
+    )
     if getattr(canvas, "layout_drag_enabled", False):
         drag_previous_items = _capture_canvas_item_ids(canvas)
         _draw_layout_drag_overlays(canvas, layout)
@@ -11362,7 +12259,7 @@ def _render_table(
             tag=_LIVE_LAYOUT_DRAG_TAG,
             previous_item_ids=drag_previous_items,
         )
-    _append_phase_timing(render_phase_timings, "hand", phase_started_at)
+    _append_phase_timing(render_phase_timings, "naga_auto_panel", phase_started_at)
     canvas.last_render_table_phase_timings = tuple(render_phase_timings)
     canvas.last_render_detail_content_rect = tuple(float(value) for value in layout["detail_content_rect"])
     return layout["detail_content_rect"]
@@ -11883,6 +12780,7 @@ def _build_side_panel_render_signature(
             "visible4_rect",
             "detail_content_rect",
             "discard_rects",
+            "player_inference_rects",
         )
     }
     memo_presence = tuple(
@@ -11890,6 +12788,14 @@ def _build_side_panel_render_signature(
             int(seat),
             str(player_name),
             bool(_player_has_saved_memo(canvas, str(player_name))),
+        )
+        for seat, player_name in sorted(player_names_by_seat.items())
+    )
+    status_presence = tuple(
+        (
+            int(seat),
+            str(player_name),
+            bool(_player_has_loaded_status(canvas, str(player_name))),
         )
         for seat, player_name in sorted(player_names_by_seat.items())
     )
@@ -11905,6 +12811,19 @@ def _build_side_panel_render_signature(
         discard_map,
         public_honor_tiles,
     )
+    current_hand_safe_rank_labels_by_seat = tuple(
+        (
+            int(seat),
+            _build_current_hand_safe_rank_labels(
+                hand_tiles,
+                hand_draw_tile,
+                hand_danger_percentages,
+                seat=int(seat),
+                limit=3,
+            ),
+        )
+        for seat in HAND_DANGER_BAR_SEAT_ORDER
+    )
     payload = {
         "layout": layout_subset,
         "ui_scale": float(getattr(canvas, "current_ui_scale", 1.0)),
@@ -11918,20 +12837,128 @@ def _build_side_panel_render_signature(
             player_names_by_seat,
         ),
         "memo_presence": memo_presence,
+        "status_presence": status_presence,
         "player_names_by_seat": player_names_by_seat,
         "player_score_diffs_by_seat": player_score_diffs_by_seat,
         "opponent_suji_panel_summaries": opponent_suji_panel_summaries,
         "player_push_alert_percentages": player_push_alert_percentages,
         "player_alert_indicators_by_seat": player_alert_indicators_by_seat,
-        "hand_tiles": tuple(int(tile_id) for tile_id in hand_tiles),
-        "hand_draw_tile": int(hand_draw_tile) if hand_draw_tile is not None else None,
-        "hand_danger_percentages": tuple(hand_danger_percentages),
+        "current_hand_safe_rank_labels_by_seat": current_hand_safe_rank_labels_by_seat,
         "visible_summary": visible_summary,
         "visible_inference_summary": visible_inference_summary,
         "public_honor_tiles": public_honor_tiles,
         "discarded_public_honor_tiles": discarded_public_honor_tiles,
     }
     return _stable_render_signature(payload)
+
+
+def _build_default_status_render_signature(
+    canvas: tkinter.Canvas,
+    *,
+    layout: Mapping[str, object],
+    player_names_by_seat: PlayerNamesBySeat,
+    panel_fill: str,
+    panel_outline: str,
+    text_muted: str,
+) -> object:
+    """Return a stable signature for the cached inline STATUS strip."""
+
+    payload = {
+        "player_inference_rects": layout.get("player_inference_rects"),
+        "ui_scale": float(getattr(canvas, "current_ui_scale", 1.0)),
+        "player_names_by_seat": player_names_by_seat,
+        "nodocchi_inline_status": _nodocchi_status_inline_signature(
+            canvas,
+            player_names_by_seat,
+        ),
+        "panel_fill": panel_fill,
+        "panel_outline": panel_outline,
+        "text_muted": text_muted,
+    }
+    return _stable_render_signature(payload)
+
+
+def _redraw_default_player_status_sections_if_needed(
+    canvas: tkinter.Canvas,
+    layout: Mapping[str, object],
+    player_names_by_seat: PlayerNamesBySeat,
+    panel_fill: str,
+    panel_outline: str,
+    text_muted: str,
+    *,
+    force_redraw: bool = False,
+) -> bool:
+    """Redraw inline STATUS strips only when their independent inputs changed."""
+
+    signature = _build_default_status_render_signature(
+        canvas,
+        layout=layout,
+        player_names_by_seat=player_names_by_seat,
+        panel_fill=panel_fill,
+        panel_outline=panel_outline,
+        text_muted=text_muted,
+    )
+    cache = getattr(canvas, "default_status_render_cache", None)
+    if (
+        not force_redraw
+        and isinstance(cache, DefaultStatusRenderCache)
+        and cache.signature == signature
+    ):
+        return False
+
+    _delete_canvas_items_by_tags(canvas, _LIVE_ASYNC_DEFAULT_STATUS_TAG)
+    previous_items = _capture_canvas_item_ids(canvas)
+    _draw_default_player_status_sections(
+        canvas,
+        layout,
+        player_names_by_seat,
+        panel_fill,
+        panel_outline,
+        text_muted,
+    )
+    _tag_new_canvas_items(
+        canvas,
+        tag=_LIVE_ASYNC_DEFAULT_STATUS_TAG,
+        previous_item_ids=previous_items,
+    )
+    canvas.default_status_render_cache = DefaultStatusRenderCache(signature=signature)
+    return True
+
+
+def _log_slow_discard_redraw(
+    canvas: tkinter.Canvas,
+    *,
+    elapsed_ms: float,
+    phase_timings: Sequence[PhaseTiming],
+    previous_item_count: int,
+    cache_hit: bool = False,
+) -> None:
+    """Write one compact breakdown for slow discard-region redraws."""
+
+    if elapsed_ms < SLOW_DISCARD_LOG_THRESHOLD_MS:
+        return
+    after_item_count = len(_capture_canvas_item_ids(canvas))
+    breakdown = _format_phase_timing_breakdown(phase_timings, top_n=18)
+    stats = getattr(canvas, "last_discard_render_stats", {})
+    stats_text = ""
+    if isinstance(stats, Mapping):
+        stats_text = (
+            f" active={int(stats.get('active', 0))}"
+            f" drawn={int(stats.get('drawn', 0))}"
+            f" skipped={int(stats.get('skipped', 0))}"
+            f" changed={int(stats.get('changed', 0))}"
+            f" stale_deleted={int(stats.get('stale_deleted', 0))}"
+        )
+    message = (
+        "UI discards slow: "
+        f"{elapsed_ms:.1f}ms cache_hit={bool(cache_hit)} "
+        f"cache_before={int(previous_item_count)} "
+        f"items_after={after_item_count}"
+        f"{stats_text}"
+        + (f" phases=[{breakdown}]" if breakdown else "")
+    )
+    print(message)
+    _append_ui_diagnostic_log(message)
 
 
 def _restore_side_panel_render_cache(canvas: tkinter.Canvas) -> bool:
@@ -11967,6 +12994,78 @@ def _remember_side_panel_render_cache(
     )
 
 
+def _build_table_frame_render_signature(
+    canvas: tkinter.Canvas,
+    *,
+    layout: Mapping[str, object],
+    dora_indicator_tiles: Sequence[int],
+    round_info_panel: RoundInfoPanelData,
+    melds_by_player: SeatMeldMap,
+) -> object:
+    """Return a stable signature for the static table frame/meld tag."""
+
+    layout_subset = {
+        key: layout.get(key)
+        for key in (
+            "center_panel",
+            "meld_rects",
+            "discard_rects",
+        )
+    }
+    meld_payload = {
+        int(player): tuple(melds_by_player.get(player, ()))
+        for player in Player
+    }
+    payload = {
+        "layout": layout_subset,
+        "ui_scale": float(getattr(canvas, "current_ui_scale", 1.0)),
+        "dora_indicator_tiles": tuple(int(tile_id) for tile_id in dora_indicator_tiles),
+        "round_info_panel": round_info_panel,
+        "melds_by_player": meld_payload,
+    }
+    return _stable_render_signature(payload)
+
+
+def _restore_table_frame_render_cache(canvas: tkinter.Canvas) -> bool:
+    """Restore image references when the cached table-frame tag is reused unchanged."""
+
+    cache = getattr(canvas, "table_frame_render_cache", None)
+    if not isinstance(cache, TableFrameRenderCache):
+        return False
+    canvas.center_panel_images = list(cache.center_panel_images)
+    return True
+
+
+def _remember_table_frame_render_cache(
+    canvas: tkinter.Canvas,
+    *,
+    signature: object,
+) -> None:
+    """Capture table-frame image references so an unchanged frame can be skipped."""
+
+    canvas.table_frame_render_cache = TableFrameRenderCache(
+        signature=signature,
+        center_panel_images=tuple(getattr(canvas, "center_panel_images", ())),
+    )
+
+
+def _draw_table_frame(
+    canvas: tkinter.Canvas,
+    img_table: TileImageTable,
+    layout: Mapping[str, object],
+    dora_indicator_tiles: Sequence[int],
+    round_info_panel: RoundInfoPanelData,
+    melds_by_player: SeatMeldMap,
+) -> None:
+    """Draw static frame layers: center panel, zones, seat labels, and melds."""
+
+    _draw_center_panel(canvas, layout["center_panel"], dora_indicator_tiles, round_info_panel)
+    _draw_meld_zones(canvas, layout)
+    _draw_discard_zones(canvas, layout)
+    _draw_seat_labels(canvas, layout, round_info_panel)
+    _draw_melds(canvas, img_table, melds_by_player, layout)
+
+
 def _redraw_side_panels_if_needed(
     canvas: tkinter.Canvas,
     img_table: TileImageTable,
@@ -11990,6 +13089,9 @@ def _redraw_side_panels_if_needed(
 ) -> bool:
     """Redraw the tagged side-panel region only when its render inputs changed."""
 
+    side_panel_started_at = time.perf_counter()
+    side_panel_phase_timings: list[PhaseTiming] = []
+    phase_started_at = time.perf_counter()
     signature = _build_side_panel_render_signature(
         canvas,
         layout=layout,
@@ -12008,21 +13110,58 @@ def _redraw_side_panels_if_needed(
         player_names_by_seat=player_names_by_seat,
         detail_panel_state=detail_panel_state,
     )
+    _append_phase_timing(side_panel_phase_timings, "signature", phase_started_at)
+    phase_started_at = time.perf_counter()
     cache = getattr(canvas, "side_panel_render_cache", None)
-    if (
+    restored_from_cache = (
         not force_redraw
         and isinstance(cache, SidePanelRenderCache)
         and cache.signature == signature
         and _restore_side_panel_render_cache(canvas)
+    )
+    _append_phase_timing(side_panel_phase_timings, "cache_check", phase_started_at)
+    phase_started_at = time.perf_counter()
+    _redraw_default_player_status_sections_if_needed(
+        canvas,
+        layout,
+        player_names_by_seat,
+        "#121923",
+        "#243244",
+        "#9fb0c6",
+        force_redraw=force_redraw,
+    )
+    _append_phase_timing(side_panel_phase_timings, "default_status", phase_started_at)
+    if (
+        restored_from_cache
     ):
+        elapsed_ms = (time.perf_counter() - side_panel_started_at) * 1000.0
+        if elapsed_ms >= SLOW_SIDE_PANEL_LOG_THRESHOLD_MS:
+            breakdown = _format_phase_timing_breakdown(side_panel_phase_timings, top_n=16)
+            message = (
+                "UI side_panels slow: "
+                f"{elapsed_ms:.1f}ms cache_hit=True"
+                + (f" phases=[{breakdown}]" if breakdown else "")
+            )
+            print(message)
+            _append_ui_diagnostic_log(message)
         return False
 
+    phase_started_at = time.perf_counter()
     canvas.player_panel_button_specs = []
     canvas.nodocchi_status_link_specs = []
     canvas.lag_marker_reference_button_specs = []
     canvas.detail_images = []
+    _append_phase_timing(side_panel_phase_timings, "reset_specs", phase_started_at)
+
+    phase_started_at = time.perf_counter()
     _delete_canvas_items_by_tags(canvas, _LIVE_ASYNC_SIDE_PANEL_TAG)
+    _append_phase_timing(side_panel_phase_timings, "delete_tagged", phase_started_at)
+
+    phase_started_at = time.perf_counter()
     side_panel_previous_items = _capture_canvas_item_ids(canvas)
+    _append_phase_timing(side_panel_phase_timings, "capture_before", phase_started_at)
+
+    phase_started_at = time.perf_counter()
     _draw_side_panels(
         canvas,
         img_table,
@@ -12041,13 +13180,35 @@ def _redraw_side_panels_if_needed(
         player_score_diffs_by_seat,
         player_names_by_seat,
         detail_panel_state,
+        phase_timings=side_panel_phase_timings,
     )
+    _append_phase_timing(side_panel_phase_timings, "draw", phase_started_at)
+
+    phase_started_at = time.perf_counter()
     _tag_new_canvas_items(
         canvas,
         tag=_LIVE_ASYNC_SIDE_PANEL_TAG,
         previous_item_ids=side_panel_previous_items,
     )
+    _append_phase_timing(side_panel_phase_timings, "tag_new", phase_started_at)
+
+    phase_started_at = time.perf_counter()
     _remember_side_panel_render_cache(canvas, signature=signature)
+    _append_phase_timing(side_panel_phase_timings, "remember_cache", phase_started_at)
+    elapsed_ms = (time.perf_counter() - side_panel_started_at) * 1000.0
+    if elapsed_ms >= SLOW_SIDE_PANEL_LOG_THRESHOLD_MS:
+        after_items = _capture_canvas_item_ids(canvas)
+        breakdown = _format_phase_timing_breakdown(side_panel_phase_timings, top_n=16)
+        message = (
+            "UI side_panels slow: "
+            f"{elapsed_ms:.1f}ms cache_hit=False "
+            f"items_before={len(side_panel_previous_items)} "
+            f"items_after={len(after_items)} "
+            f"new_items={max(0, len(after_items) - len(side_panel_previous_items))}"
+            + (f" phases=[{breakdown}]" if breakdown else "")
+        )
+        print(message)
+        _append_ui_diagnostic_log(message)
     return True
 
 
@@ -12069,8 +13230,14 @@ def _draw_side_panels(
     player_score_diffs_by_seat: PlayerScoreDiffs,
     player_names_by_seat: PlayerNamesBySeat,
     detail_panel_state: DetailPanelState,
+    *,
+    phase_timings: list[PhaseTiming] | None = None,
 ) -> None:
     """Draw per-player panels plus the shared detail display space."""
+    def _append_draw_phase_timing(label: str, started_at: float) -> None:
+        if phase_timings is not None:
+            _append_phase_timing(phase_timings, f"draw.{label}", started_at)
+
     # プレイヤーパネルと詳細パネル共通のUI色。
     panel_fill = "#121923"
     panel_outline = "#243244"
@@ -12078,6 +13245,9 @@ def _draw_side_panels(
     button_outline = "#3a4c63"
     button_text = "#d7deea"
     text_muted = "#9fb0c6"
+    phase_started_at = time.perf_counter()
+    _request_default_player_status_fetches(canvas, player_names_by_seat)
+    _append_draw_phase_timing("status_fetch_request", phase_started_at)
 
     # 各パネル矩形を取り出す。
     top_panel = layout["top_panel"]
@@ -12085,24 +13255,31 @@ def _draw_side_panels(
     right_panel = layout["right_panel"]
     detail_panel = layout["detail_rect"]
     discard_rects = layout.get("discard_rects", {})
+    phase_started_at = time.perf_counter()
     public_honor_tiles = _public_honor_tiles_below_three_visible(
         discard_map,
         melds_by_player,
         dora_indicator_tiles,
     )
+    _append_draw_phase_timing("public_honor_calc", phase_started_at)
+    phase_started_at = time.perf_counter()
     discarded_public_honor_tiles = _self_discarded_public_honor_tiles(
         discard_map,
         public_honor_tiles,
     )
+    _append_draw_phase_timing("self_honor_calc", phase_started_at)
 
     # まず全パネルの外枠を描く。
+    phase_started_at = time.perf_counter()
     for x0, y0, x1, y1 in (top_panel, left_panel, right_panel, detail_panel):
         if x1 <= x0 or y1 <= y0:
             continue
         canvas.create_rectangle(x0, y0, x1, y1, fill=panel_fill, outline=panel_outline, width=1)
+    _append_draw_phase_timing("frames", phase_started_at)
 
     # 各座席パネルを個別に描く。
     if left_panel[2] > left_panel[0] and left_panel[3] > left_panel[1]:
+        phase_started_at = time.perf_counter()
         _draw_player_panel(
             canvas,
             seat=int(Player.KAMICHA),
@@ -12122,7 +13299,9 @@ def _draw_side_panels(
             detail_panel_state=detail_panel_state,
             public_honor_tiles=(),
         )
+        _append_draw_phase_timing("player_kamicha", phase_started_at)
     if right_panel[2] > right_panel[0] and right_panel[3] > right_panel[1]:
+        phase_started_at = time.perf_counter()
         _draw_player_panel(
             canvas,
             seat=int(Player.SHIMOCHA),
@@ -12142,7 +13321,9 @@ def _draw_side_panels(
             detail_panel_state=detail_panel_state,
             public_honor_tiles=(),
         )
+        _append_draw_phase_timing("player_shimocha", phase_started_at)
     if top_panel[2] > top_panel[0] and top_panel[3] > top_panel[1]:
+        phase_started_at = time.perf_counter()
         _draw_player_panel(
             canvas,
             seat=int(Player.TOIMEN),
@@ -12163,9 +13344,11 @@ def _draw_side_panels(
             horizontal=True,
             public_honor_tiles=(),
         )
+        _append_draw_phase_timing("player_toimen", phase_started_at)
     if public_honor_tiles and isinstance(discard_rects, Mapping):
         self_discard_rect = discard_rects.get(Player.JICHA)
         if isinstance(self_discard_rect, tuple) and len(self_discard_rect) == 4:
+            phase_started_at = time.perf_counter()
             shortlist_height = _public_honor_shortlist_section_height(
                 canvas,
                 max_rows=PLAYER_PANEL_PUBLIC_HONOR_MAX_ROWS,
@@ -12189,7 +13372,9 @@ def _draw_side_panels(
                     max_rows=PLAYER_PANEL_PUBLIC_HONOR_MAX_ROWS,
                     dim_tile_ids=discarded_public_honor_tiles,
                 )
+            _append_draw_phase_timing("public_honor_shortlist", phase_started_at)
     # 右の詳細パネルには見え牌表示を描く。
+    phase_started_at = time.perf_counter()
     _draw_detail_toggle_group(
         canvas,
         img_table,
@@ -12203,6 +13388,7 @@ def _draw_side_panels(
         player_names_by_seat,
         detail_panel_state,
     )
+    _append_draw_phase_timing("detail_toggle", phase_started_at)
 
 
 def _draw_detail_button(
@@ -12337,10 +13523,7 @@ def _resolve_player_panel_sections(
             PLAYER_PANEL_HORIZONTAL_SCORE_WIDTH,
             max((right - left) * 0.15, 64.0),
         )
-        button_left = max(
-            right - inset - 70.0,
-            left + (right - left) * tuning.top_alert_ratio + gap + score_width + gap,
-        )
+        button_left = max(left + inset, right - inset - 70.0)
         summary = (
             left + inset,
             top + inset,
@@ -12544,7 +13727,7 @@ def _player_panel_tile_rank_row_pitch(
 def _player_panel_line_row_pitch(canvas: tkinter.Canvas) -> float:
     """Return the text-only row pitch used by compact player-panel `Line` rows."""
 
-    line_font = tkfont.Font(root=canvas, font=PLAYER_PANEL_SUMMARY_LINE_FONT)
+    line_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_LINE_FONT)
     return max(10.0, float(line_font.metrics("linespace")) + PLAYER_PANEL_SUMMARY_LINE_ROW_GAP)
 
 
@@ -12680,7 +13863,7 @@ def _public_honor_shortlist_section_height(
 ) -> float:
     """Return the reserved height for the compact public-honor shortlist block."""
 
-    heading_font = tkfont.Font(root=canvas, font=PLAYER_PANEL_SUMMARY_COMPACT_FONT)
+    heading_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_COMPACT_FONT)
     tile_image = _player_panel_tile_rank_image(canvas, 28)
     tile_height = float(tile_image.height()) if tile_image is not None else 10.0
     resolved_rows = max(1, int(max_rows))
@@ -12737,7 +13920,7 @@ def _draw_public_honor_shortlist(
         font=PLAYER_PANEL_SUMMARY_COMPACT_FONT,
     )
     tile_top = top + float(
-        tkfont.Font(root=canvas, font=PLAYER_PANEL_SUMMARY_COMPACT_FONT).metrics("linespace")
+        _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_COMPACT_FONT).metrics("linespace")
     ) + PLAYER_PANEL_PUBLIC_HONOR_SECTION_GAP
     dim_tile_id_set = {int(tile_id) for tile_id in dim_tile_ids}
     sample_tile = _player_panel_tile_rank_image(canvas, int(tile_ids[0]))
@@ -12788,7 +13971,7 @@ def _draw_line_summary_row(
         ),
         "-",
     )
-    line_font = tkfont.Font(root=canvas, font=PLAYER_PANEL_SUMMARY_LINE_FONT)
+    line_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_LINE_FONT)
     display_text = next(
         (
             candidate
@@ -12871,8 +14054,8 @@ def _draw_summary_content(
         remain_y = top + packed_summary_top
         heading_y = top + packed_summary_top + (14 if should_show_player_name else 8)
         ranking_top = top + packed_summary_top + (26 if should_show_player_name else 20)
-        remain_label_font = tkfont.Font(root=canvas, font=PLAYER_PANEL_SUMMARY_REMAIN_LABEL_FONT)
-        remain_value_font = tkfont.Font(root=canvas, font=PLAYER_PANEL_SUMMARY_REMAIN_FONT)
+        remain_label_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_REMAIN_LABEL_FONT)
+        remain_value_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_REMAIN_FONT)
         remain_gap = 4
         remain_total_width = 136
         remain_label_width = remain_label_font.measure(remain_label_text)
@@ -13014,7 +14197,7 @@ def _draw_summary_content(
                 fill=text_muted,
                 font=PLAYER_PANEL_NAME_FONT,
             )
-        remain_label_font = tkfont.Font(root=canvas, font=PLAYER_PANEL_SUMMARY_REMAIN_LABEL_FONT)
+        remain_label_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_REMAIN_LABEL_FONT)
         remain_gap = 4
         remain_label_width = remain_label_font.measure(remain_label_text)
         fitted_remain_value_text = _fit_text_to_width(
@@ -13121,23 +14304,6 @@ def _build_player_alert_indicators(
             remain_count = max(0.0, float(summary_data.get("denominator_count", 0.0)))
         except (TypeError, ValueError):
             remain_count = None
-        if remain_count is not None:
-            if remain_count < 6.0:
-                indicators.append(
-                    PlayerAlertIndicator(
-                        color=PLAYER_ALERT_RED,
-                        label=f"Remain {remain_count:.1f}",
-                        key="remain_red",
-                    )
-                )
-            elif remain_count < 8.0:
-                indicators.append(
-                    PlayerAlertIndicator(
-                        color=PLAYER_ALERT_YELLOW,
-                        label=f"Remain {remain_count:.1f}",
-                        key="remain_yellow",
-                )
-                )
     if "denominator_count_without_temporary_safe" in summary_data:
         try:
             no_temp_remain_count = max(
@@ -13146,6 +14312,15 @@ def _build_player_alert_indicators(
             )
         except (TypeError, ValueError):
             no_temp_remain_count = None
+    remain_alert_key, remain_alert_color = _player_panel_remain_alert_key_and_color(summary_data)
+    if remain_alert_key:
+        indicators.append(
+            PlayerAlertIndicator(
+                color=remain_alert_color,
+                label=_player_panel_remain_alert_label(summary_data),
+                key=remain_alert_key,
+            )
+        )
     if is_riichi:
         return tuple(indicators)
     try:
@@ -13339,7 +14514,7 @@ def _normalize_player_alert_indicators_by_seat(
 
 
 def _player_panel_alert_sound_priority(alert_key: str) -> int:
-    """Return player-panel alert sound priority, with push alerts muted."""
+    """Return player-panel alert sound priority before per-alert sound gating."""
 
     if alert_key == "remain_purple" or alert_key.startswith("push:"):
         return 3
@@ -13404,14 +14579,68 @@ def _player_panel_remain_sound_key(level: int) -> str:
     return ""
 
 
-def _filter_player_panel_sound_alert_keys(alert_keys: Sequence[str] | None) -> tuple[str, ...]:
+def _is_push_alert_sound_key(alert_key: str) -> bool:
+    """Return whether one alert key belongs to the Push alert sound family."""
+
+    normalized_key = str(alert_key or "").strip().lower()
+    return normalized_key.startswith("push:") or normalized_key.startswith("push_release")
+
+
+def _push_alert_sound_is_enabled(push_alert_data: Mapping[str, object] | None) -> bool:
+    """Return whether a Push-family alert is far enough into the river to make sound."""
+
+    if not isinstance(push_alert_data, Mapping):
+        return False
+    try:
+        seat_discard_index = int(push_alert_data.get("seat_discard_index"))
+    except (TypeError, ValueError):
+        return False
+    return seat_discard_index >= DISCARD_ROW_TILE_COUNT
+
+
+def _filter_player_panel_sound_alert_keys(
+    alert_keys: Sequence[str] | None,
+    push_alert_data: Mapping[str, object] | None = None,
+) -> tuple[str, ...]:
     """Keep only non-remain alert keys for generic player-panel sound transitions."""
 
     return tuple(
         alert_key
         for alert_key in (str(raw_key or "").strip() for raw_key in (alert_keys or ()))
-        if alert_key and not alert_key.startswith("remain_")
+        if alert_key
+        and not alert_key.startswith("remain_")
+        and (not _is_push_alert_sound_key(alert_key) or _push_alert_sound_is_enabled(push_alert_data))
     )
+
+
+def _normalize_player_panel_sounded_alert_keys_by_seat(
+    sounded_keys_by_seat: Mapping[int, object] | None,
+) -> dict[int, frozenset[str]]:
+    """Normalize per-seat alert keys that have already produced sound while active."""
+
+    normalized = {seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER}
+    if not isinstance(sounded_keys_by_seat, Mapping):
+        return normalized
+    for raw_seat, raw_keys in sounded_keys_by_seat.items():
+        try:
+            seat = int(raw_seat)
+        except (TypeError, ValueError):
+            continue
+        if seat not in normalized:
+            continue
+        if isinstance(raw_keys, str):
+            key_values = (raw_keys,)
+        elif isinstance(raw_keys, Iterable):
+            key_values = raw_keys
+        else:
+            key_values = (raw_keys,)
+        normalized_keys = {
+            str(raw_key or "").strip()
+            for raw_key in key_values
+            if str(raw_key or "").strip()
+        }
+        normalized[seat] = frozenset(normalized_keys)
+    return normalized
 
 
 def _highest_priority_player_panel_alert_key(alert_keys: Sequence[str] | None) -> str:
@@ -13447,19 +14676,60 @@ def _player_panel_alert_sound_tone(alert_key: str) -> tuple[int, int]:
     return 880, 70
 
 
+def _player_panel_alert_sound_tones(alert_key: str) -> tuple[tuple[int, int], ...]:
+    """Return one or more beep tones for a player-panel alert transition."""
+
+    normalized_key = str(alert_key or "").strip().lower()
+    if normalized_key.startswith("push:"):
+        return ((520, 65), (760, 80))
+    return (_player_panel_alert_sound_tone(alert_key),)
+
+
+def _player_panel_alert_sound_asset_name(alert_key: str) -> str:
+    """Return the WAV asset name for one player-panel alert transition."""
+
+    normalized_key = str(alert_key or "").strip().lower()
+    if normalized_key.startswith("push:"):
+        return "alert_push"
+    if normalized_key.startswith("push_release"):
+        return "alert_push_release"
+    if normalized_key == "remain_purple":
+        return "alert_panel_remain_purple"
+    if normalized_key == "remain_red":
+        return "alert_panel_remain_red"
+    if normalized_key == "remain_yellow":
+        return "alert_panel_remain_yellow"
+    if "purple" in normalized_key:
+        return "alert_panel_purple"
+    if "red" in normalized_key:
+        return "alert_panel_red"
+    if "yellow" in normalized_key or normalized_key in {
+        "suit_bias",
+        "ryanmen_chi_37",
+        "tenpai_near",
+    }:
+        return "alert_panel_yellow"
+    if "green" in normalized_key:
+        return "alert_panel_green"
+    return "alert_panel_default"
+
+
 def _play_player_panel_alert_sound_worker(alert_key: str) -> None:
     """Emit one short platform sound for a player-panel alert transition."""
 
     if winsound is None:
         return
+    if _play_alert_sound_asset(_player_panel_alert_sound_asset_name(alert_key)):
+        return
 
-    frequency_hz, duration_ms = _player_panel_alert_sound_tone(alert_key)
-    try:
-        winsound.Beep(frequency_hz, duration_ms)
-    except RuntimeError:
+    for frequency_hz, duration_ms in _player_panel_alert_sound_tones(alert_key):
         try:
-            winsound.MessageBeep()
+            winsound.Beep(frequency_hz, duration_ms)
         except RuntimeError:
+            try:
+                winsound.MessageBeep()
+            except RuntimeError:
+                return
             return
 
 
@@ -13469,9 +14739,12 @@ def _play_player_panel_alert_sound_if_needed(
     push_alerts_by_seat: Mapping[int, Mapping[str, object]],
     *,
     alert_indicators_by_seat: PlayerAlertIndicatorsBySeat | None = None,
+    latest_discard_actor_seat: int | None = None,
 ) -> None:
     """Play one short sound only when a seat's audible alert appears or upgrades."""
 
+    # Audio must follow the rendered player-panel surface.  Hidden self-side remain/Push facts are
+    # useful internally, but announcing them would contradict what the operator sees.
     previous_alert_keys_by_seat = getattr(
         canvas,
         "last_player_panel_alert_keys_by_seat",
@@ -13487,21 +14760,59 @@ def _play_player_panel_alert_sound_if_needed(
             for seat in HAND_DANGER_BAR_SEAT_ORDER
         },
     )
+    previous_audible_alert_keys_by_seat = getattr(
+        canvas,
+        "last_player_panel_audible_alert_keys_by_seat",
+        {
+            seat: _filter_player_panel_sound_alert_keys(
+                previous_alert_keys_by_seat.get(seat, ())
+            )
+            for seat in HAND_DANGER_BAR_SEAT_ORDER
+        },
+    )
+    previous_sounded_alert_keys_by_seat = _normalize_player_panel_sounded_alert_keys_by_seat(
+        getattr(canvas, "last_player_panel_sounded_alert_keys_by_seat", {})
+    )
+    normalized_push_alerts_by_seat = _normalize_player_push_alert_percentages(
+        push_alerts_by_seat
+    )
     current_indicators_by_seat = _normalize_player_alert_indicators_by_seat(
         alert_indicators_by_seat
     )
-    if not current_indicators_by_seat:
+    if alert_indicators_by_seat is None and not current_indicators_by_seat:
+        # Older callers pass summaries/push payloads only.  Build the same panel indicators here so
+        # the audio path and drawing path still share one alert vocabulary.
         current_indicators_by_seat = _build_player_panel_alert_indicators_by_seat(
             summaries_by_seat,
             push_alerts_by_seat,
         )
     current_alert_keys_by_seat = {
-        seat: tuple(indicator.key for indicator in indicators if indicator.key)
-        for seat, indicators in current_indicators_by_seat.items()
+        seat: tuple(
+            indicator.key
+            for indicator in current_indicators_by_seat.get(seat, ())
+            if indicator.key
+        )
+        for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    current_audible_alert_keys_by_seat = {
+        seat: _filter_player_panel_sound_alert_keys(
+            current_alert_keys_by_seat.get(seat, ()),
+            normalized_push_alerts_by_seat.get(seat, {}),
+        )
+        for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
     canvas.last_player_panel_alert_keys_by_seat = current_alert_keys_by_seat
+    canvas.last_player_panel_audible_alert_keys_by_seat = current_audible_alert_keys_by_seat
+    sounded_alert_keys_by_seat = {
+        seat: frozenset(
+            previous_sounded_alert_keys_by_seat.get(seat, frozenset())
+            & set(current_alert_keys_by_seat.get(seat, ()))
+        )
+        for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    canvas.last_player_panel_sounded_alert_keys_by_seat = sounded_alert_keys_by_seat
     current_remain_sound_level_by_seat: dict[int, int] = {}
-    upgraded_alert_keys: list[str] = []
+    upgraded_alert_keys: list[tuple[int, str]] = []
     for seat in HAND_DANGER_BAR_SEAT_ORDER:
         previous_remain_level = int(
             previous_remain_sound_level_by_seat.get(
@@ -13511,36 +14822,49 @@ def _play_player_panel_alert_sound_if_needed(
                 ),
             )
         )
-        current_remain_level = _player_panel_remain_sound_level(
-            summaries_by_seat.get(seat, {}),
-            current_alert_keys_by_seat.get(seat, ()),
+        current_remain_level = _player_panel_remain_sound_level_from_alert_keys(
+            current_alert_keys_by_seat.get(seat, ())
         )
         current_remain_sound_level_by_seat[seat] = current_remain_level
         if current_remain_level > previous_remain_level:
             remain_sound_key = _player_panel_remain_sound_key(current_remain_level)
-            if remain_sound_key:
-                upgraded_alert_keys.append(remain_sound_key)
+            if (
+                remain_sound_key
+                and remain_sound_key not in sounded_alert_keys_by_seat.get(seat, frozenset())
+            ):
+                upgraded_alert_keys.append((seat, remain_sound_key))
         previous_total_priority = max(
             previous_remain_level,
             _player_panel_alert_sound_priority(
                 _highest_priority_player_panel_alert_key(
-                    _filter_player_panel_sound_alert_keys(
-                        previous_alert_keys_by_seat.get(seat, ())
-                    )
+                    previous_audible_alert_keys_by_seat.get(seat, ())
                 )
             ),
         )
         current_key = _highest_priority_player_panel_alert_key(
-            _filter_player_panel_sound_alert_keys(current_alert_keys_by_seat.get(seat, ()))
+            current_audible_alert_keys_by_seat.get(seat, ())
         )
-        if _player_panel_alert_sound_priority(current_key) > previous_total_priority:
-            upgraded_alert_keys.append(current_key)
+        # If the latest event is our own discard, an old opponent Push latch can still exist for
+        # display history, but it should not be announced as a fresh opponent action.
+        suppress_push_sound_for_self_discard = (
+            current_key
+            and _is_push_alert_sound_key(current_key)
+            and latest_discard_actor_seat is not None
+            and int(latest_discard_actor_seat) == int(Player.JICHA)
+        )
+        if (
+            current_key
+            and not suppress_push_sound_for_self_discard
+            and _player_panel_alert_sound_priority(current_key) > previous_total_priority
+            and current_key not in sounded_alert_keys_by_seat.get(seat, frozenset())
+        ):
+            upgraded_alert_keys.append((seat, current_key))
     canvas.last_player_panel_remain_sound_level_by_seat = current_remain_sound_level_by_seat
     if not upgraded_alert_keys:
         return
-    highest_priority_key = max(
+    highest_priority_seat, highest_priority_key = max(
         upgraded_alert_keys,
-        key=lambda alert_key: _player_panel_alert_sound_priority(str(alert_key)),
+        key=lambda item: _player_panel_alert_sound_priority(str(item[1])),
     )
     now_monotonic_s = time.monotonic()
     if (
@@ -13550,18 +14874,101 @@ def _play_player_panel_alert_sound_if_needed(
     ):
         return
     canvas.last_player_panel_alert_sound_monotonic_s = now_monotonic_s
+    updated_sounded_alert_keys_by_seat = {
+        seat: set(sounded_alert_keys_by_seat.get(seat, frozenset()))
+        for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    updated_sounded_alert_keys_by_seat.setdefault(highest_priority_seat, set()).add(
+        highest_priority_key
+    )
+    canvas.last_player_panel_sounded_alert_keys_by_seat = {
+        seat: frozenset(keys)
+        for seat, keys in updated_sounded_alert_keys_by_seat.items()
+    }
     if winsound is None:
         try:
             canvas.bell()
         except tkinter.TclError:
             return
         return
-    _start_tracked_background_thread(
-        label="panel alert sound",
-        name="player-panel-alert-sound",
-        target=_play_player_panel_alert_sound_worker,
-        args=(highest_priority_key,),
+    _queue_alert_sound_job(_play_player_panel_alert_sound_worker, highest_priority_key)
+
+
+def _meld_dora_alert_sound_tones() -> tuple[tuple[int, int], ...]:
+    """Return the three-note sound used when one player's meld dora reaches the threshold."""
+
+    return ((880, 65), (1120, 65), (1440, 90))
+
+
+def _play_meld_dora_alert_sound_worker() -> None:
+    """Emit a three-note platform sound for the meld-dora threshold alert."""
+
+    if winsound is None:
+        return
+    if _play_alert_sound_asset("alert_meld_dora2"):
+        return
+
+    for frequency_hz, duration_ms in _meld_dora_alert_sound_tones():
+        try:
+            winsound.Beep(frequency_hz, duration_ms)
+        except RuntimeError:
+            try:
+                winsound.MessageBeep()
+            except RuntimeError:
+                return
+            return
+
+
+def _meld_dora_alert_count_level(counts_by_seat: Mapping[int, object], player: Player) -> int:
+    """Return one normalized meld-dora alert count for a player."""
+
+    try:
+        return max(0, int(counts_by_seat.get(int(player), 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _play_meld_dora_alert_sound_if_needed(
+    canvas: tkinter.Canvas,
+    melds_by_player: SeatMeldMap | None,
+    dora_indicator_tiles: Sequence[int],
+) -> None:
+    """Play three notes when any one player's meld dora count first reaches two or more."""
+
+    previous_counts_by_seat = getattr(
+        canvas,
+        "last_meld_dora_alert_counts_by_seat",
+        {int(player): 0 for player in Player},
     )
+    current_counts_by_seat = _meld_dora_counts_by_player(
+        melds_by_player,
+        dora_indicator_tiles,
+    )
+    canvas.last_meld_dora_alert_counts_by_seat = current_counts_by_seat
+    should_play = any(
+        _meld_dora_alert_count_level(current_counts_by_seat, player) >= MELD_DORA_ALERT_THRESHOLD
+        and _meld_dora_alert_count_level(previous_counts_by_seat, player) < MELD_DORA_ALERT_THRESHOLD
+        for player in Player
+    )
+    if not should_play:
+        return
+
+    now_monotonic_s = time.monotonic()
+    if (
+        now_monotonic_s
+        - float(getattr(canvas, "last_meld_dora_alert_sound_monotonic_s", 0.0) or 0.0)
+        < MELD_DORA_ALERT_SOUND_MIN_INTERVAL_S
+    ):
+        return
+    canvas.last_meld_dora_alert_sound_monotonic_s = now_monotonic_s
+    if winsound is None:
+        try:
+            for _unused_index in range(3):
+                canvas.bell()
+        except tkinter.TclError:
+            return
+        return
+    _queue_alert_sound_job(_play_meld_dora_alert_sound_worker)
 
 
 def _draw_alert_content(
@@ -13641,16 +15048,7 @@ def _draw_score_content(
     """Draw the score-gap section plus the placeholder condition button."""
 
     left, top, right, bottom = rect
-    caption_y = top + 24
-    value_y = top + 42
-    canvas.create_text(
-        (left + right) / 2,
-        caption_y,
-        text="自家差",
-        anchor=tkinter.CENTER,
-        fill=text_muted,
-        font=PLAYER_PANEL_SCORE_CAPTION_FONT,
-    )
+    value_y = top + 25
     fitted_score_text = _fit_text_to_width(
         canvas,
         _format_player_panel_score_diff(score_diff),
@@ -13749,6 +15147,7 @@ def _draw_button_group(
     # 詳細切替に使う仮のボタンラベル配列。
     labels = PLAYER_PANEL_BUTTON_LABELS
     has_saved_memo = _player_has_saved_memo(canvas, player_name)
+    has_loaded_status = _player_has_loaded_status(canvas, player_name)
     # 横長パネルでは背の低いボタンを縦に積む。
     if horizontal:
         button_height = PLAYER_PANEL_HORIZONTAL_BUTTON_HEIGHT
@@ -13766,6 +15165,13 @@ def _draw_button_group(
             current_button_fill = "#29415d" if is_active else button_fill
             current_button_outline = button_outline
             if label == "DETAIL" and has_saved_memo:
+                current_button_fill = (
+                    PLAYER_PANEL_DETAIL_MEMO_ACTIVE_FILL
+                    if is_active
+                    else PLAYER_PANEL_DETAIL_MEMO_FILL
+                )
+                current_button_outline = PLAYER_PANEL_DETAIL_MEMO_OUTLINE
+            if label == "STATUS" and has_loaded_status:
                 current_button_fill = (
                     PLAYER_PANEL_DETAIL_MEMO_ACTIVE_FILL
                     if is_active
@@ -13820,6 +15226,13 @@ def _draw_button_group(
             current_button_fill = "#29415d" if is_active else button_fill
             current_button_outline = button_outline
             if label == "DETAIL" and has_saved_memo:
+                current_button_fill = (
+                    PLAYER_PANEL_DETAIL_MEMO_ACTIVE_FILL
+                    if is_active
+                    else PLAYER_PANEL_DETAIL_MEMO_FILL
+                )
+                current_button_outline = PLAYER_PANEL_DETAIL_MEMO_OUTLINE
+            if label == "STATUS" and has_loaded_status:
                 current_button_fill = (
                     PLAYER_PANEL_DETAIL_MEMO_ACTIVE_FILL
                     if is_active
@@ -13997,9 +15410,11 @@ def _format_nodocchi_success_status_body(stats: NodocchiPlayerStats) -> str:
         f"取得: {_compact_iso_datetime(stats.fetchedAt)}",
         "",
         f"対局数: {summary.get('games') or '-'}",
-        f"平均順位: {summary.get('averageRank') or '-'}",
-        f"和了率: {summary.get('winRate') or '-'} / 放銃率: {summary.get('dealInRate') or '-'}",
-        f"副露率: {summary.get('callRate') or '-'} / リーチ率: {summary.get('riichiRate') or '-'}",
+        f"平均着順: {summary.get('averageRank') or '-'}",
+        f"和了率: {summary.get('winRate') or '-'}",
+        f"放銃率: {summary.get('dealInRate') or '-'}",
+        f"副露率: {summary.get('callRate') or '-'}",
+        f"リーチ率: {summary.get('riichiRate') or '-'}",
         "",
     ]
     for category in stats.categories:
@@ -14026,6 +15441,199 @@ def _compact_iso_datetime(value: str) -> str:
     if not text:
         return "-"
     return text.replace("T", " ")
+
+
+def _nodocchi_status_line_fill(line: str, text_muted: str) -> str:
+    """Return red for requested Nodocchi status metric lines."""
+
+    label = str(line or "").strip().split(":", 1)[0]
+    if label in NODOCCHI_STATUS_HIGHLIGHT_LABELS:
+        return NODOCCHI_STATUS_HIGHLIGHT_TEXT
+    return NODOCCHI_STATUS_NORMAL_TEXT
+
+
+def _nodocchi_inline_status_metric_fill(label: str) -> str:
+    if str(label or "").strip() in NODOCCHI_INLINE_STATUS_HIGHLIGHT_LABELS:
+        return NODOCCHI_STATUS_HIGHLIGHT_TEXT
+    return NODOCCHI_STATUS_NORMAL_TEXT
+
+
+def _draw_nodocchi_status_body_text(
+    canvas: tkinter.Canvas,
+    *,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    body: str,
+    text_muted: str,
+    font_spec: object,
+) -> None:
+    """Draw Nodocchi status body line-by-line so selected metrics can be highlighted."""
+
+    max_text_width = max(right - left, 40)
+    line_font = _font_for_canvas(canvas, font_spec)
+    line_height = max(10.0, float(line_font.metrics("linespace")) + 2.0)
+    current_y = top
+    for line in str(body or "").splitlines():
+        if current_y + line_height > bottom:
+            break
+        display_text = _fit_text_to_width(canvas, line, font_spec, max_text_width) if line else ""
+        canvas.create_text(
+            left,
+            current_y,
+            text=display_text,
+            anchor=tkinter.NW,
+            fill=_nodocchi_status_line_fill(line, text_muted),
+            font=font_spec,
+        )
+        current_y += line_height
+
+
+def _nodocchi_inline_status_metrics(stats: NodocchiPlayerStats) -> tuple[tuple[str, str], ...]:
+    """Return compact metrics for the default in-table STATUS display."""
+
+    summary = stats.summary
+    return (
+        ("対局", str(summary.get("games") or "-")),
+        ("平均", str(summary.get("averageRank") or "-")),
+        ("和了", str(summary.get("winRate") or "-")),
+        ("放銃", str(summary.get("dealInRate") or "-")),
+        ("副露", str(summary.get("callRate") or "-")),
+        ("立直", str(summary.get("riichiRate") or "-")),
+    )
+
+
+def _draw_inline_status_metric_cell(
+    canvas: tkinter.Canvas,
+    *,
+    left: float,
+    top: float,
+    right: float,
+    label: str,
+    value: str,
+    text_muted: str,
+) -> None:
+    """Draw one compact label/value pair for default player STATUS."""
+
+    if right <= left:
+        return
+    label_font = _font_for_canvas(canvas, NODOCCHI_INLINE_STATUS_LABEL_FONT)
+    fitted_label = _fit_text_to_width(
+        canvas,
+        label,
+        NODOCCHI_INLINE_STATUS_LABEL_FONT,
+        max((right - left) * 0.42, 16.0),
+    )
+    label_width = min(float(label_font.measure(fitted_label)), max((right - left) * 0.45, 16.0))
+    metric_fill = _nodocchi_inline_status_metric_fill(label)
+    canvas.create_text(
+        left,
+        top,
+        text=fitted_label,
+        anchor=tkinter.NW,
+        fill=metric_fill,
+        font=NODOCCHI_INLINE_STATUS_LABEL_FONT,
+    )
+    value_left = min(left + label_width + 3.0, right - 16.0)
+    fitted_value = _fit_text_to_width(
+        canvas,
+        value,
+        NODOCCHI_INLINE_STATUS_VALUE_FONT,
+        max(right - value_left, 16.0),
+    )
+    canvas.create_text(
+        value_left,
+        top,
+        text=fitted_value,
+        anchor=tkinter.NW,
+        fill=metric_fill,
+        font=NODOCCHI_INLINE_STATUS_VALUE_FONT,
+    )
+
+
+def _draw_nodocchi_inline_status(
+    canvas: tkinter.Canvas,
+    rect: tuple[float, float, float, float],
+    stats: NodocchiPlayerStats,
+    panel_fill: str,
+    panel_outline: str,
+    text_muted: str,
+) -> None:
+    """Draw successful STATUS metrics in the space between player panel and meld area."""
+
+    left, top, right, bottom = (float(value) for value in rect)
+    width = right - left
+    height = bottom - top
+    if width < NODOCCHI_INLINE_STATUS_MIN_WIDTH or height < NODOCCHI_INLINE_STATUS_MIN_HEIGHT:
+        return
+    canvas.create_rectangle(left, top, right, bottom, fill=panel_fill, outline=panel_outline, width=1)
+    metrics = _nodocchi_inline_status_metrics(stats)
+    label_font = _font_for_canvas(canvas, NODOCCHI_INLINE_STATUS_LABEL_FONT)
+    value_font = _font_for_canvas(canvas, NODOCCHI_INLINE_STATUS_VALUE_FONT)
+    row_height = max(
+        10.0,
+        float(label_font.metrics("linespace")),
+        float(value_font.metrics("linespace")),
+    ) + NODOCCHI_INLINE_STATUS_ROW_GAP
+    inner_left = left + 4.0
+    inner_top = top + 3.0
+    inner_right = right - 4.0
+    inner_width = max(inner_right - inner_left, 1.0)
+    inner_height = max(bottom - inner_top - 3.0, 0.0)
+    if inner_width >= 170.0:
+        columns = 3
+    elif inner_width >= 112.0:
+        columns = 2
+    else:
+        columns = 1
+    rows = max(1, int(inner_height // row_height))
+    max_metrics = min(len(metrics), rows * columns)
+    if max_metrics <= 0:
+        return
+    column_width = max(
+        (inner_width - NODOCCHI_INLINE_STATUS_COLUMN_GAP * max(columns - 1, 0)) / columns,
+        1.0,
+    )
+    for index, (label, value) in enumerate(metrics[:max_metrics]):
+        row = index // columns
+        column = index % columns
+        cell_left = inner_left + column * (column_width + NODOCCHI_INLINE_STATUS_COLUMN_GAP)
+        cell_top = inner_top + row * row_height
+        _draw_inline_status_metric_cell(
+            canvas,
+            left=cell_left,
+            top=cell_top,
+            right=cell_left + column_width,
+            label=label,
+            value=value,
+            text_muted=text_muted,
+        )
+
+
+def _draw_default_player_status_sections(
+    canvas: tkinter.Canvas,
+    layout: Mapping[str, object],
+    player_names_by_seat: PlayerNamesBySeat,
+    panel_fill: str,
+    panel_outline: str,
+    text_muted: str,
+) -> None:
+    """Draw cached STATUS metrics in each opponent's panel-to-meld gap."""
+
+    inference_rects = layout.get("player_inference_rects", {})
+    if not isinstance(inference_rects, Mapping):
+        return
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        raw_player_name = str(player_names_by_seat.get(int(seat), "")).strip()
+        player_name = _player_panel_display_name(int(seat), raw_player_name)
+        stats = _nodocchi_status_stats_for_player(canvas, player_name)
+        if stats is None:
+            continue
+        rect = inference_rects.get(int(seat))
+        if not isinstance(rect, tuple) or len(rect) != 4:
+            continue
+        _draw_nodocchi_inline_status(canvas, rect, stats, panel_fill, panel_outline, text_muted)
 
 
 def _draw_nodocchi_status_link_button(
@@ -14157,6 +15765,7 @@ def _draw_detail_toggle_group(
     detail_body_top = detail_content_rect[1] + 42
     detail_body_font = ("Yu Gothic UI", 9)
     nodocchi_source_url = ""
+    draw_nodocchi_status_body = False
     if detail_panel_state.view_kind == "visible":
         detail_title, detail_body = _lag_marker_reference_copy(
             getattr(canvas, "lag_marker_reference_kind", LAG_MARKER_REFERENCE_KIND_BLUE)
@@ -14194,6 +15803,7 @@ def _draw_detail_toggle_group(
         detail_title = f"{seat_title} Player Status"
         detail_body = _format_nodocchi_status_detail_body(entry, player_name)
         detail_body_font = ("Yu Gothic UI", 8)
+        draw_nodocchi_status_body = True
 
     canvas.create_text(
         left + 16,
@@ -14204,19 +15814,31 @@ def _draw_detail_toggle_group(
         font=("Yu Gothic UI", 10, "bold"),
     )
 
-    canvas.create_text(
-        left + 16,
-        detail_body_top,
-        text=detail_body,
-        anchor=tkinter.NW,
-        width=max(right - left - 32, 40),
-        fill=text_muted,
-        font=detail_body_font,
-    )
+    link_bottom = detail_content_rect[3] - 10
+    link_top = max(link_bottom - 22, detail_body_top + 28)
+    if draw_nodocchi_status_body:
+        _draw_nodocchi_status_body_text(
+            canvas,
+            left=left + 16,
+            top=detail_body_top,
+            right=right - 16,
+            bottom=(link_top - 6 if nodocchi_source_url else detail_content_rect[3] - 10),
+            body=detail_body,
+            text_muted=text_muted,
+            font_spec=detail_body_font,
+        )
+    else:
+        canvas.create_text(
+            left + 16,
+            detail_body_top,
+            text=detail_body,
+            anchor=tkinter.NW,
+            width=max(right - left - 32, 40),
+            fill=text_muted,
+            font=detail_body_font,
+        )
 
     if nodocchi_source_url:
-        link_bottom = detail_content_rect[3] - 10
-        link_top = max(link_bottom - 22, detail_body_top + 28)
         # The button remains available for loading/error/not-found states, so
         # the user can always inspect the source page in Nodocchi.
         _draw_nodocchi_status_link_button(
@@ -14230,6 +15852,32 @@ def _draw_detail_toggle_group(
             button_outline=button_outline,
             button_text=button_text,
         )
+
+
+def _detail_visible_tile_image(
+    canvas: tkinter.Canvas,
+    tile_id: int,
+) -> ImageTk.PhotoImage:
+    """Return a cached small tile image for the right-side visible-tile detail panel."""
+
+    asset_tile_id = logical_tile_id_to_asset_tile_id(tile_id)
+    cache_key = (int(asset_tile_id), int(DETAIL_TILE_MAX_WIDTH), int(DETAIL_TILE_MAX_HEIGHT))
+    cache: dict[tuple[int, int, int], ImageTk.PhotoImage] = getattr(
+        canvas,
+        "detail_visible_tile_image_cache",
+        {},
+    )
+    cached_image = cache.get(cache_key)
+    if cached_image is not None:
+        return cached_image
+
+    tile_path = _resolve_tiles_dir() / f"{asset_tile_id}.png"
+    tile_image = Image.open(tile_path).convert("RGB")
+    tile_image.thumbnail((DETAIL_TILE_MAX_WIDTH, DETAIL_TILE_MAX_HEIGHT), Image.Resampling.LANCZOS)
+    detail_image = ImageTk.PhotoImage(tile_image, master=canvas)
+    cache[cache_key] = detail_image
+    canvas.detail_visible_tile_image_cache = cache
+    return detail_image
 
 
 def _draw_visible_tiles(
@@ -14273,15 +15921,9 @@ def _draw_visible_tiles(
         )
         return
 
-    # 実牌画像を読み込み、詳細パネル用に縮小した PhotoImage を作る。
-    tiles_dir = _resolve_tiles_dir()
     detail_images: list[ImageTk.PhotoImage] = []
     for tile_id in normalized_samples[: DETAIL_VISIBLE_COLUMNS * DETAIL_VISIBLE_ROWS]:
-        asset_tile_id = logical_tile_id_to_asset_tile_id(tile_id)
-        tile_path = tiles_dir / f"{asset_tile_id}.png"
-        tile_image = Image.open(tile_path).convert("RGB")
-        tile_image.thumbnail((DETAIL_TILE_MAX_WIDTH, DETAIL_TILE_MAX_HEIGHT), Image.Resampling.LANCZOS)
-        detail_images.append(ImageTk.PhotoImage(tile_image, master=canvas))
+        detail_images.append(_detail_visible_tile_image(canvas, int(tile_id)))
     if not detail_images:
         canvas.create_text(
             left,
@@ -15048,6 +16690,32 @@ def _draw_center_panel(
     )
 
 
+def _center_dora_tile_image(
+    canvas: tkinter.Canvas,
+    tile_id: int,
+) -> ImageTk.PhotoImage:
+    """Return a cached compact dora indicator image for the center panel."""
+
+    asset_tile_id = logical_tile_id_to_asset_tile_id(tile_id)
+    cache_key = (int(asset_tile_id), int(CENTER_DORA_MAX_WIDTH), int(CENTER_DORA_MAX_HEIGHT))
+    cache: dict[tuple[int, int, int], ImageTk.PhotoImage] = getattr(
+        canvas,
+        "center_dora_tile_image_cache",
+        {},
+    )
+    cached_image = cache.get(cache_key)
+    if cached_image is not None:
+        return cached_image
+
+    tile_path = _resolve_tiles_dir() / f"{asset_tile_id}.png"
+    tile_image = Image.open(tile_path).convert("RGB")
+    tile_image.thumbnail((CENTER_DORA_MAX_WIDTH, CENTER_DORA_MAX_HEIGHT), Image.Resampling.LANCZOS)
+    dora_image = ImageTk.PhotoImage(tile_image, master=canvas)
+    cache[cache_key] = dora_image
+    canvas.center_dora_tile_image_cache = cache
+    return dora_image
+
+
 def _draw_center_dora_tiles(
     canvas: tkinter.Canvas,
     center_x: float,
@@ -15066,14 +16734,10 @@ def _draw_center_dora_tiles(
         )
         return
 
-    tiles_dir = _resolve_tiles_dir()
-    dora_images: list[ImageTk.PhotoImage] = []
-    for tile_id in dora_indicator_tiles[:5]:
-        asset_tile_id = logical_tile_id_to_asset_tile_id(tile_id)
-        tile_path = tiles_dir / f"{asset_tile_id}.png"
-        tile_image = Image.open(tile_path).convert("RGB")
-        tile_image.thumbnail((CENTER_DORA_MAX_WIDTH, CENTER_DORA_MAX_HEIGHT), Image.Resampling.LANCZOS)
-        dora_images.append(ImageTk.PhotoImage(tile_image, master=canvas))
+    dora_images = [
+        _center_dora_tile_image(canvas, int(tile_id))
+        for tile_id in dora_indicator_tiles[:5]
+    ]
 
     canvas.center_panel_images.extend(dora_images)
 
@@ -16309,6 +17973,7 @@ def _draw_lag_marker(
 ) -> None:
     """Draw one lag marker label (`L`/`Pl`/`N`) in the former lag-marker slot."""
 
+    del color
     _marker_radius, _four_visible_center, _same_jun_center, (center_x, center_y) = _discard_marker_layout(
         player,
         left,
@@ -16318,11 +17983,10 @@ def _draw_lag_marker(
     )
     current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
     font_size = max(7, int(round(8 * current_ui_scale)))
-    kind_overrides = _normalize_lag_marker_reference_kind_overrides(
-        getattr(canvas, "lag_marker_reference_kinds_by_entry", {})
-    )
-    effective_kind = _normalize_lag_marker_reference_kind(
-        kind_overrides.get(tuple(entry_key), base_kind)
+    effective_kind = _effective_lag_marker_reference_kind(
+        canvas,
+        entry_key=entry_key,
+        base_kind=base_kind,
     )
     marker_text, marker_color = _lag_marker_display_style(effective_kind)
     marker_font = ("Consolas", font_size, "bold")
@@ -16338,14 +18002,88 @@ def _draw_lag_marker(
         angle=marker_angle,
         offsets=((-0.35, 0.0), (0.35, 0.0)),
     )
-    canvas.lag_marker_reference_button_specs.append(
+    _append_lag_marker_reference_button_spec(
+        canvas,
+        center=(center_x, center_y),
+        radius=max(float(_marker_radius) + 2.0, float(font_size)),
+        entry_key=entry_key,
+        base_kind=base_kind,
+    )
+
+
+def _effective_lag_marker_reference_kind(
+    canvas: tkinter.Canvas,
+    *,
+    entry_key: tuple[object, ...],
+    base_kind: str,
+) -> str:
+    """Return the current display kind after per-marker lag-reference overrides."""
+
+    kind_overrides = _normalize_lag_marker_reference_kind_overrides(
+        getattr(canvas, "lag_marker_reference_kinds_by_entry", {})
+    )
+    return _normalize_lag_marker_reference_kind(
+        kind_overrides.get(tuple(entry_key), base_kind)
+    )
+
+
+def _append_lag_marker_reference_button_spec(
+    canvas: tkinter.Canvas,
+    *,
+    center: tuple[float, float],
+    radius: float,
+    entry_key: tuple[object, ...],
+    base_kind: str,
+) -> None:
+    """Register the clickable lag marker reference area for drawn or cached river items."""
+
+    specs = getattr(canvas, "lag_marker_reference_button_specs", None)
+    if specs is None:
+        specs = []
+        canvas.lag_marker_reference_button_specs = specs
+    specs.append(
         LagMarkerReferenceButtonSpec(
-            kind=effective_kind,
-            center=(center_x, center_y),
-            radius=max(float(_marker_radius) + 2.0, float(font_size)),
+            kind=_effective_lag_marker_reference_kind(
+                canvas,
+                entry_key=entry_key,
+                base_kind=base_kind,
+            ),
+            center=(float(center[0]), float(center[1])),
+            radius=float(radius),
             entry_key=tuple(entry_key),
             base_kind=_normalize_lag_marker_reference_kind(base_kind),
         )
+    )
+
+
+def _append_cached_lag_marker_reference_button_spec(
+    canvas: tkinter.Canvas,
+    player: Player,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    *,
+    entry_key: tuple[object, ...],
+    base_kind: str,
+) -> None:
+    """Restore lag-marker click specs when an unchanged discard item is not redrawn."""
+
+    marker_radius, _visible_center, _same_jun_center, center = _discard_marker_layout(
+        player,
+        left,
+        top,
+        right,
+        bottom,
+    )
+    current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
+    font_size = max(7, int(round(8 * current_ui_scale)))
+    _append_lag_marker_reference_button_spec(
+        canvas,
+        center=(float(center[0]), float(center[1])),
+        radius=max(float(marker_radius) + 2.0, float(font_size)),
+        entry_key=entry_key,
+        base_kind=base_kind,
     )
 
 
@@ -16484,6 +18222,50 @@ def _push_discard_marker_indices_by_seat(
             continue
         marker_indices[seat] = frozenset({discard_index})
     return marker_indices
+
+
+def _normalize_same_jun_marker_indices_by_seat(
+    marker_indices_by_seat: Mapping[int, Collection[int]] | None,
+) -> dict[int, frozenset[int]]:
+    """Normalize precomputed awaseuchi marker indices for renderer use."""
+
+    normalized = {int(player): frozenset() for player in Player}
+    if marker_indices_by_seat is None:
+        return normalized
+    for raw_seat, raw_indices in marker_indices_by_seat.items():
+        try:
+            seat = int(raw_seat)
+        except (TypeError, ValueError):
+            continue
+        if seat not in normalized:
+            continue
+        normalized_indices: set[int] = set()
+        for raw_index in raw_indices or ():
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                continue
+            if index >= 0:
+                normalized_indices.add(index)
+        normalized[seat] = frozenset(normalized_indices)
+    return normalized
+
+
+def _should_draw_push_discard_marker(
+    discard: object,
+    local_index: int,
+    marker_indices: Collection[int],
+) -> bool:
+    """Return whether one discard should show the river `P` marker."""
+
+    try:
+        normalized_local_index = int(local_index)
+    except (TypeError, ValueError):
+        return False
+    if normalized_local_index < DISCARD_ROW_TILE_COUNT:
+        return False
+    global_index = _discard_global_index(discard, normalized_local_index)
+    return global_index in marker_indices
 
 
 def _push_discard_marker_geometry(
@@ -17124,27 +18906,6 @@ def _discard_tint_base_overlay_bands(
     )
 
 
-def _ensure_discard_tint_base_prewarm(
-    canvas: tkinter.Canvas,
-    discard_tile_scale: float,
-) -> None:
-    """Prewarm the unrotated discard-tint bases once per effective discard tile scale."""
-
-    scale_key = round(float(discard_tile_scale), 3)
-    warmed_scale_keys = set(getattr(canvas, "discard_tint_base_prewarm_scale_keys", set()))
-    if scale_key in warmed_scale_keys:
-        return
-    warm_unrotated_tile_overlay_bases(
-        {
-            tint_kind: _discard_tint_base_overlay_bands(tint_kind)
-            for tint_kind in ("red", "brown", "four_visible")
-        },
-        tile_scale=discard_tile_scale,
-    )
-    warmed_scale_keys.add(scale_key)
-    canvas.discard_tint_base_prewarm_scale_keys = warmed_scale_keys
-
-
 def _discard_tile_image(
     canvas: tkinter.Canvas,
     img_table: TileImageTable,
@@ -17153,76 +18914,204 @@ def _discard_tile_image(
     *,
     tint_kind: str = "none",
 ) -> ImageTk.PhotoImage:
-    """Return the discard image with post-REACH and pre-REACH thinking-time overlay bands."""
+    """Return the base discard image; semantic tints are drawn as Canvas overlays."""
 
+    # Keep this function intentionally boring.  Earlier versions combined tint and thinking bands
+    # into per-tile PhotoImages, which made river redraws expensive when many danger colors changed.
+    del tint_kind
     tuning = _current_layout_tuning(canvas)
     current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
     discard_tile_scale = current_ui_scale * float(tuning.discard_tile_scale)
-    base_overlay_bands = _discard_tint_base_overlay_bands(tint_kind)
-    if _is_riseki_completion_discard(discard):
-        lower_band_tint_step = 0
-        upper_band_tint_step = 0
-    else:
-        lower_band_tint_step = _thinking_time_tint_step(discard.thinking_time_ms)
-        upper_band_tint_step = _thinking_time_tint_step(discard.thinking_time_before_reach_ms)
-    if (
-        lower_band_tint_step <= 0
-        and upper_band_tint_step <= 0
-        and tint_kind == "none"
-        and abs(discard_tile_scale - current_ui_scale) < 0.001
-    ):
+    if abs(discard_tile_scale - current_ui_scale) < 0.001:
+        # The normal image table is already scaled for the current UI scale.
         return img_table[player][discard.draw_type][discard.tile_id]
 
-    overlay_bands = tuple(
-        band
-        for band in (
-            _thinking_time_overlay_band(
-                lower_band_tint_step,
-                band_start_ratio=THINKING_TIME_LOWER_BAND_START_RATIO,
-                band_end_ratio=THINKING_TIME_LOWER_BAND_END_RATIO,
-            ),
-            _thinking_time_overlay_band(
-                upper_band_tint_step,
-                band_start_ratio=THINKING_TIME_UPPER_BAND_START_RATIO,
-                band_end_ratio=THINKING_TIME_UPPER_BAND_END_RATIO,
-            ),
-        )
-        if band is not None
-    )
-    if not base_overlay_bands and not overlay_bands:
-        return img_table[player][discard.draw_type][discard.tile_id]
-
+    # Only the base tile scale is cached here.  Color and thinking-time state must not enter this
+    # key, otherwise `P`/remain/tint churn recreates images instead of cheap Canvas overlays.
     cache_key = (
         player,
         discard.draw_type,
         discard.tile_id,
-        lower_band_tint_step,
-        upper_band_tint_step,
-        tint_kind,
         round(discard_tile_scale, 3),
     )
-    cache: dict[tuple[Player, DrawType, int, int, int, str, float], ImageTk.PhotoImage] = getattr(
+    cache: dict[tuple[Player, DrawType, int, float], ImageTk.PhotoImage] = getattr(
         canvas,
-        "thinking_tile_image_cache",
+        "discard_base_tile_image_cache",
         {},
     )
-    cached_image = cache.get(cache_key)
-    if cached_image is not None:
-        return cached_image
+    scaled_image = cache.get(cache_key)
+    if scaled_image is not None:
+        return scaled_image
 
-    _ensure_discard_tint_base_prewarm(canvas, discard_tile_scale)
-    tinted_image = build_tile_photoimage_from_base_overlay(
+    scaled_image = build_tile_photoimage(
         canvas,
         discard.tile_id,
         player,
         discard.draw_type,
-        base_overlay_bands=base_overlay_bands,
-        overlay_bands=overlay_bands,
         tile_scale=discard_tile_scale,
     )
-    cache[cache_key] = tinted_image
-    canvas.thinking_tile_image_cache = cache
-    return tinted_image
+    cache[cache_key] = scaled_image
+    canvas.discard_base_tile_image_cache = cache
+    return scaled_image
+
+
+def _rgb_to_canvas_color(color: tuple[int, int, int]) -> str:
+    """Convert an RGB tuple into a Tk color string."""
+
+    return "#{:02x}{:02x}{:02x}".format(
+        max(0, min(255, int(color[0]))),
+        max(0, min(255, int(color[1]))),
+        max(0, min(255, int(color[2]))),
+    )
+
+
+def _overlay_stipple_for_strength(overlay_strength: float) -> str | None:
+    """Return a reusable Tk stipple pattern that approximates alpha blending."""
+
+    strength = max(0.0, min(float(overlay_strength), 1.0))
+    if strength >= 0.85:
+        return None
+    if strength >= 0.45:
+        return "gray50"
+    if strength >= 0.22:
+        return "gray25"
+    return "gray12"
+
+
+def _discard_overlay_band_rect(
+    player: Player,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    *,
+    band_start_ratio: float,
+    band_end_ratio: float,
+) -> tuple[float, float, float, float] | None:
+    """Map an unrotated vertical overlay band to one rotated discard image rectangle."""
+
+    # The image asset is rotated by seat, but thinking-time bands are defined in the unrotated tile
+    # coordinate system.  This mapper keeps the visual meaning stable for all four rivers.
+    start_ratio = max(0.0, min(float(band_start_ratio), 1.0))
+    end_ratio = max(0.0, min(float(band_end_ratio), 1.0))
+    if end_ratio <= start_ratio:
+        return None
+    width = max(0.0, float(right) - float(left))
+    height = max(0.0, float(bottom) - float(top))
+    if width <= 0.0 or height <= 0.0:
+        return None
+    if player == Player.JICHA:
+        return (
+            float(left),
+            float(top) + height * start_ratio,
+            float(right),
+            float(top) + height * end_ratio,
+        )
+    if player == Player.TOIMEN:
+        return (
+            float(left),
+            float(top) + height * (1.0 - end_ratio),
+            float(right),
+            float(top) + height * (1.0 - start_ratio),
+        )
+    if player == Player.SHIMOCHA:
+        return (
+            float(left) + width * start_ratio,
+            float(top),
+            float(left) + width * end_ratio,
+            float(bottom),
+        )
+    return (
+        float(left) + width * (1.0 - end_ratio),
+        float(top),
+        float(left) + width * (1.0 - start_ratio),
+        float(bottom),
+    )
+
+
+def _draw_discard_overlay_band(
+    canvas: tkinter.Canvas,
+    player: Player,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    band: tuple[float, float, tuple[int, int, int], tuple[int, int, int], float],
+) -> None:
+    """Draw one discard overlay band as a tagged Canvas rectangle."""
+
+    band_start_ratio, band_end_ratio, top_color, bottom_color, overlay_strength = band
+    rect = _discard_overlay_band_rect(
+        player,
+        left,
+        top,
+        right,
+        bottom,
+        band_start_ratio=band_start_ratio,
+        band_end_ratio=band_end_ratio,
+    )
+    if rect is None or overlay_strength <= 0.0:
+        return
+    fill_color = _rgb_to_canvas_color(
+        tuple(
+            int(round((int(top_color[index]) + int(bottom_color[index])) / 2.0))
+            for index in range(3)
+        )
+    )
+    kwargs: dict[str, object] = {
+        "fill": fill_color,
+        "outline": "",
+        "width": 0,
+    }
+    stipple = _overlay_stipple_for_strength(overlay_strength)
+    if stipple is not None:
+        kwargs["stipple"] = stipple
+    canvas.create_rectangle(*rect, **kwargs)
+
+
+def _discard_thinking_time_tint_steps(discard: Discard) -> tuple[int, int]:
+    """Return post-REACH and pre-REACH thinking-time tint steps for one discard."""
+
+    if _is_riseki_completion_discard(discard):
+        return 0, 0
+    return (
+        _thinking_time_tint_step(discard.thinking_time_ms),
+        _thinking_time_tint_step(discard.thinking_time_before_reach_ms),
+    )
+
+
+def _draw_discard_tile_overlays(
+    canvas: tkinter.Canvas,
+    player: Player,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    *,
+    tint_kind: str,
+    lower_band_tint_step: int,
+    upper_band_tint_step: int,
+) -> None:
+    """Draw semantic discard tints without allocating per-color PhotoImages."""
+
+    # The base brighten band is still applied before semantic color bands, matching the old visual
+    # priority while avoiding image composition for every discard/tint combination.
+    for band in (
+        *_discard_tint_base_overlay_bands(tint_kind),
+        _thinking_time_overlay_band(
+            lower_band_tint_step,
+            band_start_ratio=THINKING_TIME_LOWER_BAND_START_RATIO,
+            band_end_ratio=THINKING_TIME_LOWER_BAND_END_RATIO,
+        ),
+        _thinking_time_overlay_band(
+            upper_band_tint_step,
+            band_start_ratio=THINKING_TIME_UPPER_BAND_START_RATIO,
+            band_end_ratio=THINKING_TIME_UPPER_BAND_END_RATIO,
+        ),
+    ):
+        if band is None:
+            continue
+        _draw_discard_overlay_band(canvas, player, left, top, right, bottom, band)
 
 
 def _meld_tile_image(
@@ -17669,7 +19558,8 @@ def _draw_horizontal_melds(
         cursor_x = max(rect[0] + MELD_ZONE_MARGIN, rect[2] - MELD_ZONE_MARGIN - total_width)
     else:
         cursor_x = rect[0] + MELD_ZONE_MARGIN
-    for (group_width, group_height), meld in measured_groups:
+    draw_groups = list(reversed(measured_groups)) if align == "right" else measured_groups
+    for (group_width, group_height), meld in draw_groups:
         group_top = rect[1] + max((rect[3] - rect[1] - group_height) / 2, 0)
         _draw_meld_group(
             canvas,
@@ -17740,7 +19630,8 @@ def _draw_vertical_melds(
     else:
         cursor_y = rect[1] + MELD_ZONE_MARGIN
 
-    for (group_width, group_height), meld in measured_groups:
+    draw_groups = list(reversed(measured_groups)) if align == "bottom" else measured_groups
+    for (group_width, group_height), meld in draw_groups:
         if player == Player.SHIMOCHA:
             group_left = max(rect[0] + MELD_ZONE_MARGIN, rect[2] - MELD_ZONE_MARGIN - group_width)
         else:
@@ -17812,8 +19703,23 @@ def _draw_discards(
     player_push_alert_percentages: Mapping[int, Mapping[str, object]] | None = None,
     melds_by_player: Mapping[Player, Iterable[Meld]] | None = None,
     round_events: Sequence[object] | None = None,
+    *,
+    same_jun_marker_indices_by_seat: Mapping[int, Collection[int]] | None = None,
+    phase_timings: list[PhaseTiming] | None = None,
 ) -> None:
     """4方向の捨て牌を、それぞれの向きに合わせて並べる。"""
+    discard_phase_totals: dict[str, float] = {}
+
+    def _append_draw_phase_timing(label: str, started_at: float) -> None:
+        if phase_timings is not None:
+            _append_phase_timing(phase_timings, f"draw.{label}", started_at)
+
+    def _add_discard_phase_total(label: str, started_at: float) -> None:
+        if phase_timings is not None:
+            elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+            discard_phase_totals[label] = discard_phase_totals.get(label, 0.0) + elapsed_ms
+
+    phase_started_at = time.perf_counter()
     canvas.discard_tile_selection_click_specs = []
     # 自家向き牌と横向き牌のサイズから、並べるピッチを作る。
     current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
@@ -17863,7 +19769,9 @@ def _draw_discards(
             "anchor": tkinter.NE,
         },
     }
+    _append_draw_phase_timing("setup_geometry", phase_started_at)
 
+    phase_started_at = time.perf_counter()
     visible_count_tiles_34 = (
         {
             tile_34: "three" for tile_34 in visible_summary.three_visible_tiles
@@ -17878,30 +19786,52 @@ def _draw_discards(
     bridge_status = _bridge_status_snapshot(canvas)
     bridge_toggle_overrides = dict(getattr(canvas, "bridge_toggle_active_overrides", {}))
     naki_disabled_override_active = bridge_toggle_overrides.get(BRIDGE_NAKI_DISABLED_TOGGLE_CONTROL_ID)
+    _append_draw_phase_timing("setup_markers", phase_started_at)
+
     # Awaseuchi flags depend only on public river/meld/dora state. Cache the result per live
     # refresh token so resize and idle redraws do not rebuild/sort the entire event stream.
+    phase_started_at = time.perf_counter()
     same_jun_match_indices_by_seat: dict[int, frozenset[int]] = {}
     if AWASEUCHI_MARKERS_ENABLED:
-        same_jun_match_indices_by_seat = _same_jun_marker_indices_by_seat(
-            canvas,
-            discard_map,
-            melds_by_player,
-            round_events,
+        same_jun_match_indices_by_seat = (
+            _normalize_same_jun_marker_indices_by_seat(same_jun_marker_indices_by_seat)
+            if same_jun_marker_indices_by_seat is not None
+            else _same_jun_marker_indices_by_seat(
+                canvas,
+                discard_map,
+                melds_by_player,
+                round_events,
+            )
         )
+    _append_draw_phase_timing("same_jun", phase_started_at)
+    phase_started_at = time.perf_counter()
     push_marker_indices_by_seat = _push_discard_marker_indices_by_seat(player_push_alert_percentages)
+    _append_draw_phase_timing("push_markers", phase_started_at)
+
+    render_cache = _discard_render_cache(canvas)
+    previous_cache_keys = set(render_cache)
+    active_cache_keys: set[tuple[int, int]] = set()
+    # These counters are deliberately stored on the Canvas so slow logs can report whether a
+    # redraw was actually expensive or merely walked the unchanged river state.
+    drawn_count = 0
+    skipped_count = 0
+    changed_count = 0
+    stale_deleted_count = 0
 
     # 各座席について、最大18枚までの捨て牌を 6x3 ベースで配置する。
     for player, layout in layouts.items():
+        player_started_at = time.perf_counter()
         discards = list(discard_map.get(player, []))
         highlighted_indices = discard_red_tint_indices_by_seat.get(int(player), frozenset())
         peak_thinking_time_index = _peak_thinking_time_discard_local_index(discards)
         same_jun_match_indices = same_jun_match_indices_by_seat.get(int(player), frozenset())
         for idx, discard in enumerate(discards[:18]):
             # 6枚ごとに折り返すため、列と行へ変換する。
-            col = idx % 6
-            row = idx // 6
+            col = idx % DISCARD_ROW_TILE_COUNT
+            row = idx // DISCARD_ROW_TILE_COUNT
             x = layout["origin"][0] + layout["col_step"][0] * col + layout["row_step"][0] * row
             y = layout["origin"][1] + layout["col_step"][1] * col + layout["row_step"][1] * row
+            tile_phase_started_at = time.perf_counter()
             discard_tile_34_index = tile37_to_tile34_index(discard.tile_id)
             discard_tint_kind = _discard_tile_tint_kind(
                 discard,
@@ -17909,6 +19839,9 @@ def _draw_discards(
                 should_red_tint=idx in highlighted_indices,
                 visible_summary=visible_summary,
             )
+            _add_discard_phase_total("tile_tint", tile_phase_started_at)
+            tile_phase_started_at = time.perf_counter()
+            lower_band_tint_step, upper_band_tint_step = _discard_thinking_time_tint_steps(discard)
             tile_image = _discard_tile_image(
                 canvas,
                 img_table,
@@ -17916,12 +19849,8 @@ def _draw_discards(
                 discard,
                 tint_kind=discard_tint_kind,
             )
-            canvas.create_image(
-                x,
-                y,
-                image=tile_image,
-                anchor=layout["anchor"],
-            )
+            _add_discard_phase_total("tile_image", tile_phase_started_at)
+            tile_phase_started_at = time.perf_counter()
             left, top, right, bottom = _image_bounds_from_anchor(
                 x,
                 y,
@@ -17948,9 +19877,10 @@ def _draw_discards(
                 and _is_visual_lag_flag(discard.lagged)
                 and not discard.called
             )
-            should_draw_push_marker = (
-                _discard_global_index(discard, idx)
-                in push_marker_indices_by_seat.get(int(player), frozenset())
+            should_draw_push_marker = _should_draw_push_discard_marker(
+                discard,
+                idx,
+                push_marker_indices_by_seat.get(int(player), frozenset()),
             )
             should_draw_same_jun_match_marker = idx in same_jun_match_indices
             should_draw_peak_thinking_time_marker = idx == peak_thinking_time_index
@@ -17969,6 +19899,101 @@ def _draw_discards(
                 idx,
             )
             lag_marker_base_kind = _lag_marker_base_kind_from_color(lag_marker_color)
+            lag_marker_effective_kind = (
+                _effective_lag_marker_reference_kind(
+                    canvas,
+                    entry_key=lag_marker_entry_key,
+                    base_kind=lag_marker_base_kind,
+                )
+                if should_draw_lag_marker
+                else "none"
+            )
+            _add_discard_phase_total("marker_decision", tile_phase_started_at)
+            cache_key = (int(player), int(idx))
+            active_cache_keys.add(cache_key)
+            item_tag = _discard_item_canvas_tag(player, idx)
+            # The signature contains only display-affecting facts.  It is longer than the draw call
+            # itself because false cache hits are worse than a cheap redraw: they leave stale markers
+            # such as `P` or lag badges on screen.
+            tile_signature = (
+                int(player),
+                int(idx),
+                int(discard.tile_id),
+                str(getattr(discard.draw_type, "name", discard.draw_type)),
+                bool(getattr(discard, "called", False)),
+                str(getattr(discard, "lagged", "")),
+                bool(getattr(discard, "riichi_marker_before", False)),
+                str(getattr(discard, "thinking_time_source", "") or ""),
+                bool(_is_riseki_completion_discard(discard)),
+                _discard_global_index(discard, idx),
+                round(float(getattr(discard, "thinking_time_ms", 0.0) or 0.0), 1),
+                round(float(getattr(discard, "thinking_time_before_reach_ms", 0.0) or 0.0), 1),
+                str(layout["anchor"]),
+                round(float(x), 3),
+                round(float(y), 3),
+                int(tile_image.width()),
+                int(tile_image.height()),
+                round(float(left), 3),
+                round(float(top), 3),
+                round(float(right), 3),
+                round(float(bottom), 3),
+                str(discard_tint_kind),
+                int(lower_band_tint_step),
+                int(upper_band_tint_step),
+                str(discard_border_kind),
+                str(visible_count_marker_kind if should_draw_visible_count_marker else "none"),
+                bool(should_draw_lag_marker),
+                str(lag_marker_color if should_draw_lag_marker else ""),
+                str(lag_marker_base_kind if should_draw_lag_marker else ""),
+                str(lag_marker_effective_kind),
+                tuple(lag_marker_entry_key) if should_draw_lag_marker else (),
+                bool(should_draw_push_marker),
+                bool(should_draw_same_jun_match_marker),
+                bool(should_draw_peak_thinking_time_marker),
+            )
+            if render_cache.get(cache_key) == tile_signature:
+                skipped_count += 1
+                # Transient hit areas are rebuilt on every redraw.  When Canvas items are reused,
+                # the visible lag badge remains on screen but its click target still has to be
+                # re-registered.
+                if should_draw_lag_marker:
+                    _append_cached_lag_marker_reference_button_spec(
+                        canvas,
+                        player,
+                        left,
+                        top,
+                        right,
+                        bottom,
+                        entry_key=lag_marker_entry_key,
+                        base_kind=lag_marker_base_kind,
+                    )
+                continue
+
+            if cache_key in render_cache:
+                changed_count += 1
+                # Delete only this discard slot.  The layer tag is reserved for full redraws.
+                _delete_canvas_items_by_tags(canvas, item_tag)
+            tile_canvas = _TaggedCanvasProxy(canvas, _LIVE_ASYNC_DISCARD_TAG, item_tag)
+            tile_phase_started_at = time.perf_counter()
+            tile_canvas.create_image(
+                x,
+                y,
+                image=tile_image,
+                anchor=layout["anchor"],
+            )
+            _draw_discard_tile_overlays(
+                tile_canvas,
+                player,
+                left,
+                top,
+                right,
+                bottom,
+                tint_kind=discard_tint_kind,
+                lower_band_tint_step=lower_band_tint_step,
+                upper_band_tint_step=upper_band_tint_step,
+            )
+            drawn_count += 1
+            _add_discard_phase_total("create_image", tile_phase_started_at)
             if (
                 discard_border_kind != "none"
                 or should_draw_visible_count_marker
@@ -17977,13 +20002,14 @@ def _draw_discards(
                 or should_draw_same_jun_match_marker
                 or should_draw_peak_thinking_time_marker
             ):
+                tile_phase_started_at = time.perf_counter()
                 if discard_border_kind == "called":
-                    _draw_called_discard_border(canvas, left, top, right, bottom)
+                    _draw_called_discard_border(tile_canvas, left, top, right, bottom)
                 elif discard_border_kind == "post_call_tedashi":
-                    _draw_post_call_tedashi_discard_border(canvas, left, top, right, bottom)
+                    _draw_post_call_tedashi_discard_border(tile_canvas, left, top, right, bottom)
                 if should_draw_visible_count_marker:
                     _draw_visible_count_marker(
-                        canvas,
+                        tile_canvas,
                         player,
                         left,
                         top,
@@ -17993,7 +20019,7 @@ def _draw_discards(
                     )
                 if should_draw_lag_marker:
                     _draw_lag_marker(
-                        canvas,
+                        tile_canvas,
                         player,
                         left,
                         top,
@@ -18005,7 +20031,7 @@ def _draw_discards(
                     )
                 if should_draw_push_marker:
                     _draw_push_discard_marker(
-                        canvas,
+                        tile_canvas,
                         player,
                         left,
                         top,
@@ -18014,7 +20040,7 @@ def _draw_discards(
                     )
                 if should_draw_same_jun_match_marker:
                     _draw_same_jun_match_marker(
-                        canvas,
+                        tile_canvas,
                         player,
                         left,
                         top,
@@ -18023,22 +20049,149 @@ def _draw_discards(
                     )
                 if should_draw_peak_thinking_time_marker:
                     _draw_peak_thinking_time_marker(
-                        canvas,
+                        tile_canvas,
                         player,
                         left,
                         top,
                         right,
                         bottom,
                     )
+                _add_discard_phase_total("marker_draw", tile_phase_started_at)
             if getattr(discard, "riichi_marker_before", False):
+                tile_phase_started_at = time.perf_counter()
                 _draw_riichi_stick_marker(
-                    canvas,
+                    tile_canvas,
                     player,
                     left,
                     top,
                     right,
                     bottom,
                 )
+                _add_discard_phase_total("riichi_marker", tile_phase_started_at)
+            render_cache[cache_key] = tile_signature
+        _append_draw_phase_timing(f"player_{int(player)}", player_started_at)
+
+    stale_started_at = time.perf_counter()
+    for stale_key in previous_cache_keys - active_cache_keys:
+        if not (
+            isinstance(stale_key, tuple)
+            and len(stale_key) == 2
+        ):
+            continue
+        _delete_canvas_items_by_tags(
+            canvas,
+            _discard_item_canvas_tag(int(stale_key[0]), int(stale_key[1])),
+        )
+        # Stale keys happen when the river is shortened by REINIT/bootstrap correction or when a
+        # new round clears previous discards before the surrounding full redraw path runs.
+        render_cache.pop(stale_key, None)
+        stale_deleted_count += 1
+    _add_discard_phase_total("stale_delete", stale_started_at)
+    canvas.discard_render_cache_by_key = render_cache
+    canvas.last_discard_render_stats = {
+        "active": len(active_cache_keys),
+        "drawn": drawn_count,
+        "skipped": skipped_count,
+        "stale_deleted": stale_deleted_count,
+        "changed": changed_count,
+    }
+    if phase_timings is not None:
+        for label, elapsed_ms in sorted(
+            discard_phase_totals.items(),
+            key=lambda entry: entry[1],
+            reverse=True,
+        ):
+            _append_elapsed_phase_timing(phase_timings, f"draw.{label}", elapsed_ms)
+
+
+def _draw_naga_auto_panel(
+    canvas: tkinter.Canvas,
+    layout: Mapping[str, object],
+    naga_auto_panel: NagaAutoPanelData | None,
+) -> None:
+    # This strip is intentionally compact.  The popup owns the detailed NAGA result; the table view
+    # only needs the late-round ptEV deltas that change immediate risk/reward decisions.
+    panel_data = _normalize_naga_auto_panel_data(naga_auto_panel)
+    if not panel_data.visible:
+        return
+    hand_rect = layout.get("hand_rect")
+    bottom_panel = layout.get("bottom_panel")
+    detail_rect = layout.get("detail_rect")
+    if (
+        not isinstance(hand_rect, tuple)
+        or len(hand_rect) != 4
+        or not isinstance(bottom_panel, tuple)
+        or len(bottom_panel) != 4
+    ):
+        return
+
+    canvas_width = max(float(canvas.winfo_width() or 0), float(WINDOW_MIN_WIDTH))
+    canvas_height = max(float(canvas.winfo_height() or 0), float(WINDOW_MIN_HEIGHT))
+    left = max(8.0, float(bottom_panel[0]) + 4.0)
+    right_limit = canvas_width - 8.0
+    if isinstance(detail_rect, tuple) and len(detail_rect) == 4:
+        right_limit = min(right_limit, float(detail_rect[0]) - 8.0)
+    right = min(float(bottom_panel[2]) - 4.0, right_limit)
+    if right - left < 180.0:
+        left = 8.0
+        right = canvas_width - 8.0
+    if right <= left:
+        return
+
+    bottom = min(float(bottom_panel[3]) - 2.0, canvas_height - 4.0)
+    top = max(float(hand_rect[3]) + 2.0, bottom - 20.0)
+    if bottom - top < 14.0:
+        top = bottom - 18.0
+    if bottom <= top:
+        return
+
+    status_kind = str(panel_data.status_kind or "waiting")
+    status_color = NAGA_AUTO_PANEL_STATUS_COLORS.get(status_kind, NAGA_AUTO_PANEL_MUTED)
+    font_spec = ("Yu Gothic UI", 8, "bold")
+    text_y = (top + bottom) / 2.0
+    canvas.create_rectangle(
+        left,
+        top,
+        right,
+        bottom,
+        fill=NAGA_AUTO_PANEL_FILL,
+        outline=NAGA_AUTO_PANEL_OUTLINE,
+        width=1,
+    )
+    title_text = str(panel_data.title_text or "NAGA pt")
+    body_text = "  ".join(
+        str(line).strip()
+        for line in panel_data.lines
+        if str(line or "").strip()
+    )
+    if not body_text:
+        body_text = "照会待ち"
+    max_width = max(0.0, right - left - 16.0)
+    title_max_width = min(150.0, max_width * 0.34)
+    fitted_title = _fit_text_to_width(canvas, title_text, font_spec, title_max_width)
+    title_font = _font_for_canvas(canvas, font_spec)
+    title_width = title_font.measure(fitted_title) if fitted_title else 0
+    title_x = left + 8.0
+    if fitted_title:
+        canvas.create_text(
+            title_x,
+            text_y,
+            text=fitted_title,
+            fill=status_color,
+            anchor=tkinter.W,
+            font=font_spec,
+        )
+    body_left = title_x + title_width + (8.0 if title_width else 0.0)
+    body_width = max(0.0, right - body_left - 8.0)
+    fitted_body = _fit_text_to_width(canvas, body_text, font_spec, body_width)
+    canvas.create_text(
+        body_left,
+        text_y,
+        text=fitted_body,
+        fill=NAGA_AUTO_PANEL_TEXT,
+        anchor=tkinter.W,
+        font=font_spec,
+    )
 
 
 def _draw_hand(
@@ -18278,7 +20431,7 @@ def _draw_hand_response_button_and_panel(
     self_hand_value_alert: SelfHandValueAlertState,
     *,
     canvas_tag: str | None = None,
-    draw_common_table_situation_panel: bool = True,
+    draw_common_table_situation_panel: bool = False,
 ) -> None:
     """Draw the hand-side button and, when toggled, the compact top-3 response panel."""
 
@@ -18677,12 +20830,17 @@ def _redraw_hand_response_controls_if_possible(canvas: tkinter.Canvas) -> bool:
 def _redraw_live_async_regions_if_possible(
     canvas: tkinter.Canvas,
     *,
+    discard_map: Mapping[Player, Iterable[Discard]] | None = None,
+    visible_summary: VisibleTileSummary | None = None,
+    round_events: Sequence[object] | None = None,
     hand_danger_percentages: Sequence[HandDangerPercentages],
     opponent_suji_panel_summaries: OpponentSujiPanelSummaries,
     player_push_alert_percentages: PlayerPushAlertPercentages,
     push_marker_alert_percentages: PlayerPushAlertPercentages,
     player_alert_indicators_by_seat: PlayerAlertIndicatorsBySeat,
     discard_red_tint_indices_by_seat: dict[int, frozenset[int]],
+    table_situation_auto_scores_by_seat: Mapping[int, Sequence[object]] | None = None,
+    same_jun_marker_indices_by_seat: Mapping[int, Collection[int]] | None = None,
 ) -> bool:
     """Refresh the heavy live async regions without clearing the whole board."""
 
@@ -18693,19 +20851,66 @@ def _redraw_live_async_regions_if_possible(
         return False
     if not bool(getattr(canvas, "winfo_exists", lambda: False)()):
         return False
+    current_discard_map = (
+        {
+            player: list(discard_map.get(player, discard_map.get(int(player), ())))
+            for player in Player
+        }
+        if isinstance(discard_map, Mapping)
+        else render_state.discard_map
+    )
+    current_visible_summary = (
+        visible_summary
+        if visible_summary is not None
+        else render_state.visible_summary
+    )
+    current_round_events = (
+        tuple(round_events)
+        if round_events is not None
+        else render_state.round_events
+    )
 
-    visible_inference_summary, _unused_entries = _build_visible_tile_inference_summary_for_canvas(
+    visible_inference_summary, inferred_visible_entries = _build_visible_tile_inference_summary_for_canvas(
         canvas,
-        render_state.discard_map,
-        render_state.visible_summary,
+        current_discard_map,
+        current_visible_summary,
         getattr(canvas, "current_round_identity", None),
         discard_red_tint_indices_by_seat,
     )
+    if TABLE_SITUATION_ENABLED:
+        manual_table_situation_scores_by_seat = _normalize_table_situation_scores_by_seat(
+            getattr(canvas, "table_situation_scores_by_seat", {})
+        )
+        auto_table_situation_scores_by_seat = _resolve_table_situation_auto_scores_by_seat(
+            current_discard_map,
+            discard_red_tint_indices_by_seat,
+            (
+                table_situation_auto_scores_by_seat
+                if table_situation_auto_scores_by_seat is not None
+                else render_state.table_situation_auto_scores_by_seat
+            ),
+        )
+        resolved_table_situation_scores_by_seat = _resolve_table_situation_scores_by_seat(
+            manual_table_situation_scores_by_seat,
+            auto_table_situation_scores_by_seat,
+        )
+    else:
+        auto_table_situation_scores_by_seat = {
+            int(seat): tuple(0.0 for _unused_index in range(TABLE_SITUATION_BLOCK_COUNT))
+            for seat in HAND_DANGER_BAR_SEAT_ORDER
+        }
+        resolved_table_situation_scores_by_seat = {
+            int(seat): tuple(0.0 for _unused_index in range(TABLE_SITUATION_BLOCK_COUNT))
+            for seat in HAND_DANGER_BAR_SEAT_ORDER
+        }
+    canvas.table_situation_auto_scores_by_seat = auto_table_situation_scores_by_seat
+    canvas.table_situation_resolved_scores_by_seat = resolved_table_situation_scores_by_seat
     layout = render_state.layout
     detail_panel_state = getattr(canvas, "detail_panel_state", DetailPanelState())
     canvas.player_panel_button_specs = []
     canvas.nodocchi_status_link_specs = []
     canvas.lag_marker_reference_button_specs = []
+    canvas.table_situation_cell_click_specs = []
     canvas.inferred_visible_tile_count_click_specs = []
     canvas.discard_tile_selection_click_specs = []
     canvas.self_hand_bridge_click_specs = []
@@ -18716,10 +20921,10 @@ def _redraw_live_async_regions_if_possible(
         canvas,
         getattr(canvas, "image_table", getattr(canvas, "base_image_table", None)),
         layout,
-        render_state.discard_map,
+        current_discard_map,
         render_state.melds_by_player,
         render_state.dora_indicator_tiles,
-        render_state.visible_summary,
+        current_visible_summary,
         visible_inference_summary,
         render_state.hand_tiles,
         render_state.hand_draw_tile,
@@ -18732,23 +20937,47 @@ def _redraw_live_async_regions_if_possible(
         detail_panel_state,
     )
 
-    _delete_canvas_items_by_tags(canvas, _LIVE_ASYNC_DISCARD_TAG)
-    discard_previous_items = _capture_canvas_item_ids(canvas)
+    discard_phase_timings: list[PhaseTiming] = []
+    discard_started_at = time.perf_counter()
+    discard_subphase_started_at = time.perf_counter()
+    discard_previous_items = len(_discard_render_cache(canvas))
     _draw_discards(
         canvas,
         getattr(canvas, "image_table", getattr(canvas, "base_image_table", None)),
-        render_state.discard_map,
+        current_discard_map,
         discard_red_tint_indices_by_seat,
         layout,
-        render_state.visible_summary,
+        current_visible_summary,
         push_marker_alert_percentages,
         render_state.melds_by_player,
-        render_state.round_events,
+        current_round_events,
+        same_jun_marker_indices_by_seat=(
+            same_jun_marker_indices_by_seat
+            if same_jun_marker_indices_by_seat is not None
+            else render_state.same_jun_marker_indices_by_seat
+        ),
+        phase_timings=discard_phase_timings,
+    )
+    _append_phase_timing(discard_phase_timings, "draw_incremental", discard_subphase_started_at)
+    _log_slow_discard_redraw(
+        canvas,
+        elapsed_ms=(time.perf_counter() - discard_started_at) * 1000.0,
+        phase_timings=discard_phase_timings,
+        previous_item_count=discard_previous_items,
+    )
+
+    _delete_canvas_items_by_tags(canvas, _LIVE_DETAIL_OVERLAY_TAG)
+    detail_previous_items = _capture_canvas_item_ids(canvas)
+    _draw_table_situation_seat_panels(canvas, layout)
+    _draw_inferred_visible_sections(
+        canvas,
+        layout,
+        inferred_visible_entries,
     )
     _tag_new_canvas_items(
         canvas,
-        tag=_LIVE_ASYNC_DISCARD_TAG,
-        previous_item_ids=discard_previous_items,
+        tag=_LIVE_DETAIL_OVERLAY_TAG,
+        previous_item_ids=detail_previous_items,
     )
 
     _delete_canvas_items_by_tags(canvas, _LIVE_ASYNC_HAND_TAG, _HAND_RESPONSE_UI_TAG)
@@ -18763,7 +20992,7 @@ def _redraw_live_async_regions_if_possible(
         render_state.hand_recommendation_panel,
         getattr(canvas, "hand_response_panel_state", HandResponsePanelState()),
         hand_danger_percentages,
-        render_state.visible_summary,
+        current_visible_summary,
         render_state.self_hand_value_alert,
     )
     _tag_new_canvas_items(
@@ -18773,6 +21002,25 @@ def _redraw_live_async_regions_if_possible(
     )
     canvas.current_player_names_by_seat = render_state.player_names_by_seat
     canvas.current_player_alert_indicators_by_seat = player_alert_indicators_by_seat
+    canvas.live_async_render_state = replace(
+        render_state,
+        discard_map={
+            player: list(current_discard_map.get(player, ()))
+            for player in Player
+        },
+        visible_summary=current_visible_summary,
+        round_events=tuple(current_round_events),
+        table_situation_auto_scores_by_seat=dict(
+            _normalize_table_situation_display_scores_by_seat(
+                auto_table_situation_scores_by_seat
+            )
+        ),
+        same_jun_marker_indices_by_seat=(
+            _normalize_same_jun_marker_indices_by_seat(same_jun_marker_indices_by_seat)
+            if same_jun_marker_indices_by_seat is not None
+            else render_state.same_jun_marker_indices_by_seat
+        ),
+    )
     return True
 
 

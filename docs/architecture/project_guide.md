@@ -1,47 +1,41 @@
 # プロジェクトガイド
 
-更新日: `2026-05-10`
+更新日: `2026-05-24`
 
 ## 目的
 
-天鳳補助ツールは、live packet capture / replay / XML / Tenhou UI Bridge / AI 推奨を 1 つのデスクトップツールへ統合することを目的とします。
+天鳳補助ツールは、live packet capture / replay / XML / Tenhou UI Bridge / pystyle / Nodocchi / NAGA 分析を 1 つのローカル UI へ統合する。
 
 ## 主な入口
 
-- `src/tenhou_hojo.py`: 互換エントリ
-- `src/app/main.py`: アプリ全体の起動・分岐・連携
-- `src/ui/table_renderer.py`: 画面描画本体
-- `src/app/nodocchi_stats.py`: Nodocchi プレイヤー成績の取得・整形
-- `src/visible_tiles.py`: 実見え枚数の集計
-- `src/logic/danger_suji.py`: remain / push / tint のロジック
+- `src/tenhou_hojo.py`: 起動 entry point
+- `src/app/main.py`: アプリ全体の起動、snapshot 構築、外部連携
+- `src/ui/table_renderer.py`: 画面描画、panel、alert、音声、河差分描画
+- `src/logic/danger_suji.py`: remain / push / line ranking / danger bar
+- `src/capture/storage.py`: CSV DB 永続化
+- `scripts/analyze_player_shanten_thinking.py`: DB分析
 
-## 表示と責務
+## 直近の重点
 
-### 実見え枚数
+- `Push` は panel、音声、河 `P` のタイミングを揃える。
+- panel に出ない自分側 alert は音声対象にしない。
+- `SUMMARY` と `ALERT` の remain 色基準は同一にする。
+- 河は全描画せず、表示シグネチャ単位で差分更新する。
+- NAGA は南2以降に下部自動要約を出す。
+- 所属卓分析は `hanchan_master` を正本にする。
 
-- 担当: `src/visible_tiles.py`
-- 入力: 手牌 / 捨て牌 / 晒し牌 / ドラ表示牌
+## 変更時の同期先
 
-### 推測見え枚数
+- 要件: `docs/requirements/current.md`
+- 仕様: `docs/specs/current.md`
+- 画面仕様: `docs/screen_specs/current.md`
+- 性能: `docs/analysis/performance_hotspots.md`
+- DB分析: `docs/analysis/player_shanten_thinking.md`
+- 変更履歴: `docs/changelog.md`
 
-- 担当: `src/ui/table_renderer.py`
-- canvas ごとの常駐ワーカー 1 本で処理
-- 実見え枚数は読み取り専用
+## テスト
 
-### 合わせ打ち
-
-- 担当: `src/ui/table_renderer.py`
-- 公開イベントのみを使って provisional / confirm を分ける
-
-## 今回の更新点
-
-- 相手パネルの `STATUS` から Nodocchi 鳳凰卓4人打ち成績を取得し、右詳細領域に表示できるようにした
-- Nodocchi 取得は renderer から分離した adapter で処理し、UI thread へは canvas queue で戻す
-- 麻雀ドメイン文書を `docs/mahjong/theory`, `logic`, `reference`, `research` に再構成した
-
-## 更新時の同期先
-
-- 画面仕様: `docs/screen_specs/`
-- 要件 / 仕様: `docs/requirements/`, `docs/specs/`
-- グラフ: `docs/graphs/src/`, `docs/graphs/generated/`
-- 更新履歴: `docs/changelog.md`
+```powershell
+$env:PYTHONPATH='src'
+python -m pytest tests -q
+```

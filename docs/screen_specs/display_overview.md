@@ -1,35 +1,38 @@
 # 画面全体概要
 
-updated: `2026-05-10`
-
-この文書は、画面を「どこに何があるか」で把握するための入口です。
+updated: `2026-05-24`
 
 ## レイアウト地図
 
 ```mermaid
 flowchart TB
-    BOARD["卓全体"] --> TOP["上部領域<br/>AI TOP3 / SELF / bridge 状態"]
-    BOARD --> RIVER["河領域<br/>枠 / 記号 / tint / Push"]
-    BOARD --> PANELS["相手パネル<br/>Remain / Push / アラート / DETAIL / STATUS"]
-    BOARD --> DETAIL["右詳細領域<br/>Visible x3/x4 / lag 詳細 / memo / status"]
-    BOARD --> ACTIONS["自家手牌上部<br/>操作ボタン"]
-    BOARD --> POPUP["自家左ポップアップ<br/>推測見え枚数カード"]
-    BOARD --> SHORTLIST["自家 2見え以下字牌<br/>自河右・自副露帯寄り"]
+    BOARD["卓全体"] --> TOP["上部操作<br/>AI TOP3 / SELF / Bridge / NAGA"]
+    BOARD --> RIVER["河<br/>枠 / marker / tint / Push"]
+    BOARD --> PANELS["他家パネル<br/>SUMMARY / ALERT / SCORE / STATUS"]
+    BOARD --> DETAIL["右詳細<br/>Visible x3/x4 / lag / memo / status"]
+    BOARD --> HAND["自家手牌<br/>危険度バー / AI response / Bridge click"]
+    BOARD --> NAGA["下部 NAGA pt<br/>南2以降の自動要約"]
 ```
 
-## 領域要約
+## 領域一覧
 
-| 領域 | 主内容 | 詳細文書 |
+| 領域 | 内容 | 詳細 |
 | --- | --- | --- |
-| 上部領域 | `AI TOP3`, `SELF`, bridge 状態, browser toggle | [alerts_and_panels.md](./alerts_and_panels.md), [controls_and_bridge.md](./controls_and_bridge.md) |
-| 状況表 | `上家 / 対面 / 下家 / 総計` の 10 block 表 | [alerts_and_panels.md](./alerts_and_panels.md) |
-| 河 | 枠、`L / Pl / P`、tint、Push | [river_display.md](./river_display.md) |
-| 相手パネル | `Remain`, `Push`, alert, `DETAIL`, `STATUS` | [alerts_and_panels.md](./alerts_and_panels.md) |
-| 右詳細領域 | `Visible x3/x4`, lag 詳細, memo, Nodocchi status | [visible_counts_ui.md](./visible_counts_ui.md), [alerts_and_panels.md](./alerts_and_panels.md) |
-| 自家字牌一覧 | `0見え / 1見え / 2見え` の字牌一覧 | [alerts_and_panels.md](./alerts_and_panels.md) |
+| 上部操作 | `AI TOP3`, `SELF`, Bridge 状態, NAGA ボタン | [alerts_and_panels.md](./alerts_and_panels.md), [controls_and_bridge.md](./controls_and_bridge.md) |
+| 河 | 捨て牌、枠、marker、tint、思考時間 band | [river_display.md](./river_display.md) |
+| 他家パネル | `SUMMARY`, `ALERT`, `SCORE`, `DETAIL`, `STATUS` | [alerts_and_panels.md](./alerts_and_panels.md) |
+| 右詳細 | Visible x3/x4、lag marker detail、memo、Nodocchi STATUS | [visible_counts_ui.md](./visible_counts_ui.md) |
+| 自家手牌 | 手牌画像、危険度バー、自動/手動打牌 | [controls_and_bridge.md](./controls_and_bridge.md) |
+| 下部 NAGA | 南2以降の段位 pt 自動要約 | [../integrations/naga_ptev_analyzer.md](../integrations/naga_ptev_analyzer.md) |
 
-## 通知
+## 状態表示
 
-- `BG ... xN` は background worker の稼働数を示す
-- 表示例の `5s` は直近の対象牌ラベル
-- `xN` は開始回数ではなく「今動いている数」
+- `BG ... xN` は background worker の稼働数を示す。
+- `xN` は起動回数ではなく、その時点で動いている処理数。
+- slow log は stdout と診断ログに出し、`side_panels` と `discards` の内訳を確認できる。
+
+## 現行の注意点
+
+- 河は差分描画なので、full redraw 時以外は `live_async_discards` 全体を削除しない。
+- panel に出ない alert は音声対象にしない。
+- NAGA 下部パネルは常時詳細を出す場所ではなく、局面上重要な pt 変化だけを短く出す。

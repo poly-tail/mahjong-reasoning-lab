@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>鳳凰卓 discard_fact 思考時間分析</title>
+  <style>
+    body { font-family: "Yu Gothic UI", "Meiryo", system-ui, sans-serif; margin: 24px; color: #111827; background: #f8fafc; }
+    h1 { font-size: 22px; margin: 0 0 16px; }
+    h2 { font-size: 17px; margin: 24px 0 10px; }
+    img { display: block; max-width: 100%; background: white; border: 1px solid #d1d5db; }
+    table.stats { border-collapse: collapse; background: white; margin: 8px 0 20px; }
+    table.stats th, table.stats td { border: 1px solid #d1d5db; padding: 6px 9px; text-align: right; }
+    table.stats th { background: #e5e7eb; }
+    table.stats td:first-child, table.stats th:first-child { text-align: left; }
+    code { font-family: Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <h1>鳳凰卓 discard_fact 思考時間分析</h1>
+  <p>対象: <code>room_class_label == 鳳凰卓</code>、<code>thinking_time_ms</code> がある行。シャンテン別と両面固定比較は <code>shanten_after_discard</code> 0〜4 に限定。</p>
+  <p>source_files=discard_fact_202604.csv, discard_fact_202605.csv / all_rows=165510 / houou_rows=20496 / houou_valid_thinking_rows=20019 / houou_valid_shanten_0_4_rows=16691 / ryanmen_comparison_rows=16691</p>
+  <h2>シャンテン数 0〜4 と思考時間</h2>
+  <img src="houou_shanten_thinking_time.png" alt="シャンテン数別の思考時間">
+  <table border="1" class="dataframe stats">
+  <thead>
+    <tr style="text-align: right;">
+      <th>shanten_after_discard</th>
+      <th>n</th>
+      <th>mean_s</th>
+      <th>median_s</th>
+      <th>p25_s</th>
+      <th>p75_s</th>
+      <th>p90_s</th>
+      <th>p99_s</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0</td>
+      <td>2862</td>
+      <td>2.046</td>
+      <td>1.380</td>
+      <td>0.763</td>
+      <td>2.208</td>
+      <td>4.179</td>
+      <td>12.159</td>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>4921</td>
+      <td>3.276</td>
+      <td>2.367</td>
+      <td>1.730</td>
+      <td>3.989</td>
+      <td>6.645</td>
+      <td>12.327</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>5094</td>
+      <td>3.050</td>
+      <td>2.352</td>
+      <td>1.751</td>
+      <td>3.605</td>
+      <td>5.710</td>
+      <td>10.976</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>2905</td>
+      <td>2.701</td>
+      <td>2.211</td>
+      <td>1.692</td>
+      <td>3.115</td>
+      <td>4.624</td>
+      <td>8.770</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>909</td>
+      <td>2.546</td>
+      <td>2.145</td>
+      <td>1.638</td>
+      <td>2.937</td>
+      <td>4.343</td>
+      <td>7.943</td>
+    </tr>
+  </tbody>
+</table>
+  <h2>両面固定とそれ以外</h2>
+  <img src="houou_ryanmen_thinking_time.png" alt="両面固定とそれ以外の思考時間">
+  <table border="1" class="dataframe stats">
+  <thead>
+    <tr style="text-align: right;">
+      <th>group_label</th>
+      <th>n</th>
+      <th>mean_s</th>
+      <th>median_s</th>
+      <th>p25_s</th>
+      <th>p75_s</th>
+      <th>p90_s</th>
+      <th>p99_s</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>両面固定</td>
+      <td>306</td>
+      <td>3.647</td>
+      <td>3.028</td>
+      <td>2.021</td>
+      <td>4.733</td>
+      <td>6.628</td>
+      <td>12.172</td>
+    </tr>
+    <tr>
+      <td>それ以外</td>
+      <td>16385</td>
+      <td>2.842</td>
+      <td>2.158</td>
+      <td>1.564</td>
+      <td>3.333</td>
+      <td>5.516</td>
+      <td>11.293</td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>

@@ -1,26 +1,24 @@
 # 仕様書 現行版
 
-> 現行版ファイル: `api_spec_v2.1.md`
+> 現行版: `api_spec_v2.2.md`
+> 更新日: `2026-05-24`
+> 前版: `api_spec_v2.1.md`
 
-## 現行版
+## 現行仕様の要点
 
-- 版: `v2.1`
-- 更新日: `2026-05-10`
-- 継承元: `old/api_spec_v2.0.md`
-
-## 現在の重点
-
-- `LiveTableSnapshot` を UI 描画専用の一貫スナップショットとして扱う
-- `VisibleTileSummary` と `VisibleTileInferenceSummary` の責務を分ける
-- Bridge スナップショットの poll / follow-up / coalescing を仕様として固定する
-- Nodocchi 鳳凰卓4人打ち成績は `src/app/nodocchi_stats.py` で取得・整形し、renderer へ構造化データだけ渡す
-- `STATUS` 取得は background thread + canvas queue で UI に戻し、同一プレイヤーは短時間 cache する
-- グラフ再生成とワークスペース ZIP 化の再実行導線を明文化する
+- `LiveTableSnapshot` は UI 描画用の一貫した局面 snapshot として扱う。
+- `NagaAutoPanelData` を renderer へ渡し、南2局以降の NAGA 段位 pt 変化を下部へ表示する。
+- `PlayerAlertIndicator` は panel 表示と音声判定の正本であり、panel に出ない自分側 alert は音声へ流さない。
+- `Push` alert payload は seat / tile / discard_index / percentage / threshold を持ち、panel と河 `P` marker は同じ payload から決める。
+- `Remain` alert は `SUMMARY` と同じ no-temp remain 閾値で色を決める。
+- 河描画は `canvas.discard_render_cache_by_key[(seat, local_index)]` に表示シグネチャを持ち、変化した牌だけ Canvas item tag 単位で差し替える。
+- `_discard_tile_image()` は通常牌画像だけを返す。赤/茶/紫/4見え/思考時間は Canvas overlay で描画する。
+- DB分析 `scripts/analyze_player_shanten_thinking.py` は `discard_fact_*.csv` と `hanchan_master.csv` を読み、プレイヤー別の思考時間 x シャンテン相関と所属卓を出す。
 
 ## 関連文書
 
-- 仕様本文: [api_spec_v2.1.md](./api_spec_v2.1.md)
-- 要件定義 現行版: [../requirements/current.md](../requirements/current.md)
-- 画面仕様書 現行版: [../screen_specs/current.md](../screen_specs/current.md)
-- データ構造: [../architecture/data_structures.md](../architecture/data_structures.md)
-- Nodocchi 成績連携: [../integrations/nodocchi_status.md](../integrations/nodocchi_status.md)
+- 仕様本体: [api_spec_v2.2.md](./api_spec_v2.2.md)
+- 要件定義: [../requirements/current.md](../requirements/current.md)
+- 画面仕様: [../screen_specs/current.md](../screen_specs/current.md)
+- CSV DB: [../reference/csv_db_design.md](../reference/csv_db_design.md)
+- 性能ホットスポット: [../analysis/performance_hotspots.md](../analysis/performance_hotspots.md)

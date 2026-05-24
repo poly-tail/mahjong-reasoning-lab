@@ -344,6 +344,31 @@ class LiveSnapshotCacheTest(unittest.TestCase):
             {int(Player.SHIMOCHA): (0,)},
         )
 
+    def test_build_live_table_snapshot_precomputes_render_public_state_off_ui(self) -> None:
+        state = _build_live_capture_state()
+        table_scores = {int(Player.SHIMOCHA): (2.0,) + (0.0,) * 8}
+        same_jun_markers = {int(Player.SHIMOCHA): frozenset({0})}
+
+        with patch(
+            "app.main.table_view.TABLE_SITUATION_ENABLED",
+            True,
+        ), patch(
+            "app.main.table_view.AWASEUCHI_MARKERS_ENABLED",
+            True,
+        ), patch(
+            "app.main.table_view._build_table_situation_auto_scores_by_seat",
+            return_value=table_scores,
+        ) as table_situation_builder, patch(
+            "app.main.table_view._same_jun_match_discard_indices_by_seat",
+            return_value=same_jun_markers,
+        ) as same_jun_builder:
+            snapshot = app_main.build_live_table_snapshot(state)
+
+        table_situation_builder.assert_called_once()
+        same_jun_builder.assert_called_once()
+        self.assertEqual(snapshot.table_situation_auto_scores_by_seat, table_scores)
+        self.assertEqual(snapshot.same_jun_marker_indices_by_seat, same_jun_markers)
+
     def test_request_live_red_tint_bundle_reuses_running_worker_and_sets_wake_event(self) -> None:
         state = _build_live_capture_state()
         async_state = app_main._get_live_red_tint_async_state(state)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from app import main as app_main
 from app import naga_analyzer
 
 
@@ -179,3 +180,60 @@ def test_build_graph_points_includes_baseline_and_transition_groups() -> None:
     assert points[0].label == "現状"
     assert {point.category for point in points} == {"BASE", "RON+", "TSM+", "RON-", "RYK"}
     assert any(point.delta_ptev == 16.0 for point in points)
+
+
+def test_build_naga_auto_panel_data_summarizes_major_outcomes(tmp_path) -> None:
+    query_state = naga_analyzer.NagaQueryState(
+        kyoku=5,
+        honba=0,
+        kyotaku=0,
+        scores=(250, 250, 250, 250),
+        oya_seat=0,
+    )
+    result = naga_analyzer.NagaAnalysisText(
+        query_state=query_state,
+        summary_lines=(),
+        detail_text="",
+        graph_points=(
+            naga_analyzer.NagaGraphPoint("BASE", "現状", 4.0, 0.25, 0.25, 0.25, 0.25, 0.0),
+            naga_analyzer.NagaGraphPoint("RON+", "ロン01", 18.0, 0.35, 0.25, 0.2, 0.2, 14.0),
+            naga_analyzer.NagaGraphPoint("TSM+", "ツモ00", 22.0, 0.4, 0.25, 0.2, 0.15, 18.0),
+            naga_analyzer.NagaGraphPoint("RON-", "放銃02", -12.0, 0.15, 0.25, 0.25, 0.35, -16.0),
+            naga_analyzer.NagaGraphPoint("RYK", "流局00", 7.0, 0.28, 0.27, 0.25, 0.2, 3.0),
+            naga_analyzer.NagaGraphPoint("RYK", "流局01", 2.0, 0.23, 0.27, 0.27, 0.23, -2.0),
+        ),
+    )
+    ui_state = app_main.NagaAnalyzerUiState(
+        storage_state_path=tmp_path / "naga_state.json",
+        raw_output_dir=tmp_path,
+        query_state_provider=lambda: query_state,
+    )
+    ui_state.auto_result = result
+    ui_state.auto_last_result_key = app_main._naga_query_key(query_state)
+
+    panel = app_main._build_naga_auto_panel_data(ui_state)
+
+    assert panel.visible is True
+    assert panel.status_kind == "ready"
+    assert "NAGA pt" in panel.title_text
+    assert "和了" in panel.lines[0]
+    assert "放銃" in panel.lines[0]
+    assert "流局" in panel.lines[0]
+    assert "+18.0pt" in panel.lines[0]
+    assert "-16.0pt" in panel.lines[0]
+
+
+def test_build_naga_auto_panel_data_hidden_before_south_2(tmp_path) -> None:
+    query_state = naga_analyzer.NagaQueryState(
+        kyoku=4,
+        honba=0,
+        kyotaku=0,
+        scores=(250, 250, 250, 250),
+    )
+    ui_state = app_main.NagaAnalyzerUiState(
+        storage_state_path=tmp_path / "naga_state.json",
+        raw_output_dir=tmp_path,
+        query_state_provider=lambda: query_state,
+    )
+
+    assert app_main._build_naga_auto_panel_data(ui_state).visible is False

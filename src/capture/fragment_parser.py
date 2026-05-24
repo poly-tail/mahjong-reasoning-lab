@@ -529,7 +529,13 @@ def _reset_live_hanchan_state(
 
     previous_game_id = state.game_id
     previous_round_id = state.round_id
+    previous_go_type = state.go_type
+    previous_room_class_code = state.room_class_code
+    previous_room_class_label = state.room_class_label
     state.reset_live_session(preserve_player_metadata=preserve_player_metadata)
+    state.go_type = previous_go_type
+    state.room_class_code = previous_room_class_code
+    state.room_class_label = previous_room_class_label
     if next_game_id:
         state.game_id = next_game_id
     state.diagnostics.append(
@@ -1029,6 +1035,46 @@ def _latest_matching_client_discard_request(
     return latest_discard
 
 
+def _client_discard_request_can_apply_optimistically(
+    round_state: RoundState,
+    seat: int,
+) -> bool:
+    """Return whether a client-origin discard request is plausible as the current self turn."""
+
+    if seat != LOCAL_RELATIVE_SEAT:
+        return False
+    if round_state.last_draw_tiles_136.get(LOCAL_RELATIVE_SEAT) is not None:
+        return True
+    thinking_start = round_state.discard_thinking_starts.get(LOCAL_RELATIVE_SEAT)
+    thinking_source = None
+    if isinstance(thinking_start, tuple) and len(thinking_start) >= 2:
+        thinking_source = str(thinking_start[1] or "")
+    if thinking_source not in {"call", "draw"}:
+        return False
+    concealed_count = len(round_state.current_hands_136.get(LOCAL_RELATIVE_SEAT, ()))
+    return concealed_count > 0 and concealed_count % 3 == 2
+
+
+def _client_discard_request_reject_reason(
+    round_state: RoundState | None,
+    seat: int,
+    tile_136: int,
+) -> str:
+    """Return why one client discard request should stay diagnostic-only."""
+
+    if round_state is None:
+        return "no_current_round"
+    if seat != LOCAL_RELATIVE_SEAT:
+        return "not_self_seat"
+    if tile_136 not in round_state.current_hands_136.get(seat, []):
+        return "tile_not_in_current_hand"
+    if _latest_matching_client_discard_request(round_state, seat, tile_136) is not None:
+        return "already_pending_confirmation"
+    if not _client_discard_request_can_apply_optimistically(round_state, seat):
+        return "not_self_discard_turn"
+    return ""
+
+
 def _update_latest_tracker_discard_from_capture_discard(
     state: GameState,
     seat: int,
@@ -1079,6 +1125,7 @@ def _sync_live_state(state: GameState) -> None:
         state.live_hand_tiles_136.clear()
         state.live_last_draw_tile_136 = None
     else:
+        _sanitize_current_hand_tiles(round_state, LOCAL_RELATIVE_SEAT)
         display_hand_tiles, display_draw_tile = _build_display_hand_tiles(
             round_state,
             LOCAL_RELATIVE_SEAT,
@@ -1092,6 +1139,38 @@ def _sync_live_state(state: GameState) -> None:
         for tile_136 in meld.consumed_tile_ids
     ]
     state.live_dora_indicator_tiles_136[:] = list(round_state.dora_indicators_136)
+
+
+def _known_non_concealed_tile_ids(round_state: RoundState, seat: int) -> set[int]:
+    """Return exact 136-tile ids that are already public for one seat."""
+
+    known_tile_ids: set[int] = set()
+    for discard in round_state.discards.get(seat, ()):
+        tile_136 = getattr(discard, "tile_136", None)
+        if isinstance(tile_136, int) and 0 <= tile_136 <= 135:
+            known_tile_ids.add(tile_136)
+    for meld in round_state.melds.get(seat, ()):
+        for tile_136 in getattr(meld, "consumed_tile_ids", ()) or ():
+            if isinstance(tile_136, int) and 0 <= tile_136 <= 135:
+                known_tile_ids.add(tile_136)
+    return known_tile_ids
+
+
+def _sanitize_current_hand_tiles(round_state: RoundState, seat: int) -> None:
+    """Drop exact public tiles from a concealed hand snapshot before UI/export use."""
+
+    hand_tiles = list(round_state.current_hands_136.get(seat, ()))
+    if not hand_tiles:
+        return
+    blocked_tile_ids = _known_non_concealed_tile_ids(round_state, seat)
+    if not blocked_tile_ids:
+        return
+    sanitized_tiles = [tile_136 for tile_136 in hand_tiles if tile_136 not in blocked_tile_ids]
+    if len(sanitized_tiles) == len(hand_tiles):
+        return
+    round_state.current_hands_136[seat] = sanitized_tiles
+    if round_state.last_draw_tiles_136.get(seat) in blocked_tile_ids:
+        round_state.last_draw_tiles_136[seat] = None
 
 
 def _build_display_hand_tiles(
@@ -2300,21 +2379,22 @@ def parse_client_discard_request(
         )
 
     round_state = state.current_round
-    if (
-        round_state is None
-        or seat != LOCAL_RELATIVE_SEAT
-        or tile_136 not in round_state.current_hands_136.get(seat, [])
-        or _latest_matching_client_discard_request(round_state, seat, tile_136) is not None
-    ):
+    reject_reason = _client_discard_request_reject_reason(round_state, seat, tile_136)
+    if reject_reason:
         return state.add_event(
             timestamp,
             "client_discard_request",
             seat=seat,
             tile_136=tile_136,
             raw_tag=parsed.raw_tag,
-            attrs={**event_attrs, "optimistic_discard_applied": False},
+            attrs={
+                **event_attrs,
+                "optimistic_discard_applied": False,
+                "optimistic_discard_reject_reason": reject_reason,
+            },
             mark_live_update=False,
         )
+    assert round_state is not None
 
     tsumogiri, is_tsumogiri_estimated = _classify_tsumogiri(
         round_state,

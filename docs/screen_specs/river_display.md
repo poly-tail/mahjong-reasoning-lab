@@ -1,39 +1,73 @@
 # 河表示仕様
 
-updated: `2026-04-23`
+updated: `2026-05-24`
 
-この文書は、河の枠、記号、tint、awaseuchi の表示ルールをまとめます。
+## 目的
+
+河の捨て牌、枠、marker、tint、思考時間帯、Push 反映の仕様をまとめる。v2.2 では表示仕様に加えて、差分描画の前提もここへ明記する。
 
 ## 枠
 
 | 表示 | 意味 |
 | --- | --- |
-| 赤枠 | called discard |
-| 黄枠 | post-call tedashi |
+| 赤枠 | 後続の鳴きで消費された捨て牌 |
+| 黄枠 | 鳴き直後の手出し |
 
-## 記号
+## marker
 
-| 記号 | 意味 |
+| marker | 意味 |
 | --- | --- |
 | `L` | 通常 lag |
-| `Pl` | pon-lag-likely |
-| `P` | Push 対象の最新打牌 |
+| `Pl` | pon-lag-likely。複数人 lag、または自分手牌 snapshot でチー/ポン不能な lag |
+| `P` | Push alert 対象の捨て牌 |
+| 黄丸 | 同順合わせ打ち |
+| 赤ひし形 | その局で最長の思考時間 |
+| ピンク丸 | 3見え |
 
-## 色付け
+`Push` 音声が鳴る更新では、同じ redraw 内で `P` を表示する。音声だけ先に出し、marker が遅れて出る状態は避ける。
 
-優先順位は `purple > brown > red > none`。
+## tint
 
-- purple: 対象牌そのものが `4見え`
-- brown: `123..789` x 3スーツ の `21` 通りで、`4見え` により物理否定された 3 連形へ属する手出し牌
-- red: remain / no-temp remain / post-call tedashi などの危険寄り条件
+優先順位は `4見え > 茶 > 赤 > なし`。
 
-## 合わせ打ち
+| tint | 条件 |
+| --- | --- |
+| 紫 | 捨て牌自身が 4見え |
+| 茶 | 4見えにより物理的に否定された 3連形に属する手出し牌 |
+| 赤 | remain / no-temp remain / post-call tedashi など危険寄り条件 |
 
-- provisional は直近 7 公開イベントだけを見る
-- confirm worker は provisional hit がある時だけ動く
-- private 情報は使わない
+思考時間は tint とは別の band として描画する。
+
+## 思考時間 band
+
+- post-reach 側の思考時間と pre-reach 側の思考時間を別 band として持つ。
+- 色段階は緑、青、黄、赤、紫。
+- 離席完了打牌は思考時間 band を出さない。
+
+## 描画実装
+
+### 差分描画
+
+Canvas は `(seat, local_index)` ごとに表示シグネチャを持つ。
+
+再描画する条件:
+
+- tile id / draw type が変わった
+- 位置、サイズ、anchor が変わった
+- called / lag / riichi / thinking time が変わった
+- tint / marker / border が変わった
+- Push marker が追加または削除された
+
+変わらない牌は描画をスキップする。ただし click spec と lag marker reference spec は毎 redraw で復元する。
+
+### 画像と overlay
+
+- `_discard_tile_image()` は通常牌画像だけを返す。
+- 赤/茶/紫/4見え/思考時間は Canvas rectangle overlay で描画する。
+- discard item は作成時に `live_async_discards` と `live_async_discards_<seat>_<index>` tag を付ける。
 
 ## 関連
 
-- [display_overview.md](./display_overview.md)
-- [visible_counts_ui.md](./visible_counts_ui.md)
+- [alerts_and_panels.md](./alerts_and_panels.md)
+- [../analysis/performance_hotspots.md](../analysis/performance_hotspots.md)
+- [../specs/current.md](../specs/current.md)

@@ -67,6 +67,7 @@ from visible_tiles import collect_visible_tile_summary_from_tile136
 
 # INIT_LIKE_EVENT_TYPES の集合。
 INIT_LIKE_EVENT_TYPES = frozenset({"init", "reinit", "initbylog", "wgc"})
+CSV_PERSIST_EVENT_TYPES = INIT_LIKE_EVENT_TYPES | frozenset({"discard", "agari", "go", "un"})
 # SINGLE_FILE_LOGICAL_TABLES の集合。
 SINGLE_FILE_LOGICAL_TABLES = frozenset({"hanchan_master", "kyoku_master", "player_profiles"})
 # LEGACY_OPTIONAL_COLUMNS の集合。
@@ -312,12 +313,17 @@ def _game_type_columns_from_state(state: CaptureState) -> dict[str, str]:
     room_class_label = _csv_cell(getattr(state, "room_class_label", "")).strip()
     if room_class_label:
         return {"room_class_label": room_class_label}
-    return _game_type_columns_from_game_type(getattr(state, "go_type", None))
+    game_type = getattr(state, "go_type", None)
+    if game_type is None:
+        game_type = _game_type_from_source_url(getattr(state, "game_id", ""))
+    return _game_type_columns_from_game_type(game_type)
 
 
 def _game_type_columns_from_hanchan_row(row: dict[str, str]) -> dict[str, str]:
     room_class_label = _csv_cell(row.get("room_class_label", "")).strip()
     if room_class_label:
+        # Current CSVs persist the table class as a human-readable label. The legacy numeric/hex
+        # fields below are only for old files that have not been rewritten.
         return {"room_class_label": room_class_label}
     go_type_text = _csv_cell(row.get("go_type", "")).strip()
     game_type = None
@@ -808,6 +814,8 @@ def _remember_hanchan_metadata(db_dir: Path, row: dict[str, Any]) -> None:
     if not hanchan_id:
         return
     cache_key = _normalized_db_dir_key(db_dir)
+    # Keep the hanchan metadata cache warm after an upsert so monthly fact rows written later can
+    # inherit the corrected room_class_label without rereading hanchan_master.
     cache = _LEGACY_HANCHAN_METADATA_CACHE.setdefault(cache_key, {})
     cache[hanchan_id] = _game_type_columns_from_hanchan_row(
         {key: _csv_cell(value) for key, value in row.items()}
@@ -850,6 +858,50 @@ def _discard_event_for(state: CaptureState, discard: Discard) -> Event | None:
     if event.event_type != "discard":
         return None
     return event
+
+
+def _snapshot_discard_event_for_storage(
+    discard: Discard,
+    seat: int,
+    fallback_event: Event | None,
+) -> Event | None:
+    """Build a storage-only discard event for a visible snapshot discard.
+
+    REINIT/WGC river snapshots expose already-visible discards without replaying their original
+    discard packets. Persist them with the snapshot event timestamp so live capture does not lose
+    those rows after a browser reload or capture restart.
+    """
+
+    if fallback_event is None or fallback_event.timestamp is None:
+        return None
+    raw_tag = _csv_cell(getattr(discard, "raw_tag", "")).strip()
+    if not _is_snapshot_discard_for_storage(discard):
+        return None
+    return Event(
+        timestamp=fallback_event.timestamp,
+        event_type="discard",
+        raw_tag=raw_tag,
+        seat=seat,
+        attrs={
+            "snapshot_source_event_type": fallback_event.event_type,
+            "snapshot_source_raw_tag": _csv_cell(fallback_event.raw_tag),
+        },
+    )
+
+
+def _discard_event_for_storage(
+    state: CaptureState,
+    discard: Discard,
+    seat: int,
+    fallback_event: Event | None = None,
+) -> Event | None:
+    """Return the observed discard event, or a snapshot fallback event for storage."""
+
+    return _discard_event_for(state, discard) or _snapshot_discard_event_for_storage(
+        discard,
+        seat,
+        fallback_event,
+    )
 
 
 def _find_discard_for_event(
@@ -1263,6 +1315,7 @@ def _serialize_agari_suji_seat_payload(
             "tile_34": getattr(push_alert, "tile_34", None),
             "tile_label": str(getattr(push_alert, "tile_label", "") or ""),
             "discard_index": getattr(push_alert, "discard_index", None),
+            "seat_discard_index": getattr(push_alert, "seat_discard_index", None),
             "is_current": bool(getattr(push_alert, "is_current", False)),
             "target_seats": list(getattr(push_alert, "target_seats", ()) or ()),
             "exact_safe_target_seats": list(
@@ -1436,11 +1489,19 @@ def _empty_agari_ron_danger_columns() -> dict[str, str]:
     }
 
 
+def _is_snapshot_discard_for_storage(discard: Discard) -> bool:
+    """Return whether a discard came from a live river snapshot instead of a discard event."""
+
+    return _csv_cell(getattr(discard, "raw_tag", "")).strip().startswith("REINIT_KAWA:")
+
+
 def _observed_discards(round_state: RoundState) -> list[tuple[int, Discard]]:
     observed: list[tuple[int, Discard]] = []
     for seat in range(4):
         for discard in round_state.discards[seat]:
-            if discard.round_discard_index is None or discard.event_index < 0:
+            if discard.round_discard_index is None:
+                continue
+            if discard.event_index < 0 and not _is_snapshot_discard_for_storage(discard):
                 continue
             observed.append((seat, discard))
     observed.sort(key=lambda item: item[1].round_discard_index or -1)
@@ -1879,9 +1940,30 @@ class CsvDatabase:
                         repeat_after_s=8.0,
                     )
                 self._persist_event_now(queued_item.state, queued_item.event)
-            except Exception:
+            except Exception as exc:
+                error_text = traceback.format_exc(limit=8).strip()
                 if not self._async_persist_error_text:
-                    self._async_persist_error_text = traceback.format_exc(limit=8).strip()
+                    self._async_persist_error_text = error_text
+                if monitor_state is not None:
+                    mark_runtime_thread_progress(
+                        monitor_state,
+                        "db-persist",
+                        "persist_error",
+                        detail=str(exc),
+                        blocked_hint="background CSV persist hit an error",
+                        stale_after_s=30.0,
+                        repeat_after_s=60.0,
+                    )
+                    with monitor_state.state_lock:
+                        monitor_state.diagnostics.append(
+                            {
+                                "level": "error",
+                                "code": "async_csv_persist_failed",
+                                "message": str(exc),
+                                "traceback": error_text,
+                            }
+                        )
+                        monitor_state.prune_live_history()
             finally:
                 if queued_item is not _ASYNC_PERSIST_STOP and monitor_state is not None:
                     mark_runtime_thread_progress(
@@ -2204,6 +2286,27 @@ class CsvDatabase:
             "lag_rows_skipped_incomplete": lag_result["skipped_incomplete"],
         }
 
+    def _sync_current_hanchan_room_class_label(self, state: CaptureState) -> None:
+        """Fill the current hanchan row if room metadata arrives after INIT-like storage."""
+
+        if self.current_hanchan is None:
+            return
+        game_type_columns = _game_type_columns_from_state(state)
+        room_class_label = _csv_cell(game_type_columns.get("room_class_label", "")).strip()
+        if not room_class_label:
+            return
+        if room_class_label == _csv_cell(self.current_hanchan.room_class_label).strip():
+            return
+        hanchan_store = self._store("hanchan_master")
+        existing_row = hanchan_store.get((self.current_hanchan.hanchan_id,))
+        if existing_row is None:
+            return
+        updated_row = dict(existing_row)
+        updated_row.update(game_type_columns)
+        hanchan_store.upsert(updated_row)
+        _remember_hanchan_metadata(self.db_dir, updated_row)
+        self.current_hanchan.room_class_label = room_class_label
+
     def _ensure_hanchan_context(
         self,
         state: CaptureState,
@@ -2227,6 +2330,7 @@ class CsvDatabase:
                     self.current_hanchan = None
 
         if self.current_hanchan is not None:
+            self._sync_current_hanchan_room_class_label(state)
             self.current_game_id = state.game_id or self.current_hanchan.game_id
             return self.current_hanchan
 
@@ -2533,11 +2637,17 @@ class CsvDatabase:
         hanchan: HanchanContext,
         kyoku_id: str,
         kyoku_info: str,
+        fallback_event: Event | None = None,
     ) -> None:
         chunk_token = monthly_chunk_token_from_hanchan_id(hanchan.hanchan_id)
         fact_store = self._store("discard_fact", chunk_token)
         for seat, discard in _observed_discards(round_state):
-            discard_event = _discard_event_for(state, discard)
+            discard_event = _discard_event_for_storage(
+                state,
+                discard,
+                seat,
+                fallback_event=fallback_event,
+            )
             if discard_event is None:
                 continue
             candidate_row = self._discard_fact_row(
@@ -2598,16 +2708,19 @@ class CsvDatabase:
             hanchan,
             kyoku_id,
             kyoku_info,
+            fallback_event=event,
         )
 
     def persist_event(self, state: CaptureState, event: Event) -> None:
-        self._raise_async_persist_error_if_any()
+        if event.event_type not in CSV_PERSIST_EVENT_TYPES:
+            return
         if not self.async_persist:
+            self._raise_async_persist_error_if_any()
             self._persist_event_now(state, event)
             return
         if self._async_persist_queue is None:
             raise RuntimeError("async persist queue was not initialized")
-        snapshot = _snapshot_capture_state_for_async_persist(state, event, blocking=False)
+        snapshot = _snapshot_capture_state_for_async_persist(state, event, blocking=True)
         if snapshot is None:
             return
         snapshot_state, snapshot_event = snapshot

@@ -360,6 +360,7 @@ class PlayerPushAlertSummary:
     tile_34: int | None = None
     tile_label: str = ""
     discard_index: int | None = None
+    seat_discard_index: int | None = None
     is_current: bool = False
     threshold_percent: float = PUSH_ALERT_PERCENT_THRESHOLD
     target_seats: tuple[int, ...] = ()
@@ -2768,11 +2769,15 @@ def build_latest_discard_push_alert_percentages(
     latest_global_discard_index = global_discards[-1][0] if global_discards else None
     alert_percentages: dict[int, PlayerPushAlertSummary] = {}
     for actor_seat in SUJI_LABEL_SEAT_ORDER:
+        # Push is evaluated from the actor's newest discard, but the result is kept even when that
+        # discard is no longer the table-global latest tile.  The renderer uses `is_current` to
+        # decide immediate `P` marker/audio timing and keeps panel-side latches separately.
         latest_discards = round_state.discards.get(actor_seat, ())
         if not latest_discards:
             alert_percentages[actor_seat] = PlayerPushAlertSummary(seat=actor_seat)
             continue
         latest_discard = latest_discards[-1]
+        seat_discard_index = len(latest_discards) - 1
         discard_index = _discard_order_index(latest_discard, len(latest_discards) - 1)
         is_current = latest_global_discard_index is not None and discard_index == latest_global_discard_index
         late_honor_shonpai_push = _is_late_honor_shonpai_push_trigger(
@@ -2786,11 +2791,14 @@ def build_latest_discard_push_alert_percentages(
             alert_percentages[actor_seat] = PlayerPushAlertSummary(
                 seat=actor_seat,
                 discard_index=discard_index,
+                seat_discard_index=seat_discard_index,
                 is_current=is_current,
             )
             continue
         adjusted_visible_counts_34 = list(normalized_visible_counts_34)
         if adjusted_visible_counts_34[tile_34] > 0 and not latest_discard.called:
+            # Estimate danger as if the just-discarded tile were still being tested.  Counting the
+            # discard itself as visible would incorrectly collapse its own danger toward zero.
             adjusted_visible_counts_34[tile_34] -= 1
 
         synthetic_self_hand_counts_34 = [0] * 34
@@ -2815,6 +2823,8 @@ def build_latest_discard_push_alert_percentages(
                 if _seat_has_riichi_tenpai(round_state, target_seat)
                 else resolved_threshold_percent
             )
+            # Against riichi, a lower threshold is intentional because even a modest raw danger can
+            # represent a meaningful push signal when the target is already tenpai-confirmed.
             if (
                 target_percent >= target_threshold_percent
                 and target_remain_count <= max_target_remain_count
@@ -2851,6 +2861,7 @@ def build_latest_discard_push_alert_percentages(
             tile_34=tile_34,
             tile_label=_format_tile34_label(tile_34),
             discard_index=discard_index,
+            seat_discard_index=seat_discard_index,
             is_current=is_current,
             threshold_percent=effective_threshold_percent,
             target_seats=tuple(sorted(set(qualifying_target_seats))),

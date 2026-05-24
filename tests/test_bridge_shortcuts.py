@@ -1,5 +1,6 @@
 import unittest
 import queue
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -28,6 +29,7 @@ from ui.table_renderer import (
     _select_hand_betaori_candidate,
     _select_hand_pystyle_honor_fallback_candidate,
     _clear_thread_activity_notice_if_expired,
+    _drain_thread_activity_notice_event_queue,
     _drain_bridge_background_result_queue,
     _sync_hand_auto_mode_bridge_readiness,
     _request_bridge_table_snapshot,
@@ -352,6 +354,44 @@ class BridgeShortcutHelperTests(unittest.TestCase):
             with patch("ui.table_renderer.time.monotonic", return_value=230.1):
                 finish_thread_activity_notice("panel alert sound")
 
+        self.assertEqual(canvas.redraw_calls, 1)
+
+    def test_thread_activity_notice_from_worker_thread_is_applied_on_tk_drain(self) -> None:
+        BaseNoticeCanvas = self._DummyNoticeCanvas
+
+        class DeferredAfterCanvas(BaseNoticeCanvas):
+            def __init__(self) -> None:
+                super().__init__()
+                self.after_callbacks = []
+
+            def after(self, _delay_ms: int, callback) -> None:
+                self.after_callbacks.append(callback)
+                return None
+
+        canvas = DeferredAfterCanvas()
+        while True:
+            try:
+                table_renderer._THREAD_ACTIVITY_NOTICE_EVENT_QUEUE.get_nowait()
+            except queue.Empty:
+                break
+            table_renderer._THREAD_ACTIVITY_NOTICE_EVENT_QUEUE.task_done()
+
+        with patch.object(table_renderer, "_THREAD_ACTIVITY_NOTICE_ACTIVE_CANVAS", canvas):
+            with patch("ui.table_renderer.time.monotonic", return_value=240.0):
+                worker_thread = threading.Thread(
+                    target=begin_thread_activity_notice,
+                    args=("live snapshot",),
+                )
+                worker_thread.start()
+                worker_thread.join(timeout=1.0)
+            self.assertFalse(canvas.thread_activity_notice_entries)
+            self.assertEqual(len(canvas.after_callbacks), 1)
+            with patch("ui.table_renderer.time.monotonic", return_value=240.1):
+                canvas.after_callbacks.pop(0)()
+
+        self.assertEqual(len(canvas.thread_activity_notice_entries), 1)
+        self.assertEqual(canvas.thread_activity_notice_entries[0]["text"], "live snapshot")
+        self.assertEqual(canvas.thread_activity_notice_entries[0]["active_count"], 1)
         self.assertEqual(canvas.redraw_calls, 1)
 
     def test_show_thread_activity_notice_keeps_one_bridge_snapshot_entry(self) -> None:

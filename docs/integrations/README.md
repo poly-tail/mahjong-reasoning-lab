@@ -1,8 +1,10 @@
 # 外部連携
 
-このフォルダは外部接続や実装連携の文書置き場です。麻雀ルールではなく、「どのモジュールが何と接続するか」を説明します。
+このフォルダは、ローカル app と外部サービス / ブラウザ / capture 系を接続する仕様を置く場所です。
 
-- `packet_capture.md`: packet capture / parser / capture 契約
-- `nodocchi_status.md`: Nodocchi プレイヤー成績取得連携
-- `pystyle_simulator_protocol.md`: AI TOP3 用の外部連携
-- `tenhou_ui_bridge.md`: local app と Chrome Extension の UI 実行ブリッジ
+- [packet_capture.md](./packet_capture.md): packet capture / parser / capture 要件
+- [tenhou_ui_bridge.md](./tenhou_ui_bridge.md): Chrome extension 経由の天鳳 UI 操作
+- [pystyle_simulator_protocol.md](./pystyle_simulator_protocol.md): `AI TOP3` 用 pystyle simulator 連携
+- [pystyle_auto_mode.md](./pystyle_auto_mode.md): 自動打牌 mode
+- [nodocchi_status.md](./nodocchi_status.md): Nodocchi 成績取得
+- [naga_ptev_analyzer.md](./naga_ptev_analyzer.md): NAGA 段位ポイント分析と下部自動表示

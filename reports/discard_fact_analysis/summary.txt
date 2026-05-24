@@ -1,0 +1,6 @@
+source_files=discard_fact_202604.csv, discard_fact_202605.csv
+all_rows=165510
+houou_rows=20496
+houou_valid_thinking_rows=20019
+houou_valid_shanten_0_4_rows=16691
+ryanmen_comparison_rows=16691

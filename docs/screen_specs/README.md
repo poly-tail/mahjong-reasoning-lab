@@ -1,24 +1,19 @@
-# 画面仕様書
+# 画面仕様
 
-updated: `2026-05-10`
-
-このディレクトリでは、現行画面仕様を「読む人の作業単位」で分割して管理します。
+updated: `2026-05-24`
 
 ## 現行セット
 
-- [display_overview.md](./display_overview.md)
-  - 画面全体の地図と領域の役割
-- [river_display.md](./river_display.md)
-  - 河の枠、記号、tint、awaseuchi
-- [alerts_and_panels.md](./alerts_and_panels.md)
-  - `AI TOP3`, `SELF`, 相手パネル、`STATUS`, 状況表
-- [controls_and_bridge.md](./controls_and_bridge.md)
-  - app 側ボタン、Bridge、右クリック、toggle
-- [visible_counts_ui.md](./visible_counts_ui.md)
-  - `Visible x3/x4`、推測見え枚数編集、自家 `2見え以下字牌`
+- [current.md](./current.md): 現行版への入口
+- [screen_spec_v2.2.md](./screen_spec_v2.2.md): 版付き正本
+- [display_overview.md](./display_overview.md): 画面全体
+- [river_display.md](./river_display.md): 河、marker、tint、差分描画
+- [alerts_and_panels.md](./alerts_and_panels.md): `SUMMARY`, `ALERT`, `STATUS`, 音声, NAGA 下部パネル
+- [controls_and_bridge.md](./controls_and_bridge.md): app 操作、Bridge、NAGA ボタン
+- [visible_counts_ui.md](./visible_counts_ui.md): Visible x3/x4 と見え枚数 UI
 
-## 読む順番
+## 更新ルール
 
-1. `display_overview.md`
-2. 対象領域の個別仕様
-3. `screen_spec_v2.1.md`
+- 表示の見た目や色を変えたら、対象ファイルと `current.md` を更新する。
+- 河の marker / tint / 描画 cache は [river_display.md](./river_display.md) へ書く。
+- panel alert、音声、Nodocchi、NAGA は [alerts_and_panels.md](./alerts_and_panels.md) へ書く。

@@ -1,5 +1,14 @@
 ﻿# 変更履歴
 
+## 2026-05-24 v2.2 画面仕様・性能・分析更新
+- CH-170: `src/ui/table_renderer.py` を更新し、河を座席 + 捨て牌 index の表示シグネチャで差分描画するよう変更した。`Push` 判定で音が鳴る更新では同じ捨て牌へ `P` マークを即時反映し、変化した牌だけ Canvas tag 単位で差し替える。
+- CH-171: discard path の色付き `PhotoImage` 合成を廃止し、通常牌画像 + Canvas overlay で赤/茶/紫/4見え/思考時間 band を描画するよう変更した。discard item は作成時に `tags=` を付け、後付け `find_all()` タグ付けを使わない。
+- CH-172: プレイヤーパネルの `SUMMARY` と `ALERT` の remain 色基準を統一し、panel に出ない自分側 remain / Push 系 alert は音声対象外にした。Remain 音声 key は `r-red` など `r` 付きへ変更した。
+- CH-173: Nodocchi `STATUS` 表示で和了率・副露率・リーチ率だけ赤字、その他の数値を白字にした。
+- CH-174: 南2局以降、下部スペースに NAGA 段位ポイント分析の主要な和了・放銃・流局 pt 変化を自動表示する `NagaAutoPanelData` 経路を追加した。
+- CH-175: `scripts/analyze_player_shanten_thinking.py` を追加し、DB からプレイヤー別の思考時間 x シャンテン数の相関とばらつきを集計し、`hanchan_master` 由来の所属卓も出力できるようにした。
+- CH-176: `docs/requirements/current.md`, `docs/specs/current.md`, `docs/screen_specs/current.md` を v2.2 へ更新し、河表示、パネル/アラート、性能ホットスポット、NAGA 連携、DB分析、CSV DB 設計、README を現行仕様へ同期した。
+
 ## 2026-05-10 STATUS 成績表示・麻雀文書再構成
 - CH-167: `src/app/nodocchi_stats.py`, `src/ui/table_renderer.py`, `tests/test_nodocchi_stats.py` を追加・更新し、相手パネルの `STATUS` から Nodocchi 鳳凰卓4人打ち成績を取得して右詳細領域に表示できるようにした。取得は background thread と canvas queue で UI thread に戻し、同一プレイヤーは cache して多重リクエストを避ける。失敗時・データなし時も `Nodocchiで開く` 外部リンクを残す。
 - CH-168: `docs/mahjong-theory/` を `docs/mahjong/theory/` へ統合し、旧 `docs/mahjong/*.md` を `logic/`, `reference/`, `research/` に再分類した。`docs/mahjong/README.md` と各サブフォルダ README を追加し、学習セオリー、実装ロジック、基礎参照、研究メモの棲み分けを明文化した。

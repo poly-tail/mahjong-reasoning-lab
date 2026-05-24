@@ -86,10 +86,14 @@ from capture.fragment_parser import (
 LIVE_DISCARD_RED_TINT_ENABLED = True
 LIVE_ASYNC_BUNDLE_REFRESH_ENABLED = True
 LIVE_RUNTIME_WATCHDOG_POLL_INTERVAL_S = 1.0
+LIVE_SNAPSHOT_REQUEST_MIN_INTERVAL_S = 0.08
 NAGA_BUTTON_X = 82
 NAGA_BUTTON_Y = 64
 NAGA_WINDOW_WIDTH = 860
 NAGA_WINDOW_HEIGHT = 700
+NAGA_AUTO_START_KYOKU = 5
+NAGA_AUTO_REFRESH_MS = 1000
+NAGA_AUTO_ERROR_TEXT_MAX = 72
 NAGA_POPUP_TITLE = "NAGA 段位ポイント分析"
 NAGA_POPUP_SECTION_ALL = "all"
 NAGA_POPUP_SECTION_3900 = "3900"
@@ -276,6 +280,13 @@ class NagaAnalyzerUiState:
     in_flight: bool = False
     last_error_text: str = ""
     last_result: naga_analyzer.NagaAnalysisText | None = None
+    auto_in_flight: bool = False
+    auto_last_query_key: tuple[object, ...] | None = None
+    auto_last_result_key: tuple[object, ...] | None = None
+    auto_failed_query_key: tuple[object, ...] | None = None
+    auto_error_text: str = ""
+    auto_result: naga_analyzer.NagaAnalysisText | None = None
+    auto_update_sequence: int = 0
 
 
 def _build_naga_query_state_from_capture_state(
@@ -285,6 +296,128 @@ def _build_naga_query_state_from_capture_state(
         return None
     with capture_state.state_lock:
         return naga_analyzer.build_query_state_from_round_state(capture_state.current_round)
+
+
+def _naga_query_key(
+    query_state: naga_analyzer.NagaQueryState | None,
+) -> tuple[object, ...] | None:
+    if query_state is None:
+        return None
+    return (
+        int(query_state.kyoku),
+        int(query_state.honba),
+        int(query_state.kyotaku),
+        tuple(int(score) for score in query_state.scores),
+        (
+            int(query_state.oya_seat)
+            if query_state.oya_seat is not None
+            else None
+        ),
+    )
+
+
+def _naga_auto_enabled_for_query_state(
+    query_state: naga_analyzer.NagaQueryState | None,
+) -> bool:
+    return query_state is not None and int(query_state.kyoku) >= NAGA_AUTO_START_KYOKU
+
+
+def _format_naga_pt_delta(value: float) -> str:
+    return f"{float(value):+.1f}pt"
+
+
+def _format_naga_auto_point(point: naga_analyzer.NagaGraphPoint | None) -> str:
+    if point is None:
+        return "-"
+    return f"{point.label} {_format_naga_pt_delta(point.delta_ptev)}"
+
+
+def _top_naga_points(
+    points: Sequence[naga_analyzer.NagaGraphPoint],
+    categories: set[str],
+    *,
+    limit: int,
+    descending: bool,
+) -> tuple[naga_analyzer.NagaGraphPoint, ...]:
+    candidates = [point for point in points if point.category in categories]
+    candidates.sort(key=lambda point: float(point.delta_ptev), reverse=descending)
+    return tuple(candidates[: max(0, int(limit))])
+
+
+def _build_naga_auto_result_line(
+    result: naga_analyzer.NagaAnalysisText,
+) -> str:
+    # The table-bottom strip is a decision hint, not a full report. Keep only the branches that
+    # change late-round dan-point tradeoffs: wins, deal-ins, and exhaustive draws.
+    points = tuple(result.graph_points)
+    base_point = next((point for point in points if point.category == "BASE"), None)
+    base_text = (
+        f"現状 {float(base_point.ptev):+.1f}pt"
+        if base_point is not None
+        else "現状 -"
+    )
+    win_points = _top_naga_points(points, {"RON+", "TSM+"}, limit=2, descending=True)
+    houjuu_points = _top_naga_points(points, {"RON-"}, limit=1, descending=False)
+    ryukyoku_best = _top_naga_points(points, {"RYK"}, limit=1, descending=True)
+    ryukyoku_worst = _top_naga_points(points, {"RYK"}, limit=1, descending=False)
+    win_text = "和了 " + " / ".join(_format_naga_auto_point(point) for point in win_points)
+    if not win_points:
+        win_text = "和了 -"
+    houjuu_text = f"放銃 {_format_naga_auto_point(houjuu_points[0] if houjuu_points else None)}"
+    if ryukyoku_best and ryukyoku_worst and ryukyoku_best[0] != ryukyoku_worst[0]:
+        ryukyoku_text = (
+            f"流局 {_format_naga_auto_point(ryukyoku_best[0])}"
+            f"/{_format_naga_pt_delta(ryukyoku_worst[0].delta_ptev)}"
+        )
+    elif ryukyoku_best:
+        ryukyoku_text = f"流局 {_format_naga_auto_point(ryukyoku_best[0])}"
+    else:
+        ryukyoku_text = "流局 -"
+    return f"{base_text}  {win_text}  {houjuu_text}  {ryukyoku_text}"
+
+
+def _build_naga_auto_panel_data(
+    ui_state: NagaAnalyzerUiState | None,
+) -> table_view.NagaAutoPanelData:
+    # Auto data is polled by the renderer on every redraw. Return a small immutable DTO so the draw
+    # layer never needs to know about Playwright, storage_state, or raw NAGA artifacts.
+    if ui_state is None or ui_state.query_state_provider is None:
+        return table_view.NagaAutoPanelData()
+    query_state = ui_state.query_state_provider()
+    if not _naga_auto_enabled_for_query_state(query_state):
+        return table_view.NagaAutoPanelData()
+    query_key = _naga_query_key(query_state)
+    title_text = f"NAGA pt {query_state.round_text}" if query_state is not None else "NAGA pt"
+    if ui_state.auto_in_flight and ui_state.auto_last_query_key == query_key:
+        return table_view.NagaAutoPanelData(
+            visible=True,
+            title_text=title_text,
+            lines=("照会中...",),
+            status_kind="loading",
+        )
+    if ui_state.auto_result is not None and ui_state.auto_last_result_key == query_key:
+        return table_view.NagaAutoPanelData(
+            visible=True,
+            title_text=title_text,
+            lines=(_build_naga_auto_result_line(ui_state.auto_result),),
+            status_kind="ready",
+        )
+    if ui_state.auto_error_text and ui_state.auto_failed_query_key == query_key:
+        error_text = str(ui_state.auto_error_text).strip()
+        if len(error_text) > NAGA_AUTO_ERROR_TEXT_MAX:
+            error_text = f"{error_text[:NAGA_AUTO_ERROR_TEXT_MAX]}..."
+        return table_view.NagaAutoPanelData(
+            visible=True,
+            title_text=title_text,
+            lines=(f"NAGA取得失敗: {error_text}",),
+            status_kind="error",
+        )
+    return table_view.NagaAutoPanelData(
+        visible=True,
+        title_text=title_text,
+        lines=("照会待ち",),
+        status_kind="waiting",
+    )
 
 
 def _format_naga_popup_text(
@@ -694,7 +827,7 @@ def _refresh_naga_button_widget(ui_state: NagaAnalyzerUiState) -> None:
     button_widget = ui_state.button_widget
     if button_widget is None or not button_widget.winfo_exists():
         return
-    if ui_state.in_flight:
+    if ui_state.in_flight or ui_state.auto_in_flight:
         button_widget.configure(
             text="NAGA中",
             bg=table_view.HAND_AUTO_BUTTON_RUN_FILL,
@@ -775,7 +908,17 @@ def _handle_naga_button_click(
         _refresh_naga_popup_section_buttons(ui_state)
         _refresh_naga_graph_metric_buttons(ui_state)
         return
-    if ui_state.in_flight:
+    if ui_state.in_flight or ui_state.auto_in_flight:
+        _clear_naga_graph(ui_state, "NAGA照会中")
+        _set_naga_popup_text(
+            ui_state,
+            _format_naga_popup_text(
+                ui_state.storage_state_path,
+                title=NAGA_POPUP_TITLE,
+                body="NAGAの段位ポイント分析を取得しています。",
+                query_state=query_state,
+            ),
+        )
         return
 
     ui_state.in_flight = True
@@ -826,6 +969,12 @@ def _handle_naga_button_click(
             def _apply_error() -> None:
                 ui_state.in_flight = False
                 ui_state.last_error_text = error_text
+                if _naga_auto_enabled_for_query_state(query_state):
+                    ui_state.auto_failed_query_key = _naga_query_key(query_state)
+                    ui_state.auto_error_text = error_text
+                    ui_state.auto_result = None
+                    ui_state.auto_last_result_key = None
+                    ui_state.auto_update_sequence += 1
                 _refresh_naga_button_widget(ui_state)
                 _refresh_naga_popup_section_buttons(ui_state)
                 _refresh_naga_graph_metric_buttons(ui_state)
@@ -856,6 +1005,12 @@ def _handle_naga_button_click(
                 ui_state.in_flight = False
                 ui_state.last_error_text = ""
                 ui_state.last_result = result
+                if _naga_auto_enabled_for_query_state(query_state):
+                    ui_state.auto_result = result
+                    ui_state.auto_last_result_key = _naga_query_key(query_state)
+                    ui_state.auto_failed_query_key = None
+                    ui_state.auto_error_text = ""
+                    ui_state.auto_update_sequence += 1
                 _refresh_naga_button_widget(ui_state)
                 _refresh_naga_popup_section_buttons(ui_state)
                 _refresh_naga_graph_metric_buttons(ui_state)
@@ -882,20 +1037,196 @@ def _handle_naga_button_click(
     ).start()
 
 
+def _start_naga_auto_query(
+    root: tkinter.Tk,
+    ui_state: NagaAnalyzerUiState,
+    query_state: naga_analyzer.NagaQueryState,
+) -> None:
+    # Query keys prevent the 1-second scheduler from stacking multiple Playwright calls for the
+    # same round while a previous NAGA auto query is still in flight.
+    query_key = _naga_query_key(query_state)
+    if query_key is None or ui_state.in_flight or ui_state.auto_in_flight:
+        return
+    if not ui_state.storage_state_path.exists():
+        ui_state.auto_last_query_key = query_key
+        ui_state.auto_failed_query_key = query_key
+        ui_state.auto_error_text = "ログイン状態なし"
+        ui_state.auto_result = None
+        ui_state.auto_last_result_key = None
+        ui_state.auto_update_sequence += 1
+        return
+
+    ui_state.auto_in_flight = True
+    ui_state.auto_last_query_key = query_key
+    ui_state.auto_failed_query_key = None
+    ui_state.auto_error_text = ""
+    ui_state.auto_update_sequence += 1
+    table_view.begin_thread_activity_notice("NAGA auto")
+
+    def _schedule_on_ui_thread(callback: Callable[[], None]) -> None:
+        try:
+            root.after(0, callback)
+        except tkinter.TclError:
+            pass
+
+    def _current_query_key() -> tuple[object, ...] | None:
+        provider = ui_state.query_state_provider
+        if provider is None:
+            return None
+        return _naga_query_key(provider())
+
+    def _worker() -> None:
+        capture_state = ui_state.capture_state
+        if capture_state is not None:
+            mark_runtime_thread_progress(
+                capture_state,
+                "naga-auto",
+                "query_start",
+                detail=query_state.round_text,
+                blocked_hint="NAGA auto query running",
+                stale_after_s=10.0,
+                repeat_after_s=20.0,
+            )
+        try:
+            result = naga_analyzer.analyze_naga_text(
+                query_state,
+                storage_state_path=ui_state.storage_state_path,
+                raw_output_dir=ui_state.raw_output_dir,
+            )
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
+
+            def _apply_error() -> None:
+                ui_state.auto_in_flight = False
+                if _current_query_key() != query_key:
+                    ui_state.auto_update_sequence += 1
+                    return
+                ui_state.auto_failed_query_key = query_key
+                ui_state.auto_error_text = error_text
+                ui_state.auto_result = None
+                ui_state.auto_last_result_key = None
+                ui_state.auto_update_sequence += 1
+
+            _schedule_on_ui_thread(_apply_error)
+            if capture_state is not None:
+                mark_runtime_thread_progress(
+                    capture_state,
+                    "naga-auto",
+                    "query_error",
+                    detail=error_text,
+                    blocked_hint="NAGA auto query failed",
+                    stale_after_s=10.0,
+                    repeat_after_s=20.0,
+                )
+        else:
+
+            def _apply_result() -> None:
+                ui_state.auto_in_flight = False
+                if _current_query_key() != query_key:
+                    ui_state.auto_update_sequence += 1
+                    return
+                ui_state.auto_result = result
+                ui_state.auto_last_result_key = query_key
+                ui_state.auto_failed_query_key = None
+                ui_state.auto_error_text = ""
+                ui_state.last_result = result
+                ui_state.last_error_text = ""
+                ui_state.auto_update_sequence += 1
+                _refresh_naga_button_widget(ui_state)
+                if ui_state.window is not None and ui_state.window.winfo_exists() and not ui_state.in_flight:
+                    _refresh_naga_popup_section_buttons(ui_state)
+                    _refresh_naga_graph_metric_buttons(ui_state)
+                    _show_naga_result_for_active_section(ui_state)
+
+            _schedule_on_ui_thread(_apply_result)
+            if capture_state is not None:
+                mark_runtime_thread_progress(
+                    capture_state,
+                    "naga-auto",
+                    "query_ready",
+                    detail=query_state.round_text,
+                    blocked_hint="NAGA auto query displayed",
+                    stale_after_s=10.0,
+                    repeat_after_s=20.0,
+                )
+        finally:
+            table_view.finish_thread_activity_notice("NAGA auto")
+
+    threading.Thread(
+        target=_worker,
+        name="naga-analyzer-auto-query",
+        daemon=True,
+    ).start()
+
+
+def _schedule_naga_auto_refresh(
+    root: tkinter.Tk,
+    ui_state: NagaAnalyzerUiState | None,
+) -> None:
+    if ui_state is None:
+        return
+
+    def _tick() -> None:
+        # Capture updates, manual redraws, and NAGA popup actions all mutate the same UI state.  A
+        # simple polling tick plus query-key de-duplication keeps this path deterministic.
+        try:
+            if not bool(getattr(root, "winfo_exists", lambda: False)()):
+                return
+        except tkinter.TclError:
+            return
+        query_state = (
+            ui_state.query_state_provider()
+            if ui_state.query_state_provider is not None
+            else None
+        )
+        if not _naga_auto_enabled_for_query_state(query_state):
+            if (
+                ui_state.auto_result is not None
+                or ui_state.auto_error_text
+                or ui_state.auto_last_query_key is not None
+            ):
+                ui_state.auto_result = None
+                ui_state.auto_last_result_key = None
+                ui_state.auto_failed_query_key = None
+                ui_state.auto_error_text = ""
+                ui_state.auto_last_query_key = None
+                ui_state.auto_update_sequence += 1
+            root.after(NAGA_AUTO_REFRESH_MS, _tick)
+            return
+
+        query_key = _naga_query_key(query_state)
+        if (
+            query_state is not None
+            and query_key is not None
+            and not ui_state.auto_in_flight
+            and ui_state.auto_last_result_key != query_key
+            and ui_state.auto_failed_query_key != query_key
+        ):
+            _start_naga_auto_query(root, ui_state, query_state)
+        root.after(NAGA_AUTO_REFRESH_MS, _tick)
+
+    root.after(NAGA_AUTO_REFRESH_MS, _tick)
+
+
 def _install_naga_button(
     root: tkinter.Tk,
     *,
     capture_state: CaptureState | None,
     query_state_provider: Callable[[], naga_analyzer.NagaQueryState | None] | None,
+    ui_state: NagaAnalyzerUiState | None = None,
 ) -> NagaAnalyzerUiState | None:
     if not bool(getattr(root, "winfo_exists", lambda: False)()):
         return None
-    ui_state = NagaAnalyzerUiState(
-        storage_state_path=naga_analyzer.resolve_storage_state_path(),
-        raw_output_dir=naga_analyzer.resolve_raw_output_dir(),
-        query_state_provider=query_state_provider,
-        capture_state=capture_state,
-    )
+    if ui_state is None:
+        ui_state = NagaAnalyzerUiState(
+            storage_state_path=naga_analyzer.resolve_storage_state_path(),
+            raw_output_dir=naga_analyzer.resolve_raw_output_dir(),
+            query_state_provider=query_state_provider,
+            capture_state=capture_state,
+        )
+    else:
+        ui_state.query_state_provider = query_state_provider
+        ui_state.capture_state = capture_state
     button_widget = tkinter.Button(
         root,
         text="NAGA段位",
@@ -941,6 +1272,8 @@ class LiveTableSnapshot:
     round_identity: object | None
     refresh_token: object | None
     hand_recommendation_request_context: PystyleDisplayContext
+    table_situation_auto_scores_by_seat: dict[int, tuple[float, ...]] = field(default_factory=dict)
+    same_jun_marker_indices_by_seat: dict[int, frozenset[int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1067,15 +1400,23 @@ def _build_combined_refresh_token_provider(
     base_refresh_token: object | None,
     base_refresh_token_provider: Callable[[], object | None] | None,
     recommendation_service: HandRecommendationService,
-) -> tuple[Callable[[], tuple[object | None, int]], tuple[object | None, int]]:
+    *,
+    extra_update_sequence_provider: Callable[[], object | None] | None = None,
+) -> tuple[Callable[[], tuple[object | None, int] | tuple[object | None, int, object | None]], tuple[object | None, int] | tuple[object | None, int, object | None]]:
     """Combine live redraw tokens with recommendation-service updates."""
 
-    def _combined_refresh_token() -> tuple[object | None, int]:
+    def _combined_refresh_token() -> tuple[object | None, int] | tuple[object | None, int, object | None]:
         base_token = (
             base_refresh_token_provider()
             if base_refresh_token_provider is not None
             else base_refresh_token
         )
+        if extra_update_sequence_provider is not None:
+            return (
+                base_token,
+                recommendation_service.update_sequence,
+                extra_update_sequence_provider(),
+            )
         return (base_token, recommendation_service.update_sequence)
 
     return _combined_refresh_token, _combined_refresh_token()
@@ -2081,6 +2422,7 @@ def _live_suji_worker(capture_state: CaptureState) -> None:
             wake_event.wait()
             wake_event.clear()
             continue
+        table_view.begin_thread_activity_notice("live suji")
         try:
             bundle = _build_live_suji_computation_bundle(
                 job.snapshot_state,
@@ -2097,6 +2439,8 @@ def _live_suji_worker(capture_state: CaptureState) -> None:
                 async_state.update_sequence += 1
             print(f"Live suji bundle skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             continue
+        finally:
+            table_view.finish_thread_activity_notice("live suji")
         with capture_state.state_lock:
             async_state = _get_live_suji_async_state(capture_state)
             async_state.in_flight_source_refresh_token = None
@@ -2126,6 +2470,7 @@ def _live_red_tint_worker(capture_state: CaptureState) -> None:
             wake_event.wait()
             wake_event.clear()
             continue
+        table_view.begin_thread_activity_notice("live red tint")
         try:
             bundle = LiveRedTintComputationBundle(
                 source_refresh_token=job.source_refresh_token,
@@ -2142,6 +2487,8 @@ def _live_red_tint_worker(capture_state: CaptureState) -> None:
                 async_state.update_sequence += 1
             print(f"Live red tint bundle skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             continue
+        finally:
+            table_view.finish_thread_activity_notice("live red tint")
         with capture_state.state_lock:
             async_state = _get_live_red_tint_async_state(capture_state)
             async_state.in_flight_source_refresh_token = None
@@ -2985,16 +3332,35 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
         source_refresh_token=live_refresh_token,
         round_identity=round_identity,
     )
+    effective_discard_red_tint_indices = (
+        current_red_tint_indices
+        if current_red_tint_indices is not None
+        else (fallback_red_tint_indices if fallback_red_tint_indices is not None else {})
+    )
+    round_events = _build_awaseuchi_round_events(snapshot_state.current_round)
+    table_situation_auto_scores_by_seat = (
+        table_view._build_table_situation_auto_scores_by_seat(
+            snapshot_state.tracker.discards,
+            effective_discard_red_tint_indices,
+        )
+        if table_view.TABLE_SITUATION_ENABLED
+        else {}
+    )
+    same_jun_marker_indices_by_seat = (
+        table_view._same_jun_match_discard_indices_by_seat(
+            snapshot_state.tracker.discards,
+            melds_by_player,
+            round_events,
+        )
+        if table_view.AWASEUCHI_MARKERS_ENABLED
+        else {}
+    )
     snapshot = LiveTableSnapshot(
         discard_map={
             player: list(snapshot_state.tracker.discards.get(player, []))
             for player in Player
         },
-        discard_red_tint_indices_by_seat=(
-            current_red_tint_indices
-            if current_red_tint_indices is not None
-            else (fallback_red_tint_indices if fallback_red_tint_indices is not None else {})
-        ),
+        discard_red_tint_indices_by_seat=effective_discard_red_tint_indices,
         hand_tiles=tiles136_to_tiles37(snapshot_state.live_hand_tiles_136),
         hand_draw_tile=build_live_hand_draw_tile(snapshot_state),
         hand_danger_percentages=effective_hand_danger_percentages,
@@ -3005,13 +3371,15 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
         player_names_by_seat=player_names_by_seat,
         meld_tiles=flatten_visible_meld_tiles(melds_by_player),
         dora_indicator_tiles=tiles136_to_tiles37(snapshot_state.live_dora_indicator_tiles_136),
-        round_events=_build_awaseuchi_round_events(snapshot_state.current_round),
+        round_events=round_events,
         round_info_panel=build_live_round_info_panel(snapshot_state),
         melds_by_player=melds_by_player,
         visible_summary=visible_summary,
         round_identity=round_identity,
         refresh_token=refresh_token,
         hand_recommendation_request_context=build_live_pystyle_display_context(snapshot_state),
+        table_situation_auto_scores_by_seat=table_situation_auto_scores_by_seat,
+        same_jun_marker_indices_by_seat=same_jun_marker_indices_by_seat,
     )
     with capture_state.state_lock:
         current_refresh_token = (
@@ -3135,6 +3503,7 @@ class AsyncLiveTableSnapshotProvider:
         self._pending_refresh_token: object | None = None
         self._in_flight_refresh_token: object | None = None
         self._last_error_text = ""
+        self._last_request_latest_monotonic_s = 0.0
 
     def _ensure_worker_locked(self) -> None:
         if self._worker_thread is not None and self._worker_thread.is_alive():
@@ -3160,6 +3529,14 @@ class AsyncLiveTableSnapshotProvider:
             self._wake_event.set()
 
     def request_latest(self) -> None:
+        now_monotonic_s = time.monotonic()
+        with self._lock:
+            if (
+                now_monotonic_s - self._last_request_latest_monotonic_s
+                < LIVE_SNAPSHOT_REQUEST_MIN_INTERVAL_S
+            ):
+                return
+            self._last_request_latest_monotonic_s = now_monotonic_s
         try:
             refresh_token = self._refresh_token_reader(self._capture_state)
         except Exception as exc:  # noqa: BLE001 - UI polling must stay non-blocking.
@@ -3216,6 +3593,7 @@ class AsyncLiveTableSnapshotProvider:
                 self._wake_event.wait()
                 self._wake_event.clear()
                 continue
+            table_view.begin_thread_activity_notice("live snapshot")
             try:
                 snapshot = self._snapshot_builder(self._capture_state)
             except Exception as exc:  # noqa: BLE001 - keep the snapshot worker alive after transient parse/cache errors.
@@ -3226,6 +3604,8 @@ class AsyncLiveTableSnapshotProvider:
                         self._last_error_text = error_text
                         print(f"Live snapshot build skipped: {error_text}", file=sys.stderr)
                 continue
+            finally:
+                table_view.finish_thread_activity_notice("live snapshot")
             with self._lock:
                 self._latest_snapshot = snapshot
                 self._in_flight_refresh_token = None
@@ -3655,12 +4035,25 @@ def main() -> None:
         melds_by_player = initial_snapshot.melds_by_player
         bridge_visible_hand_provider = lambda: build_live_visible_hand_state(capture_state)
 
+    naga_query_state_provider = (
+        (lambda: _build_naga_query_state_from_capture_state(capture_state))
+        if capture_state is not None
+        else None
+    )
+    naga_ui_state = NagaAnalyzerUiState(
+        storage_state_path=naga_analyzer.resolve_storage_state_path(),
+        raw_output_dir=naga_analyzer.resolve_raw_output_dir(),
+        query_state_provider=naga_query_state_provider,
+        capture_state=capture_state,
+    )
+
     # Live redraw must react to both packet updates and finished AI responses, so combine the
     # capture refresh token with the recommendation-service refresh sequence.
     refresh_token_provider, refresh_token = _build_combined_refresh_token_provider(
         refresh_token,
         refresh_token_provider,
         hand_recommendation_service,
+        extra_update_sequence_provider=lambda: naga_ui_state.auto_update_sequence,
     )
     if bridge_visible_hand_provider is None:
         bridge_visible_hand_provider = lambda: build_visible_hand_state(
@@ -3727,13 +4120,11 @@ def main() -> None:
         lambda: _install_naga_button(
             root,
             capture_state=capture_state,
-            query_state_provider=(
-                (lambda: _build_naga_query_state_from_capture_state(capture_state))
-                if capture_state is not None
-                else None
-            ),
+            query_state_provider=naga_query_state_provider,
+            ui_state=naga_ui_state,
         ),
     )
+    _schedule_naga_auto_refresh(root, naga_ui_state)
 
     table_view.create_canvas(
         root,
@@ -3774,6 +4165,7 @@ def main() -> None:
         meld_tiles_provider=meld_tiles_provider,
         dora_indicator_tiles_provider=dora_indicator_tiles_provider,
         round_info_panel_provider=round_info_panel_provider,
+        naga_auto_panel_provider=lambda: _build_naga_auto_panel_data(naga_ui_state),
         melds_by_player=melds_by_player,
         melds_by_player_provider=melds_by_player_provider,
         visible_summary=visible_summary,

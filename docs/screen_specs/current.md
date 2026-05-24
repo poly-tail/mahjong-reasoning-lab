@@ -1,38 +1,31 @@
 # 画面仕様書 現行版
 
-> 現行版ファイル: `screen_spec_v2.1.md`
-> 共通ルール: `ui_principles.md` / `screen_map.md` / `invariants.md` / `change_request.md`
+> 現行版: `screen_spec_v2.2.md`
+> 更新日: `2026-05-24`
+> 前版: `screen_spec_v2.1.md`
 
-## 現行版
+## 現行画面の要点
 
-- 版: `v2.1`
-- 更新日: `2026-05-10`
-- 継承元: `old/screen_spec_v2.0.md`
+- 画面は卓、河、自家手牌、他家プレイヤーパネル、右詳細領域、Bridge 操作、NAGA 下部パネルで構成する。
+- 河は `L`, `Pl`, `P`, 同順合わせ打ち、最大思考時間、3見え/4見え、赤/茶/紫 tint を表示する。
+- `Push` 音声が鳴る更新では、同じ対象捨て牌へ `P` マークを即時表示する。
+- 他家 panel の `SUMMARY` と `ALERT` は同じ remain 閾値を使う。
+- Nodocchi `STATUS` は和了率・副露率・リーチ率だけ赤字、その他は白字。
+- 南2局以降、下部スペースに NAGA 段位ポイント分析の自動要約を表示する。
+- 河は差分描画で、変わった牌だけ更新する。
 
-## 現在の重点
-
-- `AI TOP3`, `SELF`, 状況表、相手パネルの役割分担を固定する
-- 相手パネルの `STATUS` は Nodocchi 成績ビューを右詳細領域に開く
-- `STATUS` 成績ビューは loading / success / failed / not found と `Nodocchiで開く` を表示する
-- 河記号は `L`, `Pl`, `P` の 3 種を使う
-- `Visible x3/x4` は実見え枚数 + 推測見え枚数の統合グリッドとする
-- 自家の `2見え以下字牌` 一覧は自副露帯寄りに表示する
-- `BG ... xN` をバックグラウンドワーカーの稼働表示として使う
-
-## 現行の個別画面文書
+## 詳細文書
 
 - 画面全体: [display_overview.md](./display_overview.md)
 - 河表示: [river_display.md](./river_display.md)
 - パネルとアラート: [alerts_and_panels.md](./alerts_and_panels.md)
-- 操作系と Bridge: [controls_and_bridge.md](./controls_and_bridge.md)
+- 操作と Bridge: [controls_and_bridge.md](./controls_and_bridge.md)
 - 見え枚数 UI: [visible_counts_ui.md](./visible_counts_ui.md)
-- バージョン索引: [screen_spec_v2.1.md](./screen_spec_v2.1.md)
+- 版付き画面仕様: [screen_spec_v2.2.md](./screen_spec_v2.2.md)
 
 ## 関連文書
 
-- 要件定義 現行版: [../requirements/current.md](../requirements/current.md)
-- 仕様書 現行版: [../specs/current.md](../specs/current.md)
-- 見え枚数パイプライン: [../architecture/visible_count_pipeline.md](../architecture/visible_count_pipeline.md)
-- データ構造: [../architecture/data_structures.md](../architecture/data_structures.md)
-- pystyle 自動モード: [../integrations/pystyle_auto_mode.md](../integrations/pystyle_auto_mode.md)
-- Nodocchi 成績連携: [../integrations/nodocchi_status.md](../integrations/nodocchi_status.md)
+- 要件定義: [../requirements/current.md](../requirements/current.md)
+- 仕様書: [../specs/current.md](../specs/current.md)
+- 性能ホットスポット: [../analysis/performance_hotspots.md](../analysis/performance_hotspots.md)
+- NAGA 連携: [../integrations/naga_ptev_analyzer.md](../integrations/naga_ptev_analyzer.md)

@@ -1,79 +1,93 @@
 # 性能ホットスポット
 
-更新日: `2026-04-15`
+更新日: `2026-05-24`
 
-この文書は現時点のホットスポット順位と、ワーカー / coalescing の現状を残すための履歴ファイルである。
+## 現在の重点
 
-## 現在の順位
+UI の重さは主に次の層で見る。
 
-### 計算量ベース
+1. `side_panels`
+2. `discards`
+3. visible / suji / push / same-jun の派生計算
+4. background thread の多重起動
+5. Bridge / NAGA / Nodocchi の外部問い合わせ
 
-1. `live red tint` cold rebuild
-2. `live suji` bundle
-3. suji profile / weighted line map
-4. live snapshot clone
-5. actual visible summary
-6. awaseuchi provisional/confirm
+## `discards`
 
-### UI を止めやすい順
+### 以前の問題
 
-1. state lock を跨ぐ snapshot clone
-2. bridge snapshot の重複
-3. main thread に残っている renderer 判定
+- 河を描き直すたびに最大 `4人 x 18枚` を全描画していた。
+- `_discard_tile_image()` が赤/茶/紫/4見え/思考時間の組み合わせごとに色付き `PhotoImage` を作っていた。
+- Canvas item を作った後に `find_all()` で差分取得し、後付け tag を付けていた。
 
-## 現在の緩和策
+### 現行対策
 
-- `live suji`: 常駐ワーカー
-- `live red tint`: 常駐ワーカー
-- `inferred visible`: 常駐ワーカー
-- `bridge snapshot`: coalescing
-- `awaseuchi confirm`: provisional 候補がある時だけキュー投入
-- discard tint image:
-  - tint base を prewarm
-  - thinking-time band だけ後乗せ
+- `(seat, local_index)` ごとに表示シグネチャを持つ。
+- シグネチャが変わった牌だけ `live_async_discards_<seat>_<index>` tag で削除して再描画する。
+- 変わらない牌は描画しない。ただし click spec と lag marker reference spec は毎回復元する。
+- `_discard_tile_image()` は通常牌画像だけ返す。
+- tint と思考時間 band は Canvas overlay で描画する。
+- discard item は作成時に `tags=` を渡す。
 
-## 現在のメモ
+### slow log
 
-- actual visible は軽い
-- visible と awaseuchi は分離済み
-- `no-temp remain` と tedashi history は差分更新
-- red tint は seat-level latch 後かなり軽いが、cold path はまだ上位
+`UI discards slow` は次を出す。
 
-## 計測テンプレート
+- `cache_before`
+- `items_after`
+- `active`
+- `drawn`
+- `skipped`
+- `changed`
+- `stale_deleted`
+- phase breakdown
 
-```
-date:
-command:
-result:
-ranking:
-notes:
-```
+## `side_panels`
 
-## 履歴
+重くなりやすい処理:
 
-### 2026-04-15
+- `SUMMARY` の line ranking
+- safe hand ranking
+- 危険ランク描画
+- Nodocchi `STATUS`
+- player memo / detail image
 
-- `bridge snapshot` は `1 in-flight + pending 1` に変更
-- `live suji` は常駐 worker 化
-- `live red tint` も常駐 worker 化
-- `inferred visible` は常駐 worker のまま維持
-- `BG ... xN` は active thread count 表示へ変更
-- freeze investigation: turning `table situation` fully OFF did not help, but turning `awaseuchi` OFF stopped the symptom.
-- current prime suspect: `awaseuchi provisional/confirm`
-  - public-event state update runs on redraw-side
-  - result-queue drain runs from both `watch_refresh_token()` and bridge tick
-  - cache exists, but live refresh churn can still hit the main thread
-- temporary mitigation: keep `AWASEUCHI_MARKERS_ENABLED = False` while isolating the regression.
-- follow-up freeze isolation: `inferred visible` runtime was also fully disabled.
-  - no worker startup
-  - no queue drain in redraw/watch paths
-  - no inferred-visible draw or tile-panel UI
-  - helper tests still run by enabling the dummy canvas explicitly
-- next freeze mitigation: async `live suji` / `live red tint` bundle completion no longer changes the UI refresh token.
-  - background bundles still compute
-  - completed bundles are picked up on the next capture-driven redraw
-  - this removes one redraw loop source while keeping the data path intact
-- current bridge-side mitigation: periodic `ui_snapshot` polling is disabled.
-  - `SYNC` still works
-  - discard/control success still triggers forced follow-up snapshots
-  - this removes the last always-on bridge background thread during idle
+現行対策:
+
+- side panel signature cache を持ち、変化がない場合は描画を再利用する。
+- Nodocchi は background thread + canvas queue へ逃がす。
+- font measure は canvas-local cache を使う。
+- slow log で phase breakdown を出す。
+
+## background thread
+
+常時多重起動を避ける対象:
+
+- live suji bundle
+- live red tint
+- inferred visible
+- awaseuchi confirm
+- pystyle fetch
+- Nodocchi status fetch
+- NAGA query / NAGA auto query
+- alert audio
+
+方針:
+
+- 同一 key の in-flight を持つ。
+- `1 in-flight + pending 1` で十分なものは coalescing する。
+- UI refresh token を background 完了だけで増やし続けない。
+
+## 調査手順
+
+1. stdout / 診断ログで `UI redraw slow`, `UI side_panels slow`, `UI discards slow` を見る。
+2. `phases=[...]` の上位を見る。
+3. `discards` では `drawn` が多いか、`skipped` が効いているかを見る。
+4. `side_panels` では signature cache が hit しているかを見る。
+5. `BG ... xN` が増え続ける場合は worker in-flight 管理を疑う。
+
+## 関連
+
+- [../screen_specs/river_display.md](../screen_specs/river_display.md)
+- [../screen_specs/alerts_and_panels.md](../screen_specs/alerts_and_panels.md)
+- [../specs/current.md](../specs/current.md)
