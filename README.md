@@ -3,21 +3,21 @@
 麻雀の「読み」「条件分岐設計」「思考経路」を、local-firstで整理するための知識マップGUIです。
 完全自動推論器ではなく、知識構造化、局面への投影、確率伝播の限定プレビュー、pruning impact分析、将来のpruning-ui / 確率木編集UIへのJSON連携点を作るMVPです。
 
-## Quick Start
+## 実行方法
 
-```bash
-npm install
-npm run dev
-```
-
-Viteが表示するURLをブラウザで開いてください。通常は `http://localhost:5173/` です。
-
-## 実行方法 (Windows PowerShell)
+普段の起動はWindows PowerShellで次だけ実行します。
 
 ```powershell
 cd "C:\Users\weath\Documents\プルーニングUI"
+npm start
+```
+
+`npm install` は毎回不要です。初回、または依存関係が変わったときだけ実行します。
+依存パッケージが見つからない場合は、`npm start` が標準出力に案内を出して停止します。
+
+```powershell
 npm install
-npm run dev
+npm start
 ```
 
 起動後、Viteが表示するURLをブラウザで開きます。通常は次のどちらかです。
@@ -27,18 +27,20 @@ http://localhost:5173/
 http://127.0.0.1:5173/
 ```
 
-動作確認用コマンド:
+本番ビルドの確認は次を実行します。
 
 ```powershell
 npm run build
-npm run test
-npm run lint
+npm run preview
 ```
 
-PlaywrightのE2E確認:
+テストや静的チェックは次を使います。
 
 ```powershell
+npm run test
 npm run test:e2e
+npm run lint
+npm run format
 ```
 
 Playwrightのブラウザが未インストールの場合は、先に次を実行します。
@@ -47,14 +49,17 @@ Playwrightのブラウザが未インストールの場合は、先に次を実�
 npx playwright install chromium
 ```
 
-## Commands
+## コマンド一覧
 
 ```bash
-npm run dev        # 開発サーバ
-npm run build      # TypeScript + production build
+npm start          # 開発サーバを起動
+npm run dev        # 開発サーバを起動
+npm run build      # TypeScriptチェック + production build
+npm run preview    # build結果をローカルで確認
 npm run lint       # ESLint
-npm run test       # Vitest
-npm run test:e2e   # Playwright
+npm run test       # Vitestを1回実行
+npm run test:watch # Vitestのwatchモード
+npm run test:e2e   # Playwright E2E
 npm run format     # Prettier check
 ```
 
@@ -105,8 +110,9 @@ tests/
 - 複数選択、グループ化、グループ折りたたみ
 - 検索、タグフィルタ、ノード型フィルタ、保存ビュー
 - 右Inspectorでノード属性、edge label/type、pruning hints、関連ruleを編集
-- Undo / Redo
-- IndexedDB autosave
+- Ctrl+Z / Ctrl+Y とボタンでの元に戻す / やり直し
+- Ctrl+Sまたは保存ボタンでの手動保存
+- IndexedDBへの自動保存（デフォルト5分ごと、設定で変更可能）
 
 ### Case Workspace
 
@@ -258,7 +264,7 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 - 確率inference subgraphの正規化、lock、preview、scenario compareができる
 - metricごとのdirectional influence、曖昧性、枝ベクトル、観測計画を確認できる
 - concentration、pruning impact、node lock、reading utility、多段reading chain、educational explanationをReasoning Labで確認できる
-- ブラウザローカルのIndexedDBにautosaveできる
+- ブラウザローカルのIndexedDBに手動保存でき、デフォルト5分ごとの自動保存も設定できる
 
 ## まだ出来ないこと
 

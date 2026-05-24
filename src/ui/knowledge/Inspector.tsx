@@ -1,6 +1,12 @@
+import { useEffect, useRef, useState } from "react";
 import { Box, ChevronDown, ChevronRight, Link2, Trash2 } from "lucide-react";
 import { useAppStore } from "../../app/store";
-import { edgeTypeLabels, nodeTypeLabels } from "../../domain/labels";
+import {
+  edgeTypeLabels,
+  nodeTypeLabels,
+  pruningHintLabels,
+  sourceTypeLabels,
+} from "../../domain/labels";
 import {
   edgeTypes,
   nodeTypes,
@@ -15,6 +21,53 @@ import { Button } from "../components/button";
 import { Field, Input, Select, Textarea } from "../components/form";
 
 type Threshold = KnowledgeNode["thresholds"][number];
+
+type RangeFieldProps = {
+  label: string;
+  value: number;
+  onCommit: (value: number) => void;
+};
+
+function RangeField({ label, value, onCommit }: RangeFieldProps) {
+  const [draft, setDraft] = useState<number | null>(null);
+  const committedValue = useRef(value);
+  const visibleValue = draft ?? value;
+
+  useEffect(() => {
+    committedValue.current = value;
+  }, [value]);
+
+  const commit = () => {
+    if (draft === null) return;
+    setDraft(null);
+    const next = Number(draft.toFixed(4));
+    if (next === committedValue.current) return;
+    committedValue.current = next;
+    onCommit(next);
+  };
+
+  return (
+    <Field label={`${label} ${Math.round(visibleValue * 100)}%`}>
+      <input
+        aria-label={label}
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        value={visibleValue}
+        onPointerDown={() => setDraft((current) => current ?? value)}
+        onKeyDown={() => setDraft((current) => current ?? value)}
+        onChange={(event) => {
+          setDraft(Number(event.target.value));
+        }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
+    </Field>
+  );
+}
 
 function toCsv(values: string[]) {
   return values.join(", ");
@@ -109,7 +162,7 @@ export function Inspector() {
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
         <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
           <h2 className="truncate text-sm font-semibold text-stone-950">
-            Inspector
+            インスペクター
           </h2>
           {node.is_group ? (
             <Button size="sm" onClick={() => toggleGroupCollapsed(node.id)}>
@@ -127,12 +180,12 @@ export function Inspector() {
           <div className="flex items-center gap-2">
             <Box className="h-4 w-4 text-stone-500" aria-hidden="true" />
             <Badge tone={node.is_group ? "amber" : "cyan"}>
-              {node.is_group ? "section" : nodeTypeLabels[node.type]}
+              {node.is_group ? "セクション" : nodeTypeLabels[node.type]}
             </Badge>
             <span className="truncate text-xs text-stone-500">{node.id}</span>
           </div>
 
-          <Field label="Title">
+          <Field label="タイトル">
             <Input
               value={node.title}
               onChange={(event) =>
@@ -142,7 +195,7 @@ export function Inspector() {
           </Field>
 
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Type">
+            <Field label="種類">
               <Select
                 value={node.type}
                 onChange={(event) =>
@@ -158,7 +211,7 @@ export function Inspector() {
                 ))}
               </Select>
             </Field>
-            <Field label="Source">
+            <Field label="出典">
               <Select
                 value={node.source_type}
                 onChange={(event) =>
@@ -170,14 +223,14 @@ export function Inspector() {
               >
                 {sourceTypes.map((type) => (
                   <option key={type} value={type}>
-                    {type}
+                    {sourceTypeLabels[type]}
                   </option>
                 ))}
               </Select>
             </Field>
           </div>
 
-          <Field label="Summary">
+          <Field label="要約">
             <Textarea
               className="min-h-16"
               value={node.summary}
@@ -186,7 +239,7 @@ export function Inspector() {
               }
             />
           </Field>
-          <Field label="Description">
+          <Field label="説明">
             <Textarea
               value={node.description}
               onChange={(event) =>
@@ -196,38 +249,22 @@ export function Inspector() {
           </Field>
 
           <div className="grid grid-cols-2 gap-2">
-            <Field label={`Confidence ${Math.round(node.confidence * 100)}%`}>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={node.confidence}
-                onChange={(event) =>
-                  updateNode(node.id, {
-                    confidence: Number(event.target.value),
-                  })
-                }
-              />
-            </Field>
-            <Field label={`Repro ${Math.round(node.reproducibility * 100)}%`}>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={node.reproducibility}
-                onChange={(event) =>
-                  updateNode(node.id, {
-                    reproducibility: Number(event.target.value),
-                  })
-                }
-              />
-            </Field>
+            <RangeField
+              label="確信度"
+              value={node.confidence}
+              onCommit={(confidence) => updateNode(node.id, { confidence })}
+            />
+            <RangeField
+              label="再現性"
+              value={node.reproducibility}
+              onCommit={(reproducibility) =>
+                updateNode(node.id, { reproducibility })
+              }
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Stage">
+            <Field label="段階">
               <Input
                 value={node.stage}
                 onChange={(event) =>
@@ -235,7 +272,7 @@ export function Inspector() {
                 }
               />
             </Field>
-            <Field label="Actor">
+            <Field label="主体">
               <Input
                 value={node.actor}
                 onChange={(event) =>
@@ -245,7 +282,7 @@ export function Inspector() {
             </Field>
           </div>
 
-          <Field label="Tags" hint="comma separated">
+          <Field label="タグ" hint="カンマ区切り">
             <Input
               value={toCsv(node.tags)}
               onChange={(event) =>
@@ -253,7 +290,7 @@ export function Inspector() {
               }
             />
           </Field>
-          <Field label="Applicability" hint="comma separated">
+          <Field label="適用条件" hint="カンマ区切り">
             <Input
               value={toCsv(node.applicability)}
               onChange={(event) =>
@@ -264,7 +301,7 @@ export function Inspector() {
             />
           </Field>
 
-          <Field label="Formulas" hint="one formula per line">
+          <Field label="式" hint="1行に1つ">
             <Textarea
               value={toLines(node.formulas)}
               onChange={(event) =>
@@ -272,7 +309,7 @@ export function Inspector() {
               }
             />
           </Field>
-          <Field label="Thresholds" hint="name=value | note">
+          <Field label="閾値" hint="名前=値 | メモ">
             <Textarea
               value={thresholdsToText(node.thresholds)}
               onChange={(event) =>
@@ -283,7 +320,7 @@ export function Inspector() {
             />
           </Field>
 
-          <Field label="Notes">
+          <Field label="メモ">
             <Textarea
               value={node.notes}
               onChange={(event) =>
@@ -294,7 +331,7 @@ export function Inspector() {
 
           <section className="grid gap-2 rounded-lg border border-stone-200 p-2">
             <h3 className="text-sm font-semibold text-stone-900">
-              Pruning hints
+              枝刈りヒント
             </h3>
             <div className="grid gap-1">
               {pruningHints.map((hint) => (
@@ -307,16 +344,14 @@ export function Inspector() {
                     checked={node.pruning_hints.includes(hint)}
                     onChange={() => toggleHint(hint)}
                   />
-                  <span>{hint}</span>
+                  <span>{pruningHintLabels[hint]}</span>
                 </label>
               ))}
             </div>
           </section>
 
           <section className="grid gap-2 rounded-lg border border-stone-200 p-2">
-            <h3 className="text-sm font-semibold text-stone-900">
-              Related rules
-            </h3>
+            <h3 className="text-sm font-semibold text-stone-900">関連ルール</h3>
             <div className="grid gap-1">
               {doc.rules.map((rule) => (
                 <label
@@ -344,7 +379,7 @@ export function Inspector() {
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
         <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
           <h2 className="truncate text-sm font-semibold text-stone-950">
-            Edge Inspector
+            エッジインスペクター
           </h2>
           <Button
             size="sm"
@@ -360,7 +395,7 @@ export function Inspector() {
             <Link2 className="h-4 w-4 text-stone-500" aria-hidden="true" />
             <span className="truncate text-xs text-stone-500">{edge.id}</span>
           </div>
-          <Field label="Relation">
+          <Field label="関係">
             <Select
               value={edge.type}
               onChange={(event) =>
@@ -376,7 +411,7 @@ export function Inspector() {
               ))}
             </Select>
           </Field>
-          <Field label="Label">
+          <Field label="ラベル">
             <Input
               value={edge.label}
               onChange={(event) =>
@@ -384,7 +419,7 @@ export function Inspector() {
               }
             />
           </Field>
-          <Field label="Notes">
+          <Field label="メモ">
             <Textarea
               value={edge.notes}
               onChange={(event) =>
@@ -400,30 +435,30 @@ export function Inspector() {
   return (
     <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
       <div className="border-b border-stone-200 px-3 py-2">
-        <h2 className="text-sm font-semibold text-stone-950">Inspector</h2>
+        <h2 className="text-sm font-semibold text-stone-950">インスペクター</h2>
       </div>
       <div className="grid gap-3 p-3 text-sm text-stone-600">
         <div className="grid grid-cols-2 gap-2">
           <div className="rounded-lg border border-stone-200 p-2">
-            <div className="text-xs text-stone-500">Nodes</div>
+            <div className="text-xs text-stone-500">ノード</div>
             <div className="text-lg font-semibold text-stone-950">
               {doc.nodes.length}
             </div>
           </div>
           <div className="rounded-lg border border-stone-200 p-2">
-            <div className="text-xs text-stone-500">Edges</div>
+            <div className="text-xs text-stone-500">エッジ</div>
             <div className="text-lg font-semibold text-stone-950">
               {doc.edges.length}
             </div>
           </div>
           <div className="rounded-lg border border-stone-200 p-2">
-            <div className="text-xs text-stone-500">Rules</div>
+            <div className="text-xs text-stone-500">ルール</div>
             <div className="text-lg font-semibold text-stone-950">
               {doc.rules.length}
             </div>
           </div>
           <div className="rounded-lg border border-stone-200 p-2">
-            <div className="text-xs text-stone-500">Cases</div>
+            <div className="text-xs text-stone-500">ケース</div>
             <div className="text-lg font-semibold text-stone-950">
               {doc.cases.length}
             </div>
@@ -431,8 +466,8 @@ export function Inspector() {
         </div>
         {selectedNodeIds.length + selectedEdgeIds.length > 1 ? (
           <div className="rounded-lg border border-stone-200 p-2">
-            {selectedNodeIds.length} nodes / {selectedEdgeIds.length} edges
-            selected
+            {selectedNodeIds.length}件のノード / {selectedEdgeIds.length}
+            件のエッジを選択中
           </div>
         ) : null}
       </div>

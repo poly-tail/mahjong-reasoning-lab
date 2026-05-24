@@ -9,6 +9,7 @@ import {
   type RuleDefinition,
   type WorkspaceDocument,
 } from "./schema";
+import { edgeTypeLabels } from "./labels";
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -35,7 +36,7 @@ export function createKnowledgeNode(
     tags: overrides.tags ?? [],
     confidence: overrides.confidence ?? 0.55,
     applicability: overrides.applicability ?? [],
-    stage: overrides.stage ?? "unspecified",
+    stage: overrides.stage ?? "未指定",
     actor: overrides.actor ?? "全員",
     source_type: overrides.source_type ?? "idea",
     reproducibility: overrides.reproducibility ?? 0.45,
@@ -85,7 +86,7 @@ export function createKnowledgeEdge(
     source: overrides.source,
     target: overrides.target,
     type: overrides.type,
-    label: overrides.label ?? overrides.type,
+    label: overrides.label ?? edgeTypeLabels[overrides.type],
     notes: overrides.notes ?? "",
     relation_layer: overrides.relation_layer ?? "semantic",
     conditional_weight: overrides.conditional_weight,
@@ -141,8 +142,8 @@ export function createCase(
       west: 25000,
       north: 25000,
     },
-    dealer: overrides.dealer ?? "east",
-    seat: overrides.seat ?? "south",
+    dealer: overrides.dealer ?? "東家",
+    seat: overrides.seat ?? "南家",
     riichi_status: overrides.riichi_status ?? "なし",
     melds_summary: overrides.melds_summary ?? "",
     discard_notes: overrides.discard_notes ?? "",

@@ -33,6 +33,13 @@ function numeric(value: string, fallback: number) {
   return Number.isFinite(next) ? next : fallback;
 }
 
+const scoreSeatLabels = {
+  east: "東",
+  south: "南",
+  west: "西",
+  north: "北",
+} as const;
+
 export function CaseWorkspace() {
   const doc = useAppStore((state) => state.doc);
   const addCase = useAppStore((state) => state.addCase);
@@ -109,7 +116,7 @@ export function CaseWorkspace() {
       <div className="p-4">
         <Button onClick={addCase}>
           <Plus className="h-4 w-4" aria-hidden="true" />
-          Caseを作成
+          ケースを作成
         </Button>
       </div>
     );
@@ -129,16 +136,14 @@ export function CaseWorkspace() {
     <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(0,1fr)_320px] gap-3 p-3">
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
         <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
-          <h2 className="text-sm font-semibold text-stone-950">
-            Case Workspace
-          </h2>
+          <h2 className="text-sm font-semibold text-stone-950">局面作業場</h2>
           <Button onClick={addCase} size="sm">
             <Plus className="h-4 w-4" aria-hidden="true" />
-            New
+            新規
           </Button>
         </div>
         <div className="grid gap-3 p-3">
-          <Field label="Case">
+          <Field label="ケース">
             <Select
               value={activeCase.id}
               onChange={(event) => setActiveCase(event.target.value)}
@@ -150,7 +155,7 @@ export function CaseWorkspace() {
               ))}
             </Select>
           </Field>
-          <Field label="Title">
+          <Field label="タイトル">
             <Input
               value={activeCase.title}
               onChange={(event) => patchCase({ title: event.target.value })}
@@ -220,7 +225,7 @@ export function CaseWorkspace() {
           </div>
           <div className="grid grid-cols-4 gap-2">
             {(["east", "south", "west", "north"] as const).map((seat) => (
-              <Field key={seat} label={seat}>
+              <Field key={seat} label={scoreSeatLabels[seat]}>
                 <Input
                   type="number"
                   value={activeCase.scores[seat]}
@@ -263,7 +268,7 @@ export function CaseWorkspace() {
               }
             />
           </Field>
-          <Field label="目立つ観測事象" hint="one item per line">
+          <Field label="目立つ観測事象" hint="1行に1項目">
             <Textarea
               value={toLines(activeCase.observations)}
               onChange={(event) =>
@@ -271,7 +276,7 @@ export function CaseWorkspace() {
               }
             />
           </Field>
-          <Field label="仮説メモ" hint="one item per line">
+          <Field label="仮説メモ" hint="1行に1項目">
             <Textarea
               value={toLines(activeCase.hypotheses)}
               onChange={(event) =>
@@ -293,7 +298,7 @@ export function CaseWorkspace() {
               <h2 className="text-sm font-semibold text-stone-950">思考経路</h2>
             </div>
             <div className="flex items-center gap-2 text-sm text-stone-600">
-              <span>Top-k</span>
+              <span>上位候補数</span>
               <Input
                 className="w-16"
                 type="number"
@@ -358,7 +363,7 @@ export function CaseWorkspace() {
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
         <div className="sticky top-0 z-10 border-b border-stone-200 bg-white px-3 py-2">
           <h2 className="mb-2 text-sm font-semibold text-stone-950">
-            Attach knowledge
+            知識を関連付け
           </h2>
           <div className="relative">
             <Search className="pointer-events-none absolute left-2 top-2 h-4 w-4 text-stone-400" />
@@ -366,7 +371,7 @@ export function CaseWorkspace() {
               className="w-full pl-8"
               value={nodeSearch}
               onChange={(event) => setNodeSearch(event.target.value)}
-              placeholder="node / tag"
+              placeholder="ノード / タグ"
             />
           </div>
         </div>
@@ -389,7 +394,7 @@ export function CaseWorkspace() {
                 <Button
                   size="icon"
                   onClick={() => attachNodeToCase(activeCase.id, node.id)}
-                  title="attach"
+                  title="関連付け"
                 >
                   <Link className="h-4 w-4" aria-hidden="true" />
                 </Button>
@@ -403,7 +408,7 @@ export function CaseWorkspace() {
 
         <div className="border-t border-stone-200 p-3">
           <h3 className="mb-2 text-sm font-semibold text-stone-950">
-            Selected rules
+            選択ルール
           </h3>
           <div className="grid gap-2">
             {doc.rules.map((rule) => (
@@ -481,7 +486,7 @@ function CaseLaneColumn({
                     <Badge tone="cyan">{nodeTypeLabels[node.type]}</Badge>
                     {hasContradiction ? <Badge tone="rose">相反</Badge> : null}
                     {node.pruning_hints.includes("must_keep_top_k") ? (
-                      <Badge tone="amber">Top-k</Badge>
+                      <Badge tone="amber">上位候補</Badge>
                     ) : null}
                   </div>
                 </div>
@@ -489,7 +494,7 @@ function CaseLaneColumn({
                   size="icon"
                   variant="ghost"
                   onClick={() => onDetach(node.id)}
-                  title="detach"
+                  title="関連付けを解除"
                 >
                   <Unlink className="h-4 w-4" aria-hidden="true" />
                 </Button>

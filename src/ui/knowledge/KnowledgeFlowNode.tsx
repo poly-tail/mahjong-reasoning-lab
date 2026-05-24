@@ -1,6 +1,10 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { Layers, LockKeyhole, Split, Star } from "lucide-react";
-import { nodeTypeLabels } from "../../domain/labels";
+import {
+  labelTag,
+  nodeTypeLabels,
+  probabilityRoleLabels,
+} from "../../domain/labels";
 import type { KnowledgeNode } from "../../domain/schema";
 import { cn } from "../../shared/cn";
 import { Badge } from "../components/badge";
@@ -73,7 +77,7 @@ export function KnowledgeFlowNode({
                   : "cyan"
             }
           >
-            {data.is_group ? "section" : nodeTypeLabels[data.type]}
+            {data.is_group ? "セクション" : nodeTypeLabels[data.type]}
           </Badge>
         </div>
         <span className="shrink-0 text-xs tabular-nums text-stone-500">
@@ -92,12 +96,12 @@ export function KnowledgeFlowNode({
       <div className="mt-2 flex flex-wrap gap-1">
         {data.probability_role !== "none" ? (
           <Badge tone="emerald" className="max-w-28 truncate">
-            {data.probability_role}
+            {probabilityRoleLabels[data.probability_role]}
           </Badge>
         ) : null}
         {data.tags.slice(0, 3).map((tag) => (
           <Badge key={tag} className="max-w-28 truncate">
-            {tag}
+            {labelTag(tag)}
           </Badge>
         ))}
       </div>

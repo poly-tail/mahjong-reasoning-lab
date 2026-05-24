@@ -49,6 +49,10 @@ function formatProbability(value: number | undefined) {
   return value === undefined ? "-" : `${Math.round(value * 1000) / 10}%`;
 }
 
+function labelDistribution(family: DistributionFamily | undefined) {
+  return family ? distributionFamilyLabels[family] : "カテゴリ分布";
+}
+
 function toLines(values: string[]) {
   return values.join("\n");
 }
@@ -102,9 +106,7 @@ export function ProbabilityWorkbench() {
         <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
           <div className="flex items-center gap-2">
             <Network className="h-4 w-4 text-stone-500" aria-hidden="true" />
-            <h2 className="text-sm font-semibold text-stone-950">
-              Choice Groups
-            </h2>
+            <h2 className="text-sm font-semibold text-stone-950">選択候補群</h2>
           </div>
           <Button
             size="sm"
@@ -113,14 +115,14 @@ export function ProbabilityWorkbench() {
             title="選択ノードから排他的候補群を作る"
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
-            Group
+            グループ化
           </Button>
         </div>
 
         <div className="grid gap-2 p-2">
           <div className="rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs leading-5 text-stone-600">
-            確率伝播はprobability_roleを持つノードとprobabilistic
-            edgeに限定します。 semantic nodeは原則として確率を持ちません。
+            確率伝播は確率ロールを持つノードと確率レイヤーのエッジに限定します。
+            意味ノードは原則として確率を持ちません。
           </div>
           {choiceGroups.map((group) => (
             <section
@@ -133,11 +135,11 @@ export function ProbabilityWorkbench() {
                     {group.id}
                   </h3>
                   <p className="text-xs text-stone-500">
-                    total {Math.round(group.normalized_total * 1000) / 1000}
+                    合計 {Math.round(group.normalized_total * 1000) / 1000}
                   </p>
                 </div>
                 <Badge tone="cyan">
-                  {group.distribution_family ?? "categorical"}
+                  {labelDistribution(group.distribution_family)}
                 </Badge>
               </div>
               <div className="grid gap-1.5">
@@ -176,7 +178,7 @@ export function ProbabilityWorkbench() {
           {subgraph.nodes.filter((node) => !node.choice_group_id).length > 0 ? (
             <section className="rounded-lg border border-stone-200 p-2">
               <h3 className="mb-2 text-sm font-semibold text-stone-950">
-                Standalone
+                単独ノード
               </h3>
               <div className="grid gap-1.5">
                 {subgraph.nodes
@@ -239,7 +241,7 @@ export function ProbabilityWorkbench() {
           />
         ) : (
           <div className="p-3 text-sm text-stone-600">
-            Knowledge Mapまたは左のChoice Groupからノードを1つ選択してください。
+            知識マップまたは左の選択候補群からノードを1つ選択してください。
           </div>
         )}
       </aside>
@@ -258,7 +260,7 @@ function ProbabilityInspector({
     <>
       <div className="sticky top-0 z-10 border-b border-stone-200 bg-white px-3 py-2">
         <h2 className="truncate text-sm font-semibold text-stone-950">
-          Probability Inspector
+          確率インスペクター
         </h2>
         <p className="truncate text-xs text-stone-500">{node.title}</p>
       </div>
@@ -272,7 +274,7 @@ function ProbabilityInspector({
             <Badge tone="amber">{lockModeLabels[node.lock_mode]}</Badge>
           ) : null}
         </div>
-        <Field label="probability_role">
+        <Field label="確率ロール">
           <Select
             value={node.probability_role}
             onChange={(event) =>
@@ -289,7 +291,7 @@ function ProbabilityInspector({
             ))}
           </Select>
         </Field>
-        <Field label="choice_group_id">
+        <Field label="選択候補群識別子">
           <Input
             value={node.choice_group_id ?? ""}
             onChange={(event) =>
@@ -301,43 +303,43 @@ function ProbabilityInspector({
         </Field>
         <div className="grid grid-cols-2 gap-2">
           <NumberField
-            label="prior"
+            label="事前確率"
             value={node.prior_probability}
             onChange={(value) =>
               updateNode(node.id, { prior_probability: value })
             }
           />
           <NumberField
-            label="posterior"
+            label="事後確率"
             value={node.posterior_probability}
             onChange={(value) =>
               updateNode(node.id, { posterior_probability: value })
             }
           />
           <NumberField
-            label="base_weight"
+            label="基本重み"
             value={node.base_weight}
             onChange={(value) => updateNode(node.id, { base_weight: value })}
           />
           <NumberField
-            label="dynamic_weight"
+            label="動的重み"
             value={node.dynamic_weight}
             onChange={(value) => updateNode(node.id, { dynamic_weight: value })}
           />
           <NumberField
-            label="confidence"
+            label="確信度"
             value={node.confidence}
             onChange={(value) =>
               updateNode(node.id, { confidence: value ?? node.confidence })
             }
           />
           <NumberField
-            label="lock_value"
+            label="ロック値"
             value={node.lock_value}
             onChange={(value) => updateNode(node.id, { lock_value: value })}
           />
         </div>
-        <Field label="lock_mode">
+        <Field label="ロック方式">
           <Select
             value={node.lock_mode}
             onChange={(event) =>
@@ -353,7 +355,7 @@ function ProbabilityInspector({
             ))}
           </Select>
         </Field>
-        <Field label="distribution_family">
+        <Field label="分布種別">
           <Select
             value={node.distribution_family ?? ""}
             onChange={(event) =>
@@ -364,7 +366,7 @@ function ProbabilityInspector({
               })
             }
           >
-            <option value="">none</option>
+            <option value="">なし</option>
             {distributionFamilies.map((family) => (
               <option key={family} value={family}>
                 {distributionFamilyLabels[family]}
@@ -372,7 +374,7 @@ function ProbabilityInspector({
             ))}
           </Select>
         </Field>
-        <Field label="propagation_policy">
+        <Field label="伝播方針">
           <Select
             value={node.propagation_policy}
             onChange={(event) =>
@@ -391,14 +393,14 @@ function ProbabilityInspector({
         </Field>
         <div className="grid grid-cols-2 gap-2">
           <NumberField
-            label="hysteresis"
+            label="ヒステリシス"
             value={node.hysteresis_band}
             onChange={(value) =>
               updateNode(node.id, { hysteresis_band: value })
             }
           />
           <NumberField
-            label="pruning priority"
+            label="枝刈り優先度"
             value={node.pruning_priority}
             onChange={(value) =>
               updateNode(node.id, { pruning_priority: value })
@@ -421,14 +423,14 @@ function ProbabilityEdgeInspector({
     <>
       <div className="sticky top-0 z-10 border-b border-stone-200 bg-white px-3 py-2">
         <h2 className="truncate text-sm font-semibold text-stone-950">
-          Probability Edge
+          確率エッジ
         </h2>
         <p className="truncate text-xs text-stone-500">
           {edgeTypeLabels[edge.type]}
         </p>
       </div>
       <div className="grid gap-3 p-3">
-        <Field label="relation_layer">
+        <Field label="関係レイヤー">
           <Select
             value={edge.relation_layer}
             onChange={(event) =>
@@ -446,7 +448,7 @@ function ProbabilityEdgeInspector({
           </Select>
         </Field>
         <NumberField
-          label="conditional_weight"
+          label="条件付き重み"
           value={edge.conditional_weight}
           onChange={(value) =>
             updateEdge(edge.id, { conditional_weight: value })
@@ -462,9 +464,9 @@ function ProbabilityEdgeInspector({
               })
             }
           />
-          propagate_probability
+          確率を伝播する
         </label>
-        <Field label="transition_rule">
+        <Field label="遷移ルール">
           <Textarea
             value={edge.transition_rule ?? ""}
             onChange={(event) =>
@@ -474,7 +476,7 @@ function ProbabilityEdgeInspector({
             }
           />
         </Field>
-        <Field label="edge_group_id">
+        <Field label="エッジ群識別子">
           <Input
             value={edge.edge_group_id ?? ""}
             onChange={(event) =>
@@ -525,16 +527,16 @@ function PropagationPreviewPanel({
 }) {
   return (
     <Panel
-      title="Propagation Preview"
+      title="伝播プレビュー"
       action={
         <div className="flex items-center gap-1">
           <Button onClick={onRun}>
             <Play className="h-4 w-4" aria-hidden="true" />
-            Preview
+            プレビュー
           </Button>
           <Button onClick={onApply} disabled={!preview}>
             <Save className="h-4 w-4" aria-hidden="true" />
-            Apply
+            反映
           </Button>
           <Button
             variant="ghost"
@@ -549,22 +551,22 @@ function PropagationPreviewPanel({
     >
       <div className="grid max-h-72 grid-cols-[220px_minmax(0,1fr)] gap-3 overflow-auto p-3">
         <div className="rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs leading-5 text-stone-600">
-          <div className="font-semibold text-stone-900">Algorithm order</div>
+          <div className="font-semibold text-stone-900">処理順</div>
           {(
             preview?.steps ?? [
-              "1 observation update",
-              "2 gate prune",
-              "3 weight modifier apply",
-              "4 lock apply",
-              "5 sibling normalization",
-              "6 downstream propagation",
-              "7 hysteresis / keep-top-k adjust",
+              "1 観測更新",
+              "2 ゲート枝刈り",
+              "3 重み補正を反映",
+              "4 ロックを反映",
+              "5 同階層を正規化",
+              "6 下流へ伝播",
+              "7 ヒステリシス / 上位候補を調整",
             ]
           ).map((step) => (
             <div key={step}>{step}</div>
           ))}
           {selectedNodeId ? (
-            <div className="mt-2">changed: {selectedNodeId}</div>
+            <div className="mt-2">変更対象: {selectedNodeId}</div>
           ) : null}
         </div>
         <div className="grid gap-2">
@@ -588,7 +590,7 @@ function PropagationPreviewPanel({
                   </span>
                   <Badge tone={diff.delta >= 0 ? "emerald" : "rose"}>
                     {diff.delta >= 0 ? "+" : ""}
-                    {Math.round(diff.delta * 1000) / 10}pt
+                    {Math.round(diff.delta * 1000) / 10}点
                   </Badge>
                 </div>
                 <div className="mt-1 text-xs text-stone-600">
@@ -599,7 +601,7 @@ function PropagationPreviewPanel({
             ))
           ) : (
             <div className="rounded-lg border border-stone-200 p-3 text-sm text-stone-600">
-              Previewを実行すると更新前後のdiffと影響ノードが表示されます。
+              プレビューを実行すると更新前後の差分と影響ノードが表示されます。
             </div>
           )}
         </div>
@@ -619,7 +621,7 @@ function DistributionPanel({
 }) {
   if (!selectedNode) {
     return (
-      <Panel title="Distribution-aware UI">
+      <Panel title="分布対応表示">
         <div className="p-3 text-sm text-stone-600">
           ノード選択後に分布表示を出します。
         </div>
@@ -636,8 +638,8 @@ function DistributionPanel({
 
   return (
     <Panel
-      title="Distribution-aware UI"
-      action={<Badge tone="cyan">{family}</Badge>}
+      title="分布対応表示"
+      action={<Badge tone="cyan">{distributionFamilyLabels[family]}</Badge>}
     >
       <div className="grid gap-3 p-3">
         {family === "categorical" ? (
@@ -657,7 +659,7 @@ function DistributionPanel({
         {family === "interval" ? (
           <div className="rounded-lg border border-stone-200 p-3">
             <div className="mb-2 text-sm font-semibold text-stone-900">
-              Range bar
+              範囲バー
             </div>
             <div className="relative h-4 rounded bg-stone-100">
               <div
@@ -678,7 +680,7 @@ function DistributionPanel({
         ) : null}
 
         {family === "bimodal" || family === "multimodal" ? (
-          <Field label="Peak list" hint="one peak per line">
+          <Field label="ピーク一覧" hint="1行に1ピーク">
             <Textarea
               value={toLines(selectedNode.formulas)}
               onChange={(event) =>
@@ -694,7 +696,7 @@ function DistributionPanel({
           <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-rose-800">
               <Sparkles className="h-4 w-4" aria-hidden="true" />
-              Tail emphasis
+              テール強調
             </div>
             <ProbabilityBar
               value={
@@ -705,7 +707,7 @@ function DistributionPanel({
               tone="rose"
             />
             <p className="mt-2 text-xs text-rose-700">
-              低確率でも損失が重い枝として、pruning priorityを別枠で保持します。
+              低確率でも損失が重い枝として、枝刈り優先度を別枠で保持します。
             </p>
           </div>
         ) : null}
@@ -713,14 +715,14 @@ function DistributionPanel({
         {family === "mixture" ? (
           <div className="grid grid-cols-2 gap-2">
             <NumberField
-              label="mixture base"
+              label="混合の基本重み"
               value={selectedNode.base_weight}
               onChange={(value) =>
                 updateNode(selectedNode.id, { base_weight: value })
               }
             />
             <NumberField
-              label="mixture dynamic"
+              label="混合の動的重み"
               value={selectedNode.dynamic_weight}
               onChange={(value) =>
                 updateNode(selectedNode.id, { dynamic_weight: value })
@@ -775,11 +777,12 @@ function ScenarioComparePanel({
 
   return (
     <Panel
-      title="Scenario Compare"
+      title="シナリオ比較"
       action={
         <div className="flex gap-1">
           <Button size="sm" onClick={() => setScenarioA(nodes)}>
-            <GitCompare className="h-4 w-4" aria-hidden="true" />A
+            <GitCompare className="h-4 w-4" aria-hidden="true" />
+            比較元
           </Button>
           <Button
             size="sm"
@@ -787,7 +790,8 @@ function ScenarioComparePanel({
               setScenarioB(preview?.updated_workspace.nodes ?? nodes)
             }
           >
-            <GitCompare className="h-4 w-4" aria-hidden="true" />B
+            <GitCompare className="h-4 w-4" aria-hidden="true" />
+            比較先
           </Button>
         </div>
       }
@@ -795,10 +799,10 @@ function ScenarioComparePanel({
       <div className="max-h-[430px] overflow-auto p-3">
         <div className="mb-2 grid grid-cols-2 gap-2 text-xs text-stone-600">
           <div className="rounded border border-stone-200 p-2">
-            A: {scenarioA ? "captured" : "empty"}
+            比較元: {scenarioA ? "記録済み" : "未記録"}
           </div>
           <div className="rounded border border-stone-200 p-2">
-            B: {scenarioB ? "captured" : "empty"}
+            比較先: {scenarioB ? "記録済み" : "未記録"}
           </div>
         </div>
         <div className="grid gap-2">
@@ -814,7 +818,7 @@ function ScenarioComparePanel({
                   </span>
                   <Badge tone={delta >= 0 ? "emerald" : "rose"}>
                     {delta >= 0 ? "+" : ""}
-                    {Math.round(delta * 1000) / 10}pt
+                    {Math.round(delta * 1000) / 10}点
                   </Badge>
                 </div>
                 <div className="mt-1 text-xs text-stone-600">
@@ -822,15 +826,21 @@ function ScenarioComparePanel({
                   {formatProbability(node.posterior_probability)}
                 </div>
                 <div className="mt-1 text-xs text-stone-500">
-                  lock {before.lock_mode} {"->"} {node.lock_mode}, dist{" "}
-                  {before.distribution_family ?? "-"} {"->"}{" "}
-                  {node.distribution_family ?? "-"}
+                  ロック {lockModeLabels[before.lock_mode]} {"->"}{" "}
+                  {lockModeLabels[node.lock_mode]}、分布{" "}
+                  {before.distribution_family
+                    ? distributionFamilyLabels[before.distribution_family]
+                    : "-"}{" "}
+                  {"->"}{" "}
+                  {node.distribution_family
+                    ? distributionFamilyLabels[node.distribution_family]
+                    : "-"}
                 </div>
               </div>
             ))
           ) : (
             <div className="rounded-lg border border-stone-200 p-3 text-sm text-stone-600">
-              A/Bをcaptureすると、ロック前後、重み変更前後、分布仮定A/Bを比較できます。
+              比較元と比較先を記録すると、ロック前後、重み変更前後、分布仮定の違いを比較できます。
             </div>
           )}
         </div>

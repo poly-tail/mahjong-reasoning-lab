@@ -1,7 +1,11 @@
 import { AlertTriangle, Eye, Gauge } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useAppStore } from "../../app/store";
-import { edgeTypeLabels, influenceSignLabels } from "../../domain/labels";
+import {
+  combinationModeLabels,
+  edgeTypeLabels,
+  influenceSignLabels,
+} from "../../domain/labels";
 import {
   getInfluenceModel,
   getMetricInfluences,
@@ -23,6 +27,19 @@ const signTone: Record<InfluenceSign, "emerald" | "rose" | "amber" | "stone"> =
     mixed: "amber",
     unknown: "stone",
   };
+
+const ambiguityStatusLabels: Record<AmbiguityItem["status"], string> = {
+  mixed: "混合",
+  unknown: "不明",
+  conflicting: "衝突",
+};
+
+const pruneActionLabels: Record<BranchVector["prune_action"], string> = {
+  prune: "枝刈り",
+  downweight: "弱める",
+  keep: "保持",
+  observe: "観測",
+};
 
 export function InfluenceWorkbench() {
   const doc = useAppStore((state) => state.doc);
@@ -89,7 +106,7 @@ function MetricLens({
       <div className="sticky top-0 z-10 border-b border-stone-200 bg-white px-3 py-2">
         <div className="mb-2 flex items-center gap-2">
           <Gauge className="h-4 w-4 text-stone-500" aria-hidden="true" />
-          <h2 className="text-sm font-semibold text-stone-950">Metric Lens</h2>
+          <h2 className="text-sm font-semibold text-stone-950">指標レンズ</h2>
         </div>
         <Select
           value={metricId}
@@ -104,8 +121,8 @@ function MetricLens({
       </div>
       <div className="grid gap-2 p-2">
         <div className="rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs leading-5 text-stone-600">
-          direction/signはnode属性ではなく、このmetricへ向かうinfluence
-          edge属性です。 同じsourceでもmetricやcontextで逆方向を持てます。
+          方向はノード属性ではなく、この指標へ向かう影響エッジの属性です。
+          同じ起点でも指標や文脈で逆方向を持てます。
         </div>
         {influences.map((item) => (
           <button
@@ -128,7 +145,7 @@ function MetricLens({
                 </div>
                 <div className="mt-1 text-xs text-stone-500">
                   {edgeTypeLabels[item.edge.type]} /{" "}
-                  {item.edge.combination_mode}
+                  {combinationModeLabels[item.edge.combination_mode]}
                 </div>
               </div>
               <Badge tone={signTone[item.edge.sign]}>
@@ -137,7 +154,7 @@ function MetricLens({
             </div>
             <InfluenceBar edge={item.edge} />
             <div className="mt-1 text-xs text-stone-600">
-              magnitude {item.edge.magnitude.toFixed(2)} / confidence{" "}
+              影響量 {item.edge.magnitude.toFixed(2)} / 確信度{" "}
               {Math.round(item.edge.confidence * 100)}%
             </div>
             <ContextLine edge={item.edge} />
@@ -157,7 +174,7 @@ function AmbiguityPanel({
 }) {
   return (
     <Panel
-      title="Ambiguity Panel"
+      title="曖昧性パネル"
       action={
         <div className="flex items-center gap-1 text-xs text-stone-500">
           <AlertTriangle className="h-4 w-4" aria-hidden="true" />
@@ -191,38 +208,38 @@ function AmbiguityPanel({
                           : "stone"
                     }
                   >
-                    {item.status}
+                    {ambiguityStatusLabels[item.status]}
                   </Badge>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1">
                   {item.prune_candidate ? (
-                    <Badge tone="emerald">prune候補</Badge>
+                    <Badge tone="emerald">枝刈り候補</Badge>
                   ) : null}
                   {item.downweight_candidate ? (
-                    <Badge tone="amber">downweight候補</Badge>
+                    <Badge tone="amber">弱め候補</Badge>
                   ) : null}
                   {item.observe_candidate_ids.length ? (
-                    <Badge tone="cyan">observe候補</Badge>
+                    <Badge tone="cyan">観測候補</Badge>
                   ) : null}
                   {!item.prune_candidate && item.status !== "unknown" ? (
-                    <Badge tone="rose">prune警告</Badge>
+                    <Badge tone="rose">枝刈り警告</Badge>
                   ) : null}
                 </div>
                 <div className="mt-2 flex items-center justify-between text-xs text-stone-600">
-                  <span>unresolved {item.unresolved_score.toFixed(2)}</span>
+                  <span>未解決度 {item.unresolved_score.toFixed(2)}</span>
                   <Button
                     size="sm"
                     variant="ghost"
                     onClick={() => setSelection([], item.influence_edge_ids)}
                   >
-                    edges
+                    エッジ
                   </Button>
                 </div>
               </article>
             ))
           ) : (
             <div className="rounded-lg border border-stone-200 p-3 text-sm text-stone-600">
-              mixed / unknown / conflicting influenceはありません。
+              混合 / 不明 / 衝突している影響はありません。
             </div>
           )}
         </div>
@@ -241,7 +258,7 @@ function BranchVectorSummary({
   setSelection: (nodeIds: string[], edgeIds: string[]) => void;
 }) {
   return (
-    <Panel title="Branch Vector Summary">
+    <Panel title="枝ベクトル要約">
       <div className="h-full overflow-auto p-3">
         <div className="grid gap-2">
           {vectors.map((vector) => (
@@ -258,7 +275,7 @@ function BranchVectorSummary({
                   {vector.title}
                 </button>
                 <Badge tone={signTone[vector.dominant_direction]}>
-                  {vector.dominant_direction}
+                  {influenceSignLabels[vector.dominant_direction]}
                 </Badge>
               </div>
               <div className="mt-2 grid grid-cols-4 gap-1">
@@ -292,10 +309,10 @@ function BranchVectorSummary({
                 <Badge
                   tone={vector.prune_action === "prune" ? "rose" : "stone"}
                 >
-                  {vector.prune_action}
+                  {pruneActionLabels[vector.prune_action]}
                 </Badge>
-                <Badge>uncertainty {vector.uncertainty.toFixed(2)}</Badge>
-                <Badge>conflict {vector.conflict_count}</Badge>
+                <Badge>不確実性 {vector.uncertainty.toFixed(2)}</Badge>
+                <Badge>衝突 {vector.conflict_count}</Badge>
                 <Badge>{Math.round(vector.prune_confidence * 100)}%</Badge>
               </div>
               <p className="mt-1 text-xs text-stone-600">
@@ -326,11 +343,9 @@ function ObservationPlanner({
       <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
         <div className="flex items-center gap-2">
           <Eye className="h-4 w-4 text-stone-500" aria-hidden="true" />
-          <h2 className="text-sm font-semibold text-stone-950">
-            Observation Planner
-          </h2>
+          <h2 className="text-sm font-semibold text-stone-950">観測計画</h2>
         </div>
-        <Badge tone="cyan">gain/cost</Badge>
+        <Badge tone="cyan">効果/コスト</Badge>
       </div>
       <div className="grid gap-2 p-2">
         {items.map((item) => (
@@ -358,13 +373,13 @@ function ObservationPlanner({
             </p>
             <div className="mt-2 grid grid-cols-3 gap-1 text-xs text-stone-600">
               <div className="rounded border border-stone-200 p-1">
-                sign {item.node.expected_sign_gain?.toFixed(2) ?? "-"}
+                方向 {item.node.expected_sign_gain?.toFixed(2) ?? "-"}
               </div>
               <div className="rounded border border-stone-200 p-1">
-                weight {item.node.expected_weight_gain?.toFixed(2) ?? "-"}
+                重み {item.node.expected_weight_gain?.toFixed(2) ?? "-"}
               </div>
               <div className="rounded border border-stone-200 p-1">
-                cost {item.node.observation_cost?.toFixed(2) ?? "-"}
+                コスト {item.node.observation_cost?.toFixed(2) ?? "-"}
               </div>
             </div>
             <div className="mt-2 flex flex-wrap gap-1">
@@ -407,5 +422,5 @@ function ContextLine({ edge }: { edge: KnowledgeEdge }) {
   const value = Array.isArray(edge.context_gate)
     ? edge.context_gate.join(", ")
     : edge.context_gate;
-  return <div className="mt-1 text-xs text-stone-500">context: {value}</div>;
+  return <div className="mt-1 text-xs text-stone-500">文脈: {value}</div>;
 }

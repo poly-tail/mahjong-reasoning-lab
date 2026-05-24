@@ -58,11 +58,11 @@ export function RuleBuilderLite() {
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
         <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
           <h2 className="text-sm font-semibold text-stone-950">
-            Rule Builder Lite
+            ルール作成ライト
           </h2>
           <Button size="sm" onClick={createAndSelectRule}>
             <Plus className="h-4 w-4" aria-hidden="true" />
-            New
+            新規
           </Button>
         </div>
         <div className="grid gap-2 p-2">
@@ -84,7 +84,7 @@ export function RuleBuilderLite() {
                 <Badge tone={rule.category === "override" ? "rose" : "cyan"}>
                   {ruleCategoryLabels[rule.category]}
                 </Badge>
-                <Badge>{rule.target_node_ids.length} nodes</Badge>
+                <Badge>{rule.target_node_ids.length}件のノード</Badge>
               </div>
             </button>
           ))}
@@ -152,13 +152,13 @@ function RuleEditor({
 
       <div className="grid gap-3 p-3">
         <div className="grid grid-cols-[minmax(0,1fr)_220px] gap-3">
-          <Field label="Name">
+          <Field label="名前">
             <Input
               value={rule.name}
               onChange={(event) => patch({ name: event.target.value })}
             />
           </Field>
-          <Field label="Category">
+          <Field label="カテゴリ">
             <Select
               value={rule.category}
               onChange={(event) =>
@@ -178,7 +178,7 @@ function RuleEditor({
 
         <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-3">
           <div className="grid gap-3">
-            <Panel title="Hard gate">
+            <Panel title="強制ゲート">
               <Textarea
                 className="min-h-28 border-0 focus:ring-0"
                 value={toLines(rule.hard_gates)}
@@ -188,7 +188,7 @@ function RuleEditor({
               />
             </Panel>
             <Panel
-              title="Soft score"
+              title="ソフトスコア"
               action={
                 <Button
                   size="sm"
@@ -198,7 +198,7 @@ function RuleEditor({
                         ...rule.soft_score_terms,
                         {
                           id: createId("term"),
-                          label: "score term",
+                          label: "スコア項目",
                           weight: 0,
                           note: "",
                         },
@@ -207,7 +207,7 @@ function RuleEditor({
                   }
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" />
-                  Term
+                  項目
                 </Button>
               }
             >
@@ -273,7 +273,7 @@ function RuleEditor({
                 ))}
               </div>
             </Panel>
-            <Panel title="Override">
+            <Panel title="上書き">
               <Textarea
                 className="min-h-28 border-0 focus:ring-0"
                 value={toLines(rule.override_conditions)}
@@ -282,7 +282,7 @@ function RuleEditor({
                 }
               />
             </Panel>
-            <Panel title="Fallback">
+            <Panel title="フォールバック">
               <Textarea
                 className="min-h-24 border-0 focus:ring-0"
                 value={rule.fallback_behavior}
@@ -291,7 +291,7 @@ function RuleEditor({
                 }
               />
             </Panel>
-            <Field label="Note">
+            <Field label="メモ">
               <Textarea
                 value={rule.note}
                 onChange={(event) => patch({ note: event.target.value })}
@@ -302,12 +302,12 @@ function RuleEditor({
           <aside className="rounded-lg border border-stone-200">
             <div className="border-b border-stone-200 p-2">
               <h3 className="mb-2 text-sm font-semibold text-stone-950">
-                Target nodes
+                対象ノード
               </h3>
               <Input
                 value={targetSearch}
                 onChange={(event) => setTargetSearch(event.target.value)}
-                placeholder="filter"
+                placeholder="絞り込み"
               />
             </div>
             <div className="max-h-[680px] overflow-auto p-2">

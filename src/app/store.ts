@@ -9,6 +9,7 @@ import {
   nowIso,
 } from "../domain/factory";
 import { runPropagation, type PropagationPreview } from "../domain/probability";
+import { edgeTypeLabels, nodeTypeLabels } from "../domain/labels";
 import { seedWorkspace } from "../domain/seed";
 import {
   caseLanes,
@@ -40,6 +41,12 @@ export type SaveStatus = "loading" | "idle" | "saving" | "saved" | "error";
 
 type WorkspaceMutation = (doc: WorkspaceDocument) => WorkspaceDocument;
 
+export const defaultAutoSaveIntervalMinutes = 5;
+const minAutoSaveIntervalMinutes = 1;
+const maxAutoSaveIntervalMinutes = 60;
+const autoSaveIntervalStorageKey =
+  "mahjongKnowledgeMap.autoSaveIntervalMinutes";
+
 type AppState = {
   doc: WorkspaceDocument;
   activeScreen: Screen;
@@ -52,6 +59,7 @@ type AppState = {
   undoStack: WorkspaceDocument[];
   redoStack: WorkspaceDocument[];
   saveStatus: SaveStatus;
+  autoSaveIntervalMinutes: number;
   lastSavedAt?: string;
   errorMessage?: string;
   lastPropagationPreview?: PropagationPreview;
@@ -60,6 +68,7 @@ type AppState = {
   setScreen: (screen: Screen) => void;
   setSaveStatus: (status: SaveStatus, message?: string) => void;
   markSaved: () => void;
+  setAutoSaveIntervalMinutes: (minutes: number) => void;
   setSelection: (nodeIds: string[], edgeIds: string[]) => void;
   setSearch: (search: string) => void;
   toggleTagFilter: (tag: string) => void;
@@ -103,6 +112,49 @@ type AppState = {
 };
 
 const historyLimit = 50;
+const nodeLayout = {
+  width: 252,
+  height: 172,
+  gap: 24,
+} as const;
+
+type NodePosition = KnowledgeNode["position"];
+
+type NodeBounds = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+function normalizeAutoSaveIntervalMinutes(minutes: number): number {
+  if (!Number.isFinite(minutes)) return defaultAutoSaveIntervalMinutes;
+  return Math.min(
+    maxAutoSaveIntervalMinutes,
+    Math.max(minAutoSaveIntervalMinutes, Math.round(minutes)),
+  );
+}
+
+function readAutoSaveIntervalMinutes(): number {
+  if (typeof window === "undefined") return defaultAutoSaveIntervalMinutes;
+  try {
+    const saved = window.localStorage.getItem(autoSaveIntervalStorageKey);
+    return saved
+      ? normalizeAutoSaveIntervalMinutes(Number(saved))
+      : defaultAutoSaveIntervalMinutes;
+  } catch {
+    return defaultAutoSaveIntervalMinutes;
+  }
+}
+
+function writeAutoSaveIntervalMinutes(minutes: number) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(autoSaveIntervalStorageKey, String(minutes));
+  } catch {
+    // Local storage can be unavailable in restricted browser contexts.
+  }
+}
 
 function touch(doc: WorkspaceDocument): WorkspaceDocument {
   return { ...doc, updated_at: nowIso() };
@@ -152,6 +204,105 @@ function averagePosition(nodes: KnowledgeNode[]) {
   return { x: total.x / nodes.length - 60, y: total.y / nodes.length - 70 };
 }
 
+function normalizePosition(position: NodePosition): NodePosition {
+  return {
+    x: Math.max(0, Math.round(position.x)),
+    y: Math.max(0, Math.round(position.y)),
+  };
+}
+
+function nodeBounds(position: NodePosition): NodeBounds {
+  const halfGap = nodeLayout.gap / 2;
+  return {
+    left: position.x - halfGap,
+    top: position.y - halfGap,
+    right: position.x + nodeLayout.width + halfGap,
+    bottom: position.y + nodeLayout.height + halfGap,
+  };
+}
+
+function overlaps(left: NodeBounds, right: NodeBounds): boolean {
+  return (
+    left.left < right.right &&
+    left.right > right.left &&
+    left.top < right.bottom &&
+    left.bottom > right.top
+  );
+}
+
+function positionCollides(
+  id: string,
+  position: NodePosition,
+  nodes: Pick<KnowledgeNode, "id" | "position">[],
+): boolean {
+  const target = nodeBounds(position);
+  return nodes.some(
+    (node) => node.id !== id && overlaps(target, nodeBounds(node.position)),
+  );
+}
+
+export function resolveNonOverlappingNodePosition(
+  id: string,
+  position: NodePosition,
+  nodes: Pick<KnowledgeNode, "id" | "position">[],
+): NodePosition {
+  const desired = normalizePosition(position);
+  if (!positionCollides(id, desired, nodes)) return desired;
+
+  const candidates = new Map<string, NodePosition>();
+  const addCandidate = (candidate: NodePosition) => {
+    const normalized = normalizePosition(candidate);
+    candidates.set(`${normalized.x},${normalized.y}`, normalized);
+  };
+
+  for (const node of nodes) {
+    if (node.id === id) continue;
+    if (!overlaps(nodeBounds(desired), nodeBounds(node.position))) continue;
+    addCandidate({
+      x: node.position.x + nodeLayout.width + nodeLayout.gap,
+      y: desired.y,
+    });
+    addCandidate({
+      x: node.position.x - nodeLayout.width - nodeLayout.gap,
+      y: desired.y,
+    });
+    addCandidate({
+      x: desired.x,
+      y: node.position.y + nodeLayout.height + nodeLayout.gap,
+    });
+    addCandidate({
+      x: desired.x,
+      y: node.position.y - nodeLayout.height - nodeLayout.gap,
+    });
+  }
+
+  for (let ring = 1; ring <= 48; ring += 1) {
+    for (let xStep = -ring; xStep <= ring; xStep += 1) {
+      for (let yStep = -ring; yStep <= ring; yStep += 1) {
+        if (Math.max(Math.abs(xStep), Math.abs(yStep)) !== ring) continue;
+        addCandidate({
+          x: desired.x + xStep * (nodeLayout.width + nodeLayout.gap),
+          y: desired.y + yStep * (nodeLayout.height + nodeLayout.gap),
+        });
+      }
+    }
+  }
+
+  const sortedCandidates = Array.from(candidates.values()).sort(
+    (left, right) =>
+      distanceSquared(left, desired) - distanceSquared(right, desired),
+  );
+  return (
+    sortedCandidates.find(
+      (candidate) => !positionCollides(id, candidate, nodes),
+    ) ?? desired
+  );
+}
+
+function distanceSquared(left: NodePosition, right: NodePosition) {
+  return Math.pow(left.x - right.x, 2) + Math.pow(left.y - right.y, 2);
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   doc: seedWorkspace,
   activeScreen: "knowledge",
@@ -163,6 +314,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   undoStack: [],
   redoStack: [],
   saveStatus: "loading",
+  autoSaveIntervalMinutes: readAutoSaveIntervalMinutes(),
   hydrate: (doc) => {
     const parsed = normalizeWorkspaceDocument(doc);
     set({
@@ -171,7 +323,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedEdgeIds: [],
       undoStack: [],
       redoStack: [],
-      saveStatus: "idle",
+      saveStatus: "saved",
+      lastSavedAt: undefined,
       errorMessage: undefined,
       lastPropagationPreview: undefined,
     });
@@ -188,6 +341,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       lastSavedAt: nowIso(),
       errorMessage: undefined,
     }),
+  setAutoSaveIntervalMinutes: (minutes) => {
+    const normalized = normalizeAutoSaveIntervalMinutes(minutes);
+    writeAutoSaveIntervalMinutes(normalized);
+    set({ autoSaveIntervalMinutes: normalized });
+  },
   setSelection: (nodeIds, edgeIds) => {
     const nextNodeIds = unique(nodeIds);
     const nextEdgeIds = unique(edgeIds);
@@ -259,10 +417,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   addNode: (type) => {
     const count = get().doc.nodes.length;
     const created = createKnowledgeNode(type, {
-      title: `${type} node`,
-      tags: ["draft"],
+      title: `${nodeTypeLabels[type]}ノード`,
+      tags: ["下書き"],
       position: { x: 180 + (count % 8) * 40, y: 140 + (count % 6) * 52 },
     });
+    created.position = resolveNonOverlappingNodePosition(
+      created.id,
+      created.position,
+      get().doc.nodes,
+    );
     commit(set, get, (doc) => ({ ...doc, nodes: [...doc.nodes, created] }));
     set({ selectedNodeIds: [created.id], selectedEdgeIds: [] });
   },
@@ -271,15 +434,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().selectedNodeIds.includes(node.id),
     );
     if (selected.length === 0) return;
-    const copies = selected.map((node) => ({
-      ...node,
-      id: createId("node"),
-      title: `${node.title} copy`,
-      position: { x: node.position.x + 48, y: node.position.y + 48 },
-      group_id: node.group_id,
-      created_at: nowIso(),
-      updated_at: nowIso(),
-    }));
+    const copies: KnowledgeNode[] = [];
+    for (const node of selected) {
+      const copy = {
+        ...node,
+        id: createId("node"),
+        title: `${node.title}のコピー`,
+        position: { x: node.position.x + 48, y: node.position.y + 48 },
+        group_id: node.group_id,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
+      copy.position = resolveNonOverlappingNodePosition(
+        copy.id,
+        copy.position,
+        [...get().doc.nodes, ...copies],
+      );
+      copies.push(copy);
+    }
     commit(set, get, (doc) => ({ ...doc, nodes: [...doc.nodes, ...copies] }));
     set({
       selectedNodeIds: copies.map((node) => node.id),
@@ -332,12 +504,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
     if (selected.length < 2) return;
     const group = createKnowledgeNode("concept", {
-      title: "New section",
-      summary: "Collapsed section for selected nodes.",
-      tags: ["section"],
+      title: "新しいセクション",
+      summary: "選択ノードをまとめた折りたたみセクションです。",
+      tags: ["セクション"],
       position: averagePosition(selected),
       is_group: true,
     });
+    group.position = resolveNonOverlappingNodePosition(
+      group.id,
+      group.position,
+      get().doc.nodes,
+    );
     const selectedIds = new Set(selected.map((node) => node.id));
     commit(set, get, (doc) => ({
       ...doc,
@@ -373,10 +550,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
   updateNodePosition: (id, position) => {
+    const current = get().doc.nodes.find((node) => node.id === id);
+    if (!current) return;
+    const nextPosition = resolveNonOverlappingNodePosition(
+      id,
+      position,
+      get().doc.nodes,
+    );
+    if (
+      current.position.x === nextPosition.x &&
+      current.position.y === nextPosition.y
+    ) {
+      return;
+    }
     commit(set, get, (doc) => ({
       ...doc,
       nodes: doc.nodes.map((node) =>
-        node.id === id ? { ...node, position, updated_at: nowIso() } : node,
+        node.id === id
+          ? { ...node, position: nextPosition, updated_at: nowIso() }
+          : node,
       ),
     }));
   },
@@ -389,7 +581,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         edgeItem.type === type,
     );
     if (exists) return;
-    const edgeItem = createKnowledgeEdge({ source, target, type, label: type });
+    const edgeItem = createKnowledgeEdge({
+      source,
+      target,
+      type,
+      label: edgeTypeLabels[type],
+    });
     commit(set, get, (doc) => ({ ...doc, edges: [...doc.edges, edgeItem] }));
     set({ selectedNodeIds: [], selectedEdgeIds: [edgeItem.id] });
   },
@@ -413,7 +610,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
   addCase: () => {
-    const created = createCase({ title: "New case" });
+    const created = createCase({ title: "新しいケース" });
     commit(set, get, (doc) => ({
       ...doc,
       cases: [...doc.cases, created],
@@ -501,7 +698,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
   addRule: () => {
-    const created = createRule({ name: "New rule", category: "mixed" });
+    const created = createRule({ name: "新しいルール", category: "mixed" });
     commit(set, get, (doc) => ({ ...doc, rules: [...doc.rules, created] }));
   },
   updateRule: (id, patch) => {

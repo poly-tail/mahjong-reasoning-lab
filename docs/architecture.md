@@ -9,7 +9,7 @@ It intentionally stops before full automatic inference.
 
 ```text
 src/app
-  AppShell, navigation, autosave lifecycle, Zustand store
+  AppShell, navigation, manual save/autosave lifecycle, Zustand store
 
 src/domain
   zod schemas, seed data, labels, factories, JSON export transformation, propagation engine, influence analysis, Reasoning Lab calculations
@@ -29,7 +29,7 @@ The domain layer does not import React. This keeps the JSON schemas and future p
 2. If no local document exists, `seedWorkspace` is used.
 3. UI screens mutate the Zustand store through typed actions.
 4. Store mutations validate the document shape with zod and push undo history where appropriate.
-5. `AppShell` autosaves the document to IndexedDB with a short debounce.
+5. `AppShell` saves the document to IndexedDB on Ctrl+S or the save button, and also runs configurable interval autosave every 5 minutes by default.
 6. JSON import/export uses `src/domain/export.ts`.
 7. Probability preview uses `src/domain/probability.ts` and only mutates the document after the user applies the preview.
 8. Directional influence views use `src/domain/influence.ts`; influence sign is never read from a node.
@@ -174,6 +174,12 @@ There is no backend, auth, multi-user sync, or server-side DB.
 
 Undo history stores workspace document snapshots in memory, capped at 50 entries.
 Drag position updates are committed on drag stop, not continuously during drag.
+Ctrl+Z, Ctrl+Y, and the header undo/redo buttons use the same history stack.
+
+## Save Lifecycle
+
+The app does not persist every edit immediately. Store mutations mark the document as unsaved, manual save writes the current document to IndexedDB, and interval autosave retries unsaved or failed states every configured interval.
+The interval is stored in localStorage and defaults to 5 minutes.
 
 ## Technology Notes
 

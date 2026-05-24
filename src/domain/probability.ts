@@ -156,13 +156,13 @@ export function runPropagation(
     getInferenceSubgraph(doc);
   const warnings: string[] = [];
   const steps: string[] = [
-    "1 observation update",
-    "2 gate prune",
-    "3 weight modifier apply",
-    "4 lock apply",
-    "5 sibling normalization",
-    "6 downstream propagation",
-    "7 hysteresis / keep-top-k adjust",
+    "1 観測更新",
+    "2 ゲート枝刈り",
+    "3 重み補正を反映",
+    "4 ロックを反映",
+    "5 同階層を正規化",
+    "6 下流へ伝播",
+    "7 ヒステリシス / 上位候補を調整",
   ];
   const beforeNodes = Object.fromEntries(
     doc.nodes.map((node) => [node.id, node.posterior_probability]),
@@ -175,9 +175,7 @@ export function runPropagation(
         ...node,
         _previousPosterior: node.posterior_probability,
         _effectiveWeight: initialWeight(node),
-        _reason: isInferenceNode(node)
-          ? "initial weight"
-          : "semantic node excluded",
+        _reason: isInferenceNode(node) ? "初期重み" : "意味ノードのため対象外",
       },
     ]),
   );
@@ -194,7 +192,7 @@ export function runPropagation(
   );
   if (hasCycle) {
     warnings.push(
-      "Probabilistic edge cycle detected. MVP skipped general cyclic inference and used document order.",
+      "確率レイヤーのエッジに循環を検出しました。試作版では一般循環推論をスキップし、文書順で処理しました。",
     );
   }
 
@@ -280,7 +278,7 @@ function applyObservationAndModifiers(
         (node.base_weight ?? node.prior_probability ?? 0.5) +
           node.dynamic_weight,
       );
-      node._reason = "observation update";
+      node._reason = "観測更新";
     }
   }
 
@@ -298,7 +296,7 @@ function applyObservationAndModifiers(
       0,
       (target._effectiveWeight ?? initialWeight(target)) + modifier,
     );
-    target._reason = `weight modifier from ${source.title}`;
+    target._reason = `${source.title}からの重み補正`;
   }
 }
 
@@ -312,8 +310,8 @@ function applyGatePrune(nodes: Map<string, MutableNode>) {
       node._effectiveWeight = 0;
       node.posterior_probability = 0;
       node._reason = hardZero
-        ? "gate prune by hard lock 0"
-        : "gate prune by gated weight 0";
+        ? "強制ロック0によるゲート枝刈り"
+        : "ゲート重み0による枝刈り";
     }
   }
 }
@@ -347,7 +345,7 @@ function normalizeChoiceGroups(
     );
     if (hardTotal > 1 + epsilon) {
       warnings.push(
-        `Choice group ${groupId} has hard locks over 1. Values were scaled.`,
+        `選択候補群 ${groupId} の強制ロック合計が1を超えています。値をスケールしました。`,
       );
     }
     const scaledHardTotal = Math.min(1, hardTotal);
@@ -367,7 +365,7 @@ function normalizeChoiceGroups(
           (node.lock_value ?? 1) * hardScale,
         );
         node.posterior_probability = node._localProbability;
-        node._reason = "hard lock";
+        node._reason = "強制ロック";
         continue;
       }
       if (node.posterior_probability === 0 && node._effectiveWeight === 0) {
@@ -379,7 +377,7 @@ function normalizeChoiceGroups(
           ? ((node._effectiveWeight ?? 0) / unlockedTotal) * remainder
           : 0;
       node.posterior_probability = node._localProbability;
-      node._reason = "sibling normalization";
+      node._reason = "同階層正規化";
     }
 
     applySoftLocks(members);
@@ -391,7 +389,7 @@ function normalizeChoiceGroups(
       node.posterior_probability = clampProbability(
         node.lock_value ?? node.posterior_probability ?? 1,
       );
-      node._reason = "standalone hard lock";
+      node._reason = "単独ノードの強制ロック";
     } else {
       node.posterior_probability = clampProbability(
         node._effectiveWeight ?? initialWeight(node),
@@ -409,7 +407,7 @@ function applySoftLocks(members: MutableNode[]) {
     const minimum = clampProbability(node.lock_value ?? 0);
     if ((node.posterior_probability ?? 0) < minimum) {
       node.posterior_probability = minimum;
-      node._reason = "soft lock minimum";
+      node._reason = "ソフトロック下限";
     }
   }
   renormalizeMembers(members);
@@ -444,7 +442,7 @@ function applyDownstreamPropagation(
         target.posterior_probability ??
         initialWeight(target);
       target.posterior_probability = clampProbability(base * factor);
-      target._reason = `downstream from ${source.title}`;
+      target._reason = `${source.title}から下流伝播`;
       visitedTargets.add(target.id);
     }
   }
@@ -463,9 +461,7 @@ function applyDownstreamPropagation(
       0,
     );
     if (parentTotals > 1 + epsilon) {
-      warnings.push(
-        `Downstream probabilities in ${groupId} exceeded 1 before normalization.`,
-      );
+      warnings.push(`${groupId} の下流確率が正規化前に1を超えました。`);
       renormalizeMembers(members);
     }
   }
@@ -484,7 +480,7 @@ function applyHysteresisAndTopK(
       node.posterior_probability = round(
         previous * ratio + computed * (1 - ratio),
       );
-      node._reason = "freeze ratio";
+      node._reason = "比率固定";
     }
     if (
       node.hysteresis_band !== undefined &&
@@ -493,7 +489,7 @@ function applyHysteresisAndTopK(
       ) < node.hysteresis_band
     ) {
       node.posterior_probability = node.prior_probability;
-      node._reason = "hysteresis band";
+      node._reason = "ヒステリシス帯";
     }
   }
 
@@ -528,7 +524,7 @@ function applyHysteresisAndTopK(
       if (isHardLock(node)) continue;
       if (!keep.has(node.id)) {
         node.posterior_probability = 0;
-        node._reason = "keep top-k collapsed";
+        node._reason = "上位候補保持による除外";
       }
     }
     renormalizeMembers(members);

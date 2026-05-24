@@ -122,12 +122,12 @@ export function calculateConcentration(
   const hhi = normalized.reduce((sum, value) => sum + value * value, 0);
   const dispersionNote =
     peakMass >= 0.62
-      ? "high concentration"
+      ? "高集中"
       : topKMass >= 0.78
-        ? "top-k concentration"
+        ? "上位候補集中"
         : entropy >= 0.82
-          ? "diffuse"
-          : "split distribution";
+          ? "広く分散"
+          : "分布が分岐";
 
   return {
     entropy: round(entropy),
@@ -172,7 +172,7 @@ export function getConcentrationItems(
   items.push(
     createConcentrationItem(
       "inference_subgraph",
-      "Inference subgraph",
+      "推論サブグラフ",
       "inference_subgraph",
       inferenceNodes,
     ),
@@ -207,8 +207,8 @@ export function simulatePruningAction(
     affected_node_ids: preview.affected_node_ids,
     preview_doc: afterDoc,
     rationale: [
-      `${action.action_type} applied to ${action.target_ids.length} target(s).`,
-      `delta_mass=${impactSummary.delta_mass}, changed_node_count=${impactSummary.changed_node_count}.`,
+      `${action.target_ids.length}件の対象に操作を適用しました。`,
+      `質量差分=${impactSummary.delta_mass}、変更ノード数=${impactSummary.changed_node_count}。`,
       impactSummary.notes,
     ].filter(Boolean),
   };
@@ -267,14 +267,14 @@ export function estimateAveragingSafety(
     );
     const label = score >= 0.68 ? "safe" : score >= 0.4 ? "caution" : "unsafe";
     const reasons = [
-      `variance proxy ${round(varianceProxy)}`,
-      `concentration ${item.metrics.dispersion_note}`,
+      `分散の代理値 ${round(varianceProxy)}`,
+      `集中度 ${item.metrics.dispersion_note}`,
       ambiguity > 0
-        ? `${ambiguity} unresolved influence ambiguity item(s)`
-        : "no local influence ambiguity detected",
+        ? `未解決の影響曖昧性 ${ambiguity}件`
+        : "局所的な影響曖昧性はありません",
       sensitive
-        ? "small perturbation can move the branch set"
-        : "small perturbation sensitivity is limited",
+        ? "小さな変化で枝集合が動く可能性があります"
+        : "小さな変化への感度は限定的です",
     ];
 
     seeded.set(item.id, {
@@ -333,7 +333,7 @@ export function replayReadingChain(
 
 export function buildTeachingLogs(doc: WorkspaceDocument): TeachingLog[] {
   if (doc.teaching_logs.length > 0) return doc.teaching_logs;
-  const activeCaseId = doc.active_case_id ?? doc.cases[0]?.id ?? "case_unknown";
+  const activeCaseId = doc.active_case_id ?? doc.cases[0]?.id ?? "ケース不明";
   return evaluateReadingUtilities(doc)
     .slice(0, 4)
     .map((utility) => {
@@ -344,19 +344,13 @@ export function buildTeachingLogs(doc: WorkspaceDocument): TeachingLog[] {
       return {
         case_id: activeCaseId,
         action_id: utility.target_id,
-        explanation_short: `${node?.title ?? utility.target_id}: utility ${round(
+        explanation_short: `${node?.title ?? utility.target_id}: 有用度 ${round(
           utility.utility_score,
         )}`,
         explanation_full: high
-          ? "上位確率質量、ambiguity reduction、projection margin のどれかに十分効いているため、読みの検討価値が高い。"
-          : "削れる範囲が狭い、global impact が小さい、または ambiguity が残るため、単独では判断を動かしにくい。",
-        key_terms: [
-          "distribution shape",
-          "concentration",
-          "ambiguity",
-          "resolution",
-          "projection margin",
-        ],
+          ? "上位確率質量、曖昧性低減、投影余裕度のどれかに十分効いているため、読みの検討価値が高い。"
+          : "削れる範囲が狭い、全体影響が小さい、または曖昧性が残るため、単独では判断を動かしにくい。",
+        key_terms: ["分布形状", "集中度", "曖昧性", "解像度", "投影余裕度"],
         created_at: nowIso(),
       };
     });
@@ -375,10 +369,10 @@ function createConcentrationItem(
   );
   const impact =
     metrics.peak_mass >= 0.62 || metrics.top_k_mass >= 0.82
-      ? "small prune can move the global distribution"
+      ? "小さな枝刈りでも全体分布が動く可能性があります"
       : metrics.entropy >= 0.82
-        ? "local prune is likely to spread across many branches"
-        : "impact depends on which peak is affected";
+        ? "局所的な枝刈りの影響は多くの枝へ分散しやすいです"
+        : "どのピークに作用するかで影響が変わります";
   return {
     id,
     title,
@@ -530,9 +524,9 @@ function buildImpactSummary(
   const nodeById = new Map(afterDoc.nodes.map((node) => [node.id, node.title]));
   const dominantChange =
     before.dominant_node_id === after.dominant_node_id
-      ? `stable: ${nodeById.get(after.dominant_node_id ?? "") ?? "none"}`
-      : `${nodeById.get(before.dominant_node_id ?? "") ?? "none"} -> ${
-          nodeById.get(after.dominant_node_id ?? "") ?? "none"
+      ? `安定: ${nodeById.get(after.dominant_node_id ?? "") ?? "なし"}`
+      : `${nodeById.get(before.dominant_node_id ?? "") ?? "なし"} -> ${
+          nodeById.get(after.dominant_node_id ?? "") ?? "なし"
         }`;
 
   return {
@@ -544,7 +538,7 @@ function buildImpactSummary(
     ambiguity_change: round(beforeAmbiguity - afterAmbiguity),
     margin_change: round(after.margin - before.margin),
     vector_delta_by_metric: vectorDelta,
-    notes: `${action.action_type} strength=${action.strength}. Positive ambiguity_change means ambiguity was reduced.`,
+    notes: `操作強度=${action.strength}。曖昧性変化が正なら曖昧性が減っています。`,
   };
 }
 
@@ -692,7 +686,7 @@ function emptyImpactSummary(
     after_snapshot_id: afterId,
     delta_mass: 0,
     changed_node_count: 0,
-    dominant_branch_change: "no probability action",
+    dominant_branch_change: "確率操作なし",
     ambiguity_change: 0,
     margin_change: 0,
     vector_delta_by_metric: {},

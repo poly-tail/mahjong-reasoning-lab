@@ -272,7 +272,7 @@ function evaluatePruning(
     return {
       action: "keep" as const,
       confidence: 1,
-      reason: "top-k keep constraint blocks pruning",
+      reason: "上位候補保持制約により枝刈りを止めています。",
     };
   }
   const unresolved = uncertainty + conflictCount * 0.2;
@@ -280,7 +280,7 @@ function evaluatePruning(
     return {
       action: "observe" as const,
       confidence: round(1 - Math.min(unresolved, 1)),
-      reason: "unresolved ambiguity is too large",
+      reason: "未解決の曖昧性が大きすぎます。",
     };
   }
 
@@ -298,20 +298,20 @@ function evaluatePruning(
     return {
       action: "prune" as const,
       confidence: round(avgConfidence * Math.min(pruningPressure, 1)),
-      reason: "risk direction dominates with enough confidence",
+      reason: "リスク方向が十分な確信度で優勢です。",
     };
   }
   if (pruningPressure > 0.15) {
     return {
       action: "downweight" as const,
       confidence: round(avgConfidence * 0.65),
-      reason: "risk direction is present but not decisive",
+      reason: "リスク方向はありますが、決定的ではありません。",
     };
   }
   return {
     action: "keep" as const,
     confidence: round(avgConfidence),
-    reason: "benefit or safety directions prevent pruning",
+    reason: "利得または安全側の方向が枝刈りを止めています。",
   };
 }
 

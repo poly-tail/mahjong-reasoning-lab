@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "prestart": "node scripts/check-dev-ready.mjs",
+    "start": "vite",
+    "predev": "node scripts/check-dev-ready.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

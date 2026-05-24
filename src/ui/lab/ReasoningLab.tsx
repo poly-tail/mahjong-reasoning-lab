@@ -10,6 +10,13 @@ import {
   Waves,
 } from "lucide-react";
 import { useAppStore } from "../../app/store";
+import {
+  averagingSafetyLabels,
+  combinationModeLabels,
+  influenceSignLabels,
+  lockModeLabels,
+  pruningActionTypeLabels,
+} from "../../domain/labels";
 import { getMetricInfluences, getInfluenceModel } from "../../domain/influence";
 import { getInferenceSubgraph } from "../../domain/probability";
 import {
@@ -34,14 +41,14 @@ import { Field, Input, Select, Textarea } from "../components/form";
 import { Panel } from "../components/panel";
 
 const tabs = [
-  { id: "graph", label: "Graph View", icon: Route },
-  { id: "metric", label: "Metric Lens", icon: SearchCheck },
-  { id: "concentration", label: "Concentration Lens", icon: BarChart3 },
-  { id: "pruning", label: "Pruning Lab", icon: GitCompare },
-  { id: "lock", label: "Lock Analysis", icon: LockKeyhole },
-  { id: "ambiguity", label: "Ambiguity / Observation Planner", icon: Waves },
-  { id: "chain", label: "Reading Chain Timeline", icon: Sigma },
-  { id: "education", label: "Educational Explanation Panel", icon: BookOpen },
+  { id: "graph", label: "グラフ表示", icon: Route },
+  { id: "metric", label: "指標レンズ", icon: SearchCheck },
+  { id: "concentration", label: "集中度レンズ", icon: BarChart3 },
+  { id: "pruning", label: "枝刈りラボ", icon: GitCompare },
+  { id: "lock", label: "ロック分析", icon: LockKeyhole },
+  { id: "ambiguity", label: "曖昧性 / 観測計画", icon: Waves },
+  { id: "chain", label: "読み筋タイムライン", icon: Sigma },
+  { id: "education", label: "教育用説明", icon: BookOpen },
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
@@ -49,6 +56,41 @@ type TabId = (typeof tabs)[number]["id"];
 const lockOptions = lockModes.filter(
   (mode) => !["hard", "soft"].includes(mode),
 );
+
+const pruneActionLabels = {
+  prune: "枝刈り",
+  downweight: "弱める",
+  keep: "保持",
+  observe: "観測",
+} as const;
+
+const metricLabels: Record<string, string> = {
+  entropy: "エントロピー",
+  top_k_mass: "上位候補質量",
+  peak_mass: "ピーク質量",
+  hhi: "集中度",
+  delta_mass: "質量差分",
+  changed: "変更数",
+  ambiguity: "曖昧性",
+  margin: "余裕度",
+  sign_gain: "方向改善",
+  margin_gain: "余裕度改善",
+  safety_change: "安全度変化",
+  utility: "有用度",
+  global: "全体影響",
+};
+
+const concentrationScopeLabels: Record<string, string> = {
+  choice_group: "選択候補群",
+  concentration_group: "集中度グループ",
+  inference_subgraph: "推論サブグラフ",
+};
+
+const ambiguityStatusLabels: Record<string, string> = {
+  mixed: "混合",
+  unknown: "不明",
+  conflicting: "衝突",
+};
 
 export function ReasoningLab() {
   const doc = useAppStore((state) => state.doc);
@@ -72,9 +114,8 @@ export function ReasoningLab() {
   const [actionType, setActionType] =
     useState<PruningActionType>("soft_downweight");
   const [strength, setStrength] = useState(0.35);
-  const [rationale, setRationale] = useState(
-    "読みの影響をbefore/afterで確認する。",
-  );
+  const [rationale, setRationale] =
+    useState("読みの影響を適用前後で確認する。");
   const action = useMemo<PruningAction | undefined>(() => {
     if (!targetId) return undefined;
     return {
@@ -173,12 +214,9 @@ export function ReasoningLab() {
     <main className="grid min-h-0 flex-1 grid-cols-[260px_1fr] gap-3 p-3">
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white p-2">
         <div className="px-2 py-2">
-          <h2 className="text-sm font-semibold text-stone-950">
-            Mahjong Reasoning Lab
-          </h2>
+          <h2 className="text-sm font-semibold text-stone-950">麻雀思考ラボ</h2>
           <p className="mt-1 text-xs leading-5 text-stone-500">
-            probability mass, pruning impact, lock, ambiguity, chain replay を
-            同じworkspace上で比較します。
+            確率質量、枝刈り影響、ロック、曖昧性、読み筋再生を同じワークスペース上で比較します。
           </p>
         </div>
         <div className="grid gap-1">
@@ -216,27 +254,26 @@ function GraphViewTab({
 }) {
   return (
     <div className="grid gap-3">
-      <Panel title="Layer Separation">
+      <Panel title="レイヤー分離">
         <div className="grid grid-cols-4 gap-3 p-3">
-          <Stat label="Semantic nodes" value={semanticCount} />
-          <Stat label="Inference nodes" value={inferenceCount} tone="cyan" />
-          <Stat label="Influence edges" value={influenceCount} tone="amber" />
+          <Stat label="意味ノード" value={semanticCount} />
+          <Stat label="推論ノード" value={inferenceCount} tone="cyan" />
+          <Stat label="影響エッジ" value={influenceCount} tone="amber" />
           <Stat
-            label="Concentration sets"
+            label="集中度セット"
             value={concentrationCount}
             tone="emerald"
           />
         </div>
       </Panel>
-      <Panel title="MVP Boundary">
+      <Panel title="試作版の境界">
         <div className="grid gap-2 p-3 text-sm leading-6 text-stone-700">
           <p>
-            Knowledge Graph は概念や根拠の地図、Probabilistic Inference Layer は
-            choice-group tree + DAG、Directional Influence Layer は
-            metricへのsigned influenceとして分けています。
+            知識グラフは概念や根拠の地図、確率推論レイヤーは選択候補群の木と有向非巡回グラフ、
+            方向付き影響レイヤーは指標への符号付き影響として分けています。
           </p>
           <p>
-            Reasoning Lab は派生計算の比較ビューです。一般の循環確率グラフや
+            思考ラボは派生計算の比較ビューです。一般の循環確率グラフや
             ベイズネット完全実装はまだ扱いません。
           </p>
         </div>
@@ -260,9 +297,9 @@ function MetricLensTab({
 }) {
   return (
     <div className="grid gap-3">
-      <Panel title="Metric Lens">
+      <Panel title="指標レンズ">
         <div className="grid gap-3 p-3">
-          <Field label="metric">
+          <Field label="指標">
             <Select
               value={metricId}
               onChange={(event) => setMetricId(event.target.value)}
@@ -286,15 +323,15 @@ function MetricLensTab({
                   </span>
                   <div className="flex items-center gap-1">
                     <Badge tone={signTone(item.edge.sign)}>
-                      sign {item.edge.sign}
+                      方向 {influenceSignLabels[item.edge.sign]}
                     </Badge>
-                    <Badge>magnitude {format(item.edge.magnitude)}</Badge>
-                    <Badge>conf {format(item.edge.confidence)}</Badge>
+                    <Badge>影響量 {format(item.edge.magnitude)}</Badge>
+                    <Badge>確信度 {format(item.edge.confidence)}</Badge>
                   </div>
                 </div>
                 <p className="text-xs leading-5 text-stone-500">
-                  context: {formatContext(item.edge.context_gate)} / mode:{" "}
-                  {item.edge.combination_mode}
+                  文脈: {formatContext(item.edge.context_gate)} / 合成:{" "}
+                  {combinationModeLabels[item.edge.combination_mode]}
                 </p>
                 <Progress value={Math.min(1, Math.abs(item.signed_score))} />
               </div>
@@ -302,7 +339,7 @@ function MetricLensTab({
           </div>
         </div>
       </Panel>
-      <Panel title="Branch Vector Summary">
+      <Panel title="枝ベクトル要約">
         <div className="grid gap-2 p-3">
           {branchVectors.map((vector) => (
             <div
@@ -312,13 +349,13 @@ function MetricLensTab({
               <div className="min-w-0">
                 <div className="truncate font-medium">{vector.title}</div>
                 <div className="text-xs text-stone-500">
-                  dominant {vector.dominant_direction}, conflicts{" "}
+                  主方向 {influenceSignLabels[vector.dominant_direction]}、衝突{" "}
                   {vector.conflict_count}
                 </div>
               </div>
               <Progress value={1 - vector.uncertainty} />
               <Badge tone={vector.prune_action === "prune" ? "rose" : "cyan"}>
-                {vector.prune_action}
+                {pruneActionLabels[vector.prune_action]}
               </Badge>
               <span className="truncate text-xs text-stone-500">
                 {vector.prune_reason}
@@ -340,7 +377,7 @@ function ConcentrationLensTab({
 }) {
   const nodeById = new Map(docNodes.map((node) => [node.id, node]));
   return (
-    <Panel title="Concentration Lens">
+    <Panel title="集中度レンズ">
       <div className="grid gap-3 p-3">
         {items.map((item) => (
           <div
@@ -353,7 +390,9 @@ function ConcentrationLensTab({
                   <h3 className="truncate text-sm font-semibold text-stone-900">
                     {item.title}
                   </h3>
-                  <Badge tone="cyan">{item.scope}</Badge>
+                  <Badge tone="cyan">
+                    {concentrationScopeLabels[item.scope] ?? item.scope}
+                  </Badge>
                 </div>
                 <p className="mt-1 text-xs text-stone-500">
                   {item.impact_prediction}
@@ -364,10 +403,19 @@ function ConcentrationLensTab({
               </Badge>
             </div>
             <div className="grid grid-cols-4 gap-2">
-              <MetricBox label="entropy" value={item.metrics.entropy} />
-              <MetricBox label="top_k_mass" value={item.metrics.top_k_mass} />
-              <MetricBox label="peak_mass" value={item.metrics.peak_mass} />
-              <MetricBox label="hhi" value={item.metrics.hhi} />
+              <MetricBox
+                label={metricLabels.entropy}
+                value={item.metrics.entropy}
+              />
+              <MetricBox
+                label={metricLabels.top_k_mass}
+                value={item.metrics.top_k_mass}
+              />
+              <MetricBox
+                label={metricLabels.peak_mass}
+                value={item.metrics.peak_mass}
+              />
+              <MetricBox label={metricLabels.hhi} value={item.metrics.hhi} />
             </div>
             <div className="grid gap-1.5">
               {item.node_ids.map((id) => {
@@ -423,10 +471,10 @@ function PruningLabTab({
 }) {
   return (
     <div className="grid gap-3">
-      <Panel title="Pruning Impact Simulator">
+      <Panel title="枝刈り影響シミュレーター">
         <div className="grid grid-cols-[320px_1fr] gap-3 p-3">
           <div className="grid content-start gap-3">
-            <Field label="action">
+            <Field label="操作">
               <Select
                 value={actionType}
                 onChange={(event) =>
@@ -435,12 +483,12 @@ function PruningLabTab({
               >
                 {pruningActionTypes.map((type) => (
                   <option key={type} value={type}>
-                    {type}
+                    {pruningActionTypeLabels[type]}
                   </option>
                 ))}
               </Select>
             </Field>
-            <Field label="target">
+            <Field label="対象">
               <Select
                 value={targetId}
                 onChange={(event) => setTargetId(event.target.value)}
@@ -453,8 +501,8 @@ function PruningLabTab({
               </Select>
             </Field>
             <Field
-              label="strength"
-              hint="keep_top_kでは整数扱い、それ以外は0-1の強さとして扱います。"
+              label="強さ"
+              hint="上位候補保持では整数扱い、それ以外は0-1の強さとして扱います。"
             >
               <Input
                 type="number"
@@ -464,14 +512,14 @@ function PruningLabTab({
                 onChange={(event) => setStrength(Number(event.target.value))}
               />
             </Field>
-            <Field label="rationale">
+            <Field label="根拠">
               <Textarea
                 value={rationale}
                 onChange={(event) => setRationale(event.target.value)}
               />
             </Field>
             <Button variant="primary" onClick={onSave} disabled={!simulation}>
-              Save diff log
+              差分ログを保存
             </Button>
           </div>
           {simulation ? (
@@ -494,7 +542,7 @@ function LockAnalysisTab({
 }) {
   const safetyById = new Map(safety.map((item) => [item.target_id, item]));
   return (
-    <Panel title="Node Lock / Regime Freeze Analysis">
+    <Panel title="ノードロック / 状態固定分析">
       <div className="grid gap-2 p-3">
         {nodes.map((node) => {
           const item =
@@ -511,9 +559,9 @@ function LockAnalysisTab({
                 </div>
                 <div className="mt-1 flex gap-1">
                   <Badge tone="cyan">
-                    p {format(node.posterior_probability ?? 0)}
+                    確率 {format(node.posterior_probability ?? 0)}
                   </Badge>
-                  <Badge>{node.choice_group_id ?? "standalone"}</Badge>
+                  <Badge>{node.choice_group_id ?? "単独"}</Badge>
                 </div>
               </div>
               <Select
@@ -526,7 +574,7 @@ function LockAnalysisTab({
               >
                 {lockOptions.map((mode) => (
                   <option key={mode} value={mode}>
-                    {mode}
+                    {lockModeLabels[mode]}
                   </option>
                 ))}
               </Select>
@@ -534,7 +582,7 @@ function LockAnalysisTab({
                 type="number"
                 step="0.05"
                 value={node.lock_value ?? ""}
-                placeholder="value"
+                placeholder="値"
                 onChange={(event) =>
                   updateNode(node.id, {
                     lock_value:
@@ -554,10 +602,11 @@ function LockAnalysisTab({
                         : "amber"
                   }
                 >
-                  averaging {item?.label ?? "unknown"}
+                  平均化{" "}
+                  {item?.label ? averagingSafetyLabels[item.label] : "不明"}
                 </Badge>
                 <p className="mt-1 truncate text-xs text-stone-500">
-                  {item?.reasons.join(" / ") ?? "no estimator target"}
+                  {item?.reasons.join(" / ") ?? "推定対象なし"}
                 </p>
               </div>
             </div>
@@ -575,7 +624,7 @@ function AmbiguityTab({
 }) {
   return (
     <div className="grid gap-3">
-      <Panel title="Ambiguity Panel">
+      <Panel title="曖昧性パネル">
         <div className="grid gap-2 p-3">
           {influence.ambiguities.map((item) => (
             <div
@@ -584,10 +633,10 @@ function AmbiguityTab({
             >
               <div>
                 <Badge tone={item.status === "unknown" ? "stone" : "amber"}>
-                  {item.status}
+                  {ambiguityStatusLabels[item.status] ?? item.status}
                 </Badge>
                 <div className="mt-1 text-xs text-stone-500">
-                  unresolved {format(item.unresolved_score)}
+                  未解決度 {format(item.unresolved_score)}
                 </div>
               </div>
               <div className="min-w-0">
@@ -600,22 +649,22 @@ function AmbiguityTab({
               </div>
               <div className="flex flex-wrap gap-1">
                 <Badge tone={item.prune_candidate ? "emerald" : "stone"}>
-                  prune候補
+                  枝刈り候補
                 </Badge>
                 <Badge tone={item.downweight_candidate ? "amber" : "stone"}>
-                  downweight候補
+                  弱め候補
                 </Badge>
                 <Badge
                   tone={item.observe_candidate_ids.length ? "cyan" : "stone"}
                 >
-                  observe候補 {item.observe_candidate_ids.length}
+                  観測候補 {item.observe_candidate_ids.length}
                 </Badge>
               </div>
             </div>
           ))}
         </div>
       </Panel>
-      <Panel title="Observation Planner">
+      <Panel title="観測計画">
         <div className="grid gap-2 p-3">
           {influence.observation_plan.map((item) => (
             <div
@@ -625,27 +674,25 @@ function AmbiguityTab({
               <div className="min-w-0">
                 <div className="truncate font-medium">{item.node.title}</div>
                 <div className="truncate text-xs text-stone-500">
-                  resolves {item.target_titles.join(" / ")}
+                  解消対象 {item.target_titles.join(" / ")}
                 </div>
               </div>
               <MetricBox
-                label="sign_gain"
+                label={metricLabels.sign_gain}
                 value={item.node.expected_sign_gain ?? 0}
               />
               <MetricBox
-                label="margin_gain"
+                label={metricLabels.margin_gain}
                 value={item.node.expected_margin_gain ?? 0}
               />
               <MetricBox
-                label="safety_change"
+                label={metricLabels.safety_change}
                 value={item.node.pruning_safety_change ?? 0}
               />
             </div>
           ))}
           {influence.observation_plan.length === 0 ? (
-            <p className="text-sm text-stone-500">
-              observation_candidate がまだありません。
-            </p>
+            <p className="text-sm text-stone-500">観測候補がまだありません。</p>
           ) : null}
         </div>
       </Panel>
@@ -666,9 +713,9 @@ function ReadingChainTab({
   );
 
   return (
-    <Panel title="Reading Chain Timeline">
+    <Panel title="読み筋タイムライン">
       <div className="grid gap-3 p-3">
-        <Field label="chain">
+        <Field label="読み筋">
           <Select
             value={chainId}
             onChange={(event) => setChainId(event.target.value)}
@@ -694,19 +741,19 @@ function ReadingChainTab({
                 {step.rationale}
               </p>
               <p className="mt-1 text-xs text-stone-500">
-                dominant {step.impact_summary.dominant_branch_change}
+                主枝 {step.impact_summary.dominant_branch_change}
               </p>
             </div>
             <div className="grid gap-1 text-xs">
-              <span>delta_mass {format(step.impact_summary.delta_mass)}</span>
-              <span>changed {step.impact_summary.changed_node_count}</span>
-              <span>margin {format(step.impact_summary.margin_change)}</span>
+              <span>質量差分 {format(step.impact_summary.delta_mass)}</span>
+              <span>変更数 {step.impact_summary.changed_node_count}</span>
+              <span>余裕度 {format(step.impact_summary.margin_change)}</span>
             </div>
           </div>
         ))}
         {!chain ? (
           <p className="text-sm text-stone-500">
-            reading_chain seed がありません。
+            読み筋の初期データがありません。
           </p>
         ) : null}
       </div>
@@ -726,7 +773,7 @@ function EducationTab({
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   return (
     <div className="grid gap-3">
-      <Panel title="Educational Explanation Panel">
+      <Panel title="教育用説明">
         <div className="grid gap-2 p-3">
           {logs.map((log) => (
             <div
@@ -752,7 +799,7 @@ function EducationTab({
           ))}
         </div>
       </Panel>
-      <Panel title="Reading Utility Drill-down">
+      <Panel title="読み有用度の詳細">
         <div className="grid gap-2 p-3">
           {utilities.slice(0, 8).map((utility) => (
             <div
@@ -764,17 +811,26 @@ function EducationTab({
                   {nodeById.get(utility.target_id)?.title ?? utility.target_id}
                 </div>
                 <div className="truncate text-xs text-stone-500">
-                  selective {format(utility.selective_pruning_ratio)} / cost{" "}
+                  選択枝刈り {format(utility.selective_pruning_ratio)} / コスト{" "}
                   {format(utility.cost_estimate)}
                 </div>
               </div>
-              <MetricBox label="utility" value={utility.utility_score} />
-              <MetricBox label="global" value={utility.global_impact_score} />
               <MetricBox
-                label="ambiguity"
+                label={metricLabels.utility}
+                value={utility.utility_score}
+              />
+              <MetricBox
+                label={metricLabels.global}
+                value={utility.global_impact_score}
+              />
+              <MetricBox
+                label={metricLabels.ambiguity}
                 value={utility.ambiguity_reduction}
               />
-              <MetricBox label="margin" value={utility.projected_margin_gain} />
+              <MetricBox
+                label={metricLabels.margin}
+                value={utility.projected_margin_gain}
+              />
             </div>
           ))}
         </div>
@@ -805,36 +861,36 @@ function SimulationSummary({
     <div className="grid gap-3">
       <div className="grid grid-cols-4 gap-2">
         <MetricBox
-          label="delta_mass"
+          label={metricLabels.delta_mass}
           value={simulation.impact_summary.delta_mass}
         />
         <MetricBox
-          label="changed"
+          label={metricLabels.changed}
           value={simulation.impact_summary.changed_node_count}
         />
         <MetricBox
-          label="ambiguity"
+          label={metricLabels.ambiguity}
           value={simulation.impact_summary.ambiguity_change}
         />
         <MetricBox
-          label="margin"
+          label={metricLabels.margin}
           value={simulation.impact_summary.margin_change}
         />
       </div>
       <div className="grid grid-cols-2 gap-3">
         <ProbabilitySnapshot
-          title="Before"
+          title="適用前"
           snapshot={simulation.before}
           nodes={nodes}
         />
         <ProbabilitySnapshot
-          title="After"
+          title="適用後"
           snapshot={simulation.after}
           nodes={nodes}
         />
       </div>
       <div className="grid gap-1.5 rounded-md border border-stone-200 p-3">
-        <div className="text-sm font-medium">Waterfall movement summary</div>
+        <div className="text-sm font-medium">変化量の要約</div>
         {changed.map((item) => (
           <div
             key={item.id}
@@ -875,7 +931,7 @@ function ProbabilitySnapshot({
     <div className="grid gap-2 rounded-md border border-stone-200 p-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">{title}</span>
-        <Badge>margin {format(snapshot.margin)}</Badge>
+        <Badge>余裕度 {format(snapshot.margin)}</Badge>
       </div>
       {ranked.map(([id, value]) => (
         <div
@@ -906,7 +962,7 @@ function Stat({
       <div className="mt-1 text-2xl font-semibold tabular-nums text-stone-950">
         {value}
       </div>
-      <Badge tone={tone}>active</Badge>
+      <Badge tone={tone}>有効</Badge>
     </div>
   );
 }
@@ -948,5 +1004,5 @@ function format(value: number) {
 function formatContext(context: unknown) {
   if (Array.isArray(context)) return context.join(", ");
   if (typeof context === "string") return context;
-  return "none";
+  return "なし";
 }
