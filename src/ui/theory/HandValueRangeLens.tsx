@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { useAppStore } from "../../app/store";
 import {
   handValueAxes,
+  handValueRangeAxes,
   scoreSituationThresholdFactors,
   type HandValueAxisId,
 } from "../../domain/mahjongTaxonomy";
@@ -12,59 +13,20 @@ import type { InfluenceSign, KnowledgeNode } from "../../domain/schema";
 import { Badge } from "../components/badge";
 import { Panel } from "../components/panel";
 
-const axisTags: Record<HandValueAxisId, readonly string[]> = {
-  progress_tenpai_axis: [
-    "progress_tenpai_axis",
-    "speed_axis",
-    "speed",
-    "速度",
-    "早さ",
-    "進行度・聴牌率",
-    "聴牌率",
-    "先制率",
-    "シャンテン",
-  ],
-  value_axis: [
-    "value_axis",
-    "value_distribution_axis",
-    "value_distribution",
-    "score_distribution",
-    "value",
-    "打点",
-    "打点レンジ",
-    "打点レンジ推定",
-    "打点価値",
-  ],
-  wait_shape_quality_axis: [
-    "wait_shape_quality_axis",
-    "shape_axis",
-    "shape",
-    "wait_danger_distribution_axis",
-    "wait_distribution",
-    "danger_tile_distribution",
-    "形",
-    "待ち",
-    "良形",
-    "愚形",
-    "危険牌分布",
-    "安全度",
-  ],
-  score_situation_threshold_axis: [
-    "score_situation_threshold_axis",
-    "situation_threshold_axis",
-    "situation_value",
-    "action_threshold",
-    "rank_ev",
-    "rank_point",
-    "score_context",
-    "external_modifier",
-    "点数状況・行動閾値",
-    "局面価値",
-    "行動閾値",
-    "順位期待値",
-    "条件戦",
-  ],
-} as const;
+const axisTags = handValueRangeAxes.reduce(
+  (accumulator, axis) => {
+    accumulator[axis.id] = [
+      axis.id,
+      axis.label,
+      axis.shortLabel,
+      ...axis.tags,
+      ...axis.legacyAliases,
+      ...axis.metricTitles,
+    ];
+    return accumulator;
+  },
+  {} as Record<HandValueAxisId, readonly string[]>,
+);
 
 const handValueMarkers = [
   "hand_value_range",

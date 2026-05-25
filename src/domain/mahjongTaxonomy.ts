@@ -8,6 +8,7 @@ import type {
   RelationLayer,
   WorkspaceDocument,
 } from "./schema";
+import { handValueRangeAxes } from "./rangetheory";
 
 export const domainAreas = [
   "hand_value_range",
@@ -23,96 +24,16 @@ export const domainAreas = [
   "review",
 ] as const;
 
-export const handValueAxes = [
-  {
-    id: "progress_tenpai_axis",
-    label: "進行度・聴牌率",
-    role: [
-      "シャンテン数",
-      "聴牌率",
-      "先制率",
-      "和了到達の近さ",
-      "副露速度",
-      "巡目に対する進行度",
-    ],
-    aliases: ["speed_axis", "speed", "速度", "早さ"],
-  },
-  {
-    id: "value_axis",
-    label: "打点",
-    role: [
-      "打点の高さ",
-      "打点レンジ",
-      "安い/中打点/満貫級/跳満級などの幅",
-      "高打点の尾部リスク",
-      "ドラ、赤、染め、役牌、手役、親番打点",
-    ],
-    aliases: [
-      "value_distribution_axis",
-      "value_distribution",
-      "score_distribution",
-      "打点分布",
-      "打点レンジ",
-      "打点レンジ推定",
-    ],
-  },
-  {
-    id: "wait_shape_quality_axis",
-    label: "待ち・形の良さ",
-    role: [
-      "良形/愚形",
-      "待ち候補",
-      "待ちの強さ",
-      "変化のしやすさ",
-      "自分が押す時の和了しやすさ",
-      "危険牌比較・安全度評価への接続",
-    ],
-    aliases: [
-      "shape_axis",
-      "shape",
-      "wait_danger_distribution_axis",
-      "wait_distribution",
-      "danger_tile_distribution",
-      "形",
-      "待ち",
-      "良形",
-      "愚形",
-      "危険牌分布",
-      "安全度",
-    ],
-  },
-  {
-    id: "score_situation_threshold_axis",
-    label: "点数状況・行動閾値",
-    role: [
-      "点棒状況",
-      "順位点",
-      "トップ目/ラス目",
-      "親子",
-      "局",
-      "巡目",
-      "供託",
-      "本場",
-      "条件戦",
-      "押し引き・危険牌選択・枝刈り可否を動かす行動閾値",
-    ],
-    aliases: [
-      "situation_threshold_axis",
-      "situation_value",
-      "action_threshold",
-      "rank_ev",
-      "rank_point",
-      "score_context",
-      "external_modifier",
-      "局面価値",
-      "行動閾値",
-      "順位期待値",
-      "条件戦",
-    ],
-  },
-] as const;
+export { handValueRangeAxes } from "./rangetheory";
 
-export type HandValueAxisId = (typeof handValueAxes)[number]["id"];
+export const handValueAxes = handValueRangeAxes.map((axis) => ({
+  id: axis.id,
+  label: axis.label,
+  role: axis.metricTitles,
+  aliases: [...axis.tags, ...axis.legacyAliases],
+}));
+
+export type HandValueAxisId = (typeof handValueRangeAxes)[number]["id"];
 
 export const scoreSituationThresholdFactors = [
   { id: "score_context", label: "点棒状況" },

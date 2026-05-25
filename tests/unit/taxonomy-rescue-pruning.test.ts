@@ -3,6 +3,7 @@ import {
   createDomainLensSelection,
   getLegacyAxisMapping,
   handValueAxes,
+  handValueRangeAxes,
   nodeMatchesDomainLens,
 } from "../../src/domain/mahjongTaxonomy";
 import { getPruningLockWarnings } from "../../src/domain/pruningSafety";
@@ -33,6 +34,28 @@ describe("mahjong taxonomy, rescue rate, and pruning safety", () => {
     expect(handValueAxes.flatMap((axis) => axis.aliases)).toEqual(
       expect.arrayContaining(["speed_axis", "shape_axis", "external_modifier"]),
     );
+  });
+
+  it("defines hand value range theory axes with UI labels and legacy aliases", () => {
+    expect(handValueRangeAxes.map((axis) => axis.id)).toEqual([
+      "progress_tenpai_axis",
+      "value_axis",
+      "wait_shape_quality_axis",
+      "score_situation_threshold_axis",
+    ]);
+    expect(handValueRangeAxes.map((axis) => axis.label)).toEqual([
+      "進行度・聴牌率",
+      "打点",
+      "待ち・形の良さ",
+      "点数状況・行動閾値",
+    ]);
+    expect(handValueRangeAxes[0].legacyAliases).toEqual([
+      "speed_axis",
+      "speed",
+      "速度",
+      "早さ",
+    ]);
+    expect(handValueRangeAxes[3].metricTitles).toContain("押し引き閾値");
   });
 
   it("maps legacy axis labels to the canonical four axes", () => {
