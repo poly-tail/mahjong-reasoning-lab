@@ -52,6 +52,18 @@ const tabs = [
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
+export type ReasoningLabScope = "all" | "pruning" | "explanation";
+
+const tabIdsByScope: Record<ReasoningLabScope, TabId[]> = {
+  all: tabs.map((tab) => tab.id),
+  pruning: ["pruning", "lock", "ambiguity"],
+  explanation: ["concentration", "chain", "education"],
+};
+
+function defaultTabForScope(scope: ReasoningLabScope, initialTab?: TabId) {
+  const tabIds = tabIdsByScope[scope];
+  return initialTab && tabIds.includes(initialTab) ? initialTab : tabIds[0];
+}
 
 const lockOptions = lockModes.filter(
   (mode) => !["hard", "soft"].includes(mode),
@@ -92,13 +104,21 @@ const ambiguityStatusLabels: Record<string, string> = {
   conflicting: "衝突",
 };
 
-export function ReasoningLab() {
+export function ReasoningLab({
+  scope = "all",
+  initialTab,
+}: {
+  scope?: ReasoningLabScope;
+  initialTab?: TabId;
+}) {
   const doc = useAppStore((state) => state.doc);
   const updateNode = useAppStore((state) => state.updateNode);
   const recordReasoningLabSimulation = useAppStore(
     (state) => state.recordReasoningLabSimulation,
   );
-  const [activeTab, setActiveTab] = useState<TabId>("concentration");
+  const [activeTab, setActiveTab] = useState<TabId>(() =>
+    defaultTabForScope(scope, initialTab),
+  );
   const inference = useMemo(() => getInferenceSubgraph(doc), [doc]);
   const influence = useMemo(() => getInfluenceModel(doc), [doc]);
   const concentration = useMemo(() => getConcentrationItems(doc), [doc]);
@@ -135,9 +155,17 @@ export function ReasoningLab() {
     () => getMetricInfluences(doc, metricId),
     [doc, metricId],
   );
+  const visibleTabs = useMemo(() => {
+    const visibleIds = new Set(tabIdsByScope[scope]);
+    return tabs.filter((tab) => visibleIds.has(tab.id));
+  }, [scope]);
+  const fallbackTab = defaultTabForScope(scope, initialTab);
+  const effectiveActiveTab = tabIdsByScope[scope].includes(activeTab)
+    ? activeTab
+    : fallbackTab;
 
   const renderTab = () => {
-    if (activeTab === "graph") {
+    if (effectiveActiveTab === "graph") {
       return (
         <GraphViewTab
           semanticCount={doc.nodes.length - inference.nodes.length}
@@ -147,7 +175,7 @@ export function ReasoningLab() {
         />
       );
     }
-    if (activeTab === "metric") {
+    if (effectiveActiveTab === "metric") {
       return (
         <MetricLensTab
           metrics={influence.metrics}
@@ -158,12 +186,12 @@ export function ReasoningLab() {
         />
       );
     }
-    if (activeTab === "concentration") {
+    if (effectiveActiveTab === "concentration") {
       return (
         <ConcentrationLensTab items={concentration} docNodes={doc.nodes} />
       );
     }
-    if (activeTab === "pruning") {
+    if (effectiveActiveTab === "pruning") {
       return (
         <PruningLabTab
           nodes={inference.nodes}
@@ -186,7 +214,7 @@ export function ReasoningLab() {
         />
       );
     }
-    if (activeTab === "lock") {
+    if (effectiveActiveTab === "lock") {
       return (
         <LockAnalysisTab
           nodes={inference.nodes}
@@ -195,10 +223,10 @@ export function ReasoningLab() {
         />
       );
     }
-    if (activeTab === "ambiguity") {
+    if (effectiveActiveTab === "ambiguity") {
       return <AmbiguityTab influence={influence} />;
     }
-    if (activeTab === "chain") {
+    if (effectiveActiveTab === "chain") {
       return <ReadingChainTab doc={doc} />;
     }
     return (
@@ -220,12 +248,12 @@ export function ReasoningLab() {
           </p>
         </div>
         <div className="grid gap-1">
-          {tabs.map((tab) => {
+          {visibleTabs.map((tab) => {
             const Icon = tab.icon;
             return (
               <Button
                 key={tab.id}
-                variant={activeTab === tab.id ? "primary" : "ghost"}
+                variant={effectiveActiveTab === tab.id ? "primary" : "ghost"}
                 className="justify-start"
                 onClick={() => setActiveTab(tab.id)}
               >

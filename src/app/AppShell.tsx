@@ -3,18 +3,19 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ChangeEvent,
   type ComponentType,
+  type ReactNode,
 } from "react";
 import {
+  BookOpen,
   Braces,
   Database,
   FlaskConical,
   GitFork,
   Map,
-  Network,
   Redo2,
-  Route,
   Save,
   Settings2,
   Undo2,
@@ -36,14 +37,26 @@ const navItems: {
   label: string;
   icon: ComponentType<{ className?: string }>;
 }[] = [
-  { screen: "knowledge", label: "知識マップ", icon: Map },
-  { screen: "case", label: "局面作業場", icon: GitFork },
-  { screen: "rules", label: "ルール作成", icon: Settings2 },
-  { screen: "probability", label: "確率", icon: Network },
-  { screen: "influence", label: "影響", icon: Route },
-  { screen: "lab", label: "思考ラボ", icon: FlaskConical },
-  { screen: "io", label: "データ入出力", icon: Braces },
+  { screen: "case", label: "局面で考える", icon: GitFork },
+  { screen: "knowledge", label: "知識を作る", icon: Map },
+  { screen: "pruning", label: "枝刈りを検証する", icon: FlaskConical },
+  { screen: "explanation", label: "読みを説明する", icon: BookOpen },
+  { screen: "data", label: "データ管理", icon: Braces },
 ];
+
+const purposeDescriptions: Record<Screen, string> = {
+  case: "実戦局面に観測、仮説、条件、判断を並べ、関連する知識やルールを参照しながら読みを進めます。",
+  knowledge:
+    "読みの知識、条件、根拠、ルールを作成し、意味・確率・影響・枝刈り・教育の観点で整理します。",
+  pruning:
+    "候補の確率伝播、指標への影響、枝刈りやロックの前後差分を確認して、残す読みと削る読みを検証します。",
+  explanation:
+    "集中度、読み筋タイムライン、教育用説明を使い、判断に至る流れと学習向けの説明を組み立てます。",
+  data: "ワークスペース全体のJSON入出力、枝刈り画面向けサブグラフ出力、初期化を管理します。",
+};
+
+type KnowledgeWorkspaceTab = "map" | "rules";
+type PruningWorkspaceTab = "probability" | "influence" | "lab";
 
 const autoSaveIntervalOptions = [1, 5, 10, 15, 30, 60];
 
@@ -84,6 +97,10 @@ export function AppShell() {
   const saving = useRef(false);
   const docRef = useRef(doc);
   const saveStatusRef = useRef(saveStatus);
+  const [knowledgeTab, setKnowledgeTab] =
+    useState<KnowledgeWorkspaceTab>("map");
+  const [pruningTab, setPruningTab] =
+    useState<PruningWorkspaceTab>("probability");
 
   useEffect(() => {
     docRef.current = doc;
@@ -199,6 +216,36 @@ export function AppShell() {
     setAutoSaveIntervalMinutes(Number(event.target.value));
   };
 
+  const activeNavItem =
+    navItems.find((item) => item.screen === activeScreen) ?? navItems[0];
+
+  const renderActiveScreen = () => {
+    if (activeScreen === "case") {
+      return <CaseWorkspace />;
+    }
+
+    if (activeScreen === "knowledge") {
+      return (
+        <KnowledgeWorkspace
+          activeTab={knowledgeTab}
+          setActiveTab={setKnowledgeTab}
+        />
+      );
+    }
+
+    if (activeScreen === "pruning") {
+      return (
+        <PruningWorkspace activeTab={pruningTab} setActiveTab={setPruningTab} />
+      );
+    }
+
+    if (activeScreen === "explanation") {
+      return <ReasoningLab initialTab="concentration" scope="explanation" />;
+    }
+
+    return <ImportExportPanel />;
+  };
+
   return (
     <div className="flex h-screen min-h-[720px] flex-col bg-stone-100 text-stone-900">
       <header className="flex min-h-14 items-center justify-between gap-3 border-b border-stone-300 bg-white px-3">
@@ -295,13 +342,123 @@ export function AppShell() {
         </div>
       ) : null}
 
-      {activeScreen === "knowledge" ? <KnowledgeMap /> : null}
-      {activeScreen === "case" ? <CaseWorkspace /> : null}
-      {activeScreen === "rules" ? <RuleBuilderLite /> : null}
-      {activeScreen === "probability" ? <ProbabilityWorkbench /> : null}
-      {activeScreen === "influence" ? <InfluenceWorkbench /> : null}
-      {activeScreen === "lab" ? <ReasoningLab /> : null}
-      {activeScreen === "io" ? <ImportExportPanel /> : null}
+      <PurposeFrame
+        title={activeNavItem.label}
+        description={purposeDescriptions[activeNavItem.screen]}
+      >
+        {renderActiveScreen()}
+      </PurposeFrame>
+    </div>
+  );
+}
+
+function PurposeFrame({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <section className="border-b border-stone-200 bg-white px-4 py-3">
+        <p className="text-xs font-semibold text-cyan-700">
+          この画面でできること
+        </p>
+        <div className="mt-1 flex flex-wrap items-end justify-between gap-2">
+          <h2 className="text-lg font-semibold leading-6 text-stone-950">
+            {title}
+          </h2>
+          <p className="max-w-4xl text-sm leading-6 text-stone-600">
+            {description}
+          </p>
+        </div>
+      </section>
+      {children}
+    </div>
+  );
+}
+
+function SubNavigation<T extends string>({
+  label,
+  items,
+  active,
+  onChange,
+}: {
+  label: string;
+  items: { id: T; label: string }[];
+  active: T;
+  onChange: (id: T) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 border-b border-stone-200 bg-stone-50 px-3 py-2">
+      <span className="text-xs font-semibold text-stone-500">{label}</span>
+      <div className="flex flex-wrap gap-1" role="toolbar" aria-label={label}>
+        {items.map((item) => (
+          <Button
+            key={item.id}
+            size="sm"
+            variant={active === item.id ? "primary" : "secondary"}
+            onClick={() => onChange(item.id)}
+            aria-pressed={active === item.id}
+          >
+            {item.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function KnowledgeWorkspace({
+  activeTab,
+  setActiveTab,
+}: {
+  activeTab: KnowledgeWorkspaceTab;
+  setActiveTab: (tab: KnowledgeWorkspaceTab) => void;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <SubNavigation
+        label="作成モード"
+        active={activeTab}
+        onChange={setActiveTab}
+        items={[
+          { id: "map", label: "知識マップ" },
+          { id: "rules", label: "ルール作成" },
+        ]}
+      />
+      {activeTab === "map" ? <KnowledgeMap /> : <RuleBuilderLite />}
+    </div>
+  );
+}
+
+function PruningWorkspace({
+  activeTab,
+  setActiveTab,
+}: {
+  activeTab: PruningWorkspaceTab;
+  setActiveTab: (tab: PruningWorkspaceTab) => void;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <SubNavigation
+        label="検証モード"
+        active={activeTab}
+        onChange={setActiveTab}
+        items={[
+          { id: "probability", label: "確率伝播" },
+          { id: "influence", label: "影響モデル" },
+          { id: "lab", label: "枝刈りラボ" },
+        ]}
+      />
+      {activeTab === "probability" ? <ProbabilityWorkbench /> : null}
+      {activeTab === "influence" ? <InfluenceWorkbench /> : null}
+      {activeTab === "lab" ? (
+        <ReasoningLab initialTab="pruning" scope="pruning" />
+      ) : null}
     </div>
   );
 }

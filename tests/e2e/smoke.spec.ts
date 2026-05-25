@@ -6,9 +6,31 @@ test("loads the knowledge map and navigates primary screens", async ({
   await page.goto("/");
 
   await expect(
-    page.getByRole("heading", { name: "麻雀思考ラボ" }),
+    page.getByRole("heading", { name: "局面で考える" }),
   ).toBeVisible();
+  await expect(page.getByText("この画面でできること")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "局面作業場" })).toBeVisible();
+
+  await page.getByRole("button", { name: "知識を作る" }).click();
+  await expect(page.getByRole("heading", { name: "知識を作る" })).toBeVisible();
   await expect(page.getByText("平均集中型の読み")).toBeVisible();
+
+  const lensBar = page.getByRole("toolbar", { name: "レンズ切替" });
+  await expect(lensBar.getByRole("button", { name: "意味" })).toBeVisible();
+  await lensBar.getByRole("button", { name: "確率" }).click();
+  await expect(lensBar.getByRole("button", { name: "確率" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await lensBar.getByRole("button", { name: "全部" }).click();
+  await expect(lensBar.getByRole("button", { name: "全部" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await page.getByRole("button", { name: "凡例を畳む" }).click();
+  await expect(page.getByRole("button", { name: "凡例を開く" })).toBeVisible();
+  await page.getByRole("button", { name: "凡例を開く" }).click();
 
   const visibleNodeCount = page.getByText(/件のノードを表示/);
   const readVisibleNodeCount = async () => {
@@ -91,26 +113,39 @@ test("loads the knowledge map and navigates primary screens", async ({
   await page.mouse.up();
   await expect(confidenceSlider).toBeVisible();
 
-  await page.getByRole("button", { name: "局面作業場" }).click();
+  await page.getByRole("button", { name: "局面で考える" }).click();
   await expect(page.getByRole("heading", { name: "局面作業場" })).toBeVisible();
 
-  await page.getByRole("button", { name: "ルール作成" }).click();
+  await page.getByRole("button", { name: "知識を作る" }).click();
+  await page
+    .getByRole("toolbar", { name: "作成モード" })
+    .getByRole("button", { name: "ルール作成" })
+    .click();
   await expect(
     page.getByRole("heading", { name: "ルール作成ライト" }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "確率" }).click();
+  await page.getByRole("button", { name: "枝刈りを検証する" }).click();
   await expect(page.getByRole("heading", { name: "選択候補群" })).toBeVisible();
 
-  await page.getByRole("button", { name: "影響" }).click();
+  const validationToolbar = page.getByRole("toolbar", { name: "検証モード" });
+  await validationToolbar.getByRole("button", { name: "影響モデル" }).click();
   await expect(page.getByRole("heading", { name: "指標レンズ" })).toBeVisible();
 
-  await page.getByRole("button", { name: "思考ラボ" }).click();
+  await validationToolbar.getByRole("button", { name: "枝刈りラボ" }).click();
+  await expect(
+    page.getByRole("heading", { name: "枝刈り影響シミュレーター" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "読みを説明する" }).click();
   await expect(
     page.getByRole("heading", { name: "集中度レンズ" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "読み筋タイムライン" }),
+  ).toBeVisible();
 
-  await page.getByRole("button", { name: "データ入出力" }).click();
+  await page.getByRole("button", { name: "データ管理" }).click();
   await expect(
     page.getByRole("heading", { name: "ワークスペースデータ" }),
   ).toBeVisible();

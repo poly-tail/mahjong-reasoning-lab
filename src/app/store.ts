@@ -29,14 +29,7 @@ import {
   type WorkspaceDocument,
 } from "../domain/schema";
 
-export type Screen =
-  | "knowledge"
-  | "case"
-  | "rules"
-  | "probability"
-  | "influence"
-  | "lab"
-  | "io";
+export type Screen = "case" | "knowledge" | "pruning" | "explanation" | "data";
 export type SaveStatus = "loading" | "idle" | "saving" | "saved" | "error";
 
 type WorkspaceMutation = (doc: WorkspaceDocument) => WorkspaceDocument;
@@ -305,7 +298,7 @@ function distanceSquared(left: NodePosition, right: NodePosition) {
 
 export const useAppStore = create<AppState>((set, get) => ({
   doc: seedWorkspace,
-  activeScreen: "knowledge",
+  activeScreen: "case",
   selectedNodeIds: [],
   selectedEdgeIds: [],
   search: "",
