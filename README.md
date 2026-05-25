@@ -49,6 +49,12 @@ Playwrightのブラウザが未インストールの場合は、先に次を実�
 npx playwright install chromium
 ```
 
+ユーザー向け仕様書PDFを再生成する場合は次を実行します。
+
+```powershell
+node scripts/render-specification-pdf.mjs
+```
+
 ## コマンド一覧
 
 ```bash
@@ -83,7 +89,7 @@ npm run format     # Prettier check
 ```text
 src/
   app/              # AppShellとZustand store
-  domain/           # zod schema、seed、export変換、ラベル
+  domain/           # zod schema、seed、export変換、分類、テンプレート、ラベル
   infrastructure/   # IndexedDB、file I/O
   shared/           # 小さな共通utility
   ui/               # 画面とUI primitives
@@ -104,6 +110,29 @@ tests/
 
 ## Screens
 
+トップ導線は作業目的で分けています。
+
+- 局面で考える: Case WorkspaceとDecision Pipeline
+- 理論を整理する: Mapping Inbox、Knowledge Map、Hand Value Range Lens、Rescue Rate Lens、Rule Builder Lite
+- 確率と枝刈り: Probability Workbench、Influence Workbench、Pruning/Lock分析
+- 読みを検証する: concentration、pruning、lock、ambiguity、chainを含むReasoning Lab
+- 教材化する: teaching logと教育用説明
+- データ管理: JSON import/export
+
+### Mapping Inbox
+
+- ChatGPTやnoteの麻雀考察を貼り付け、テンプレートから下書きノード案を作成
+- テンプレート: 手牌価値レンジ、押し引き、危険牌比較、脇救済率、ノードロック、枝刈り、読みの有用性、条件戦/順位点、中間状態
+- 自然言語解析やLLM連携はせず、選んだテンプレートに沿って既存schemaの `type` / `tags` / `probability_role` / `pruning_hints` / `lock_mode` を埋める
+- 作成ノードは通常のZustand commit、zod validation、undo historyに乗る
+
+### Domain Lens / Theory Lenses
+
+- Knowledge MapのDomain Lensで、全部、手牌価値、押し引き、安全度、確率木、枝刈り、ロック、脇救済、教育、反省のプリセット表示を切り替え
+- Hand Value Range Lensで、打点・早さ・形、外部補正、mixed/unknown influence、追加観測候補を確認
+- Rescue Rate Lensで、時間窓、脇の救済イベント束、概算 `q_total = 1 - product(1 - q_i)`、上限警告を管理
+- 脇救済率は正確な局面シミュレータではなく、他力救済を短時間窓と上限レンジで制御する整理UI
+
 ### Knowledge Map
 
 - ノード/エッジの作成、接続、削除、複製
@@ -120,6 +149,8 @@ tests/
 - 観測事象、仮説メモを管理
 - 関連知識ノードをattach
 - attachしたノードを「観測 → 仮説 → 条件 → 判断」列へ配置
+- 「判断プロセス」表示で、洗い出し → 重み付け → 加算/合成 → 比較 → 選択 → 反省として同じattached nodesを派生表示
+- 足りない要素パネルで、仮説/metric/choice group/判断メモ/反省メモ/mixed or unknown influenceなどを確認
 - 相反edgeがあるノードに相反バッジを表示
 - Top-k仮説保持数、判断メモ、反省メモを保存
 
@@ -160,6 +191,10 @@ tests/
 - Ambiguity / Observation Planner: mixed / unknown / conflicting influencesを分け、observe/downweight/prune候補を表示
 - Reading Chain Timeline: observation → hypothesis split → lock → prune → compare のような多段読みをreplay
 - Educational Explanation Panel: reading utilityとteaching logから、なぜその読みが効く/効かないかを説明
+- PruningとNode Lockの違いを説明カードで明示
+- hard prune / soft downweight / keep top-k / hard lock / soft lock / freeze ratio / freeze concentration bandを操作グループで表示
+- mixed/unknown influence、must_keep_top_k、薄く広い候補、固定中ノードに対する危険な枝刈りをwarning表示
+- シミュレーション結果からテンプレートベースのteaching logを作成
 
 ### JSON I/O
 
@@ -220,16 +255,19 @@ Ambiguityが大きい場合、pruningは警告または禁止されます。prun
 - inference seed: 染め本線 / 染め薄い / 染め否定、愚形固定 / 両面固定 / トイツ処理、高打点事故率、同色副露観測、選択バイアス注意modifier
 - influence seed: 中盤の無筋手出し -> fold_risk(+)、現物増加 -> fold_risk(-)、手牌価値上昇 -> win_rate/value(+)、染め本線 -> safety(mixed)、手出し字牌連打 observation candidate
 - reasoning lab seed: 上位質量集中、薄く広い枝集合、二極化枝集合、多峰性枝集合、狭い一点だけ削る読み、上位2枝に効く読み、ambiguityを減らす観測、marginが動かない観測、training case
+- 判断ワークベンチseed: 中盤の染め副露読み、脇救済率を考慮した終盤押し引き、中間状態モデル、枝刈りとノードロックの違い
 
 ## Screenshots For README
 
 READMEにスクリーンショットを貼る場合は、開発サーバを起動して以下を撮ると主要画面が揃います。
 
-1. Knowledge Map: seed graph全体、左palette、右Inspectorが見える状態
-2. Case Workspace: seed caseの4列思考経路が見える状態
-3. Rule Builder Lite: `Hard gate` / `Soft score` / `Override` / `Fallback` の4区分が見える状態
-4. JSON I/O: workspace JSONとsubgraph export欄が見える状態
-5. Reasoning Lab: Concentration Lensでcg_flush_read / cg_bimodal_push、Pruning Labでbefore/after diff、Reading Chain Timelineでseed chainが見える状態
+1. Mapping Inbox: 脇救済率テンプレートで下書きノード案が見える状態
+2. Knowledge Map: Domain Lens、凡例、マッピングガイド、右Inspectorが見える状態
+3. Case Workspace: seed caseの4列思考経路と判断プロセスモードが見える状態
+4. Hand Value Range Lens: 打点・早さ・形の3軸が見える状態
+5. Rescue Rate Lens: 時間窓、イベント入力、上限警告が見える状態
+6. Reasoning Lab: Pruning Labでbefore/after diff、Lock Analysis、Educational Explanationが見える状態
+7. JSON I/O: workspace JSONとsubgraph export欄が見える状態
 
 ## Assumptions
 
@@ -245,6 +283,8 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 
 ## Docs
 
+- [specification.md](./docs/specification.md)
+- [specification.pdf](./docs/specification.pdf)
 - [architecture.md](./docs/architecture.md)
 - [schema.md](./docs/schema.md)
 - [future-integration.md](./docs/future-integration.md)
@@ -254,11 +294,18 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 - [reading-utility.md](./docs/reading-utility.md)
 - [multi-step-reading.md](./docs/multi-step-reading.md)
 - [educational-mode.md](./docs/educational-mode.md)
+- [mahjong-mapping.md](./docs/mahjong-mapping.md)
+- [decision-pipeline.md](./docs/decision-pipeline.md)
+- [rescue-rate.md](./docs/rescue-rate.md)
+- [pruning-vs-lock.md](./docs/pruning-vs-lock.md)
 
 ## 今回のMVPで出来ること
 
 - 麻雀読みの知識ノードと関係edgeを地図として編集できる
+- Mapping Inboxで考察メモから下書きノードを作れる
 - 具体局面に知識ノードを貼り、観測/仮説/条件/判断に並べてレビューできる
+- Case Workspaceで判断プロセスモードを使える
+- 手牌価値レンジ理論と脇救済率を専用Lensで整理できる
 - Hard gate / Soft score / Override / Fallbackを最低限のrule JSONとして保存できる
 - workspace JSONとpruning-ui向けsubgraph JSONをexport/importできる
 - 確率inference subgraphの正規化、lock、preview、scenario compareができる

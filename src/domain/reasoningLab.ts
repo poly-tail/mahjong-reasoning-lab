@@ -356,6 +356,33 @@ export function buildTeachingLogs(doc: WorkspaceDocument): TeachingLog[] {
     });
 }
 
+export function createTeachingLogFromSimulation(
+  caseId: string,
+  simulation: PruningSimulation,
+  targetTitle: string,
+): TeachingLog {
+  const summary = simulation.impact_summary;
+  const actionType = simulation.action.action_type;
+  const safeAlternative =
+    actionType === "hard_prune" && summary.ambiguity_change <= 0
+      ? "hard prune より downweight / keep-top-k が安全です。"
+      : "操作後も残る候補と曖昧性を確認してください。";
+
+  return {
+    case_id: caseId,
+    action_id: simulation.action.id,
+    explanation_short: `${targetTitle}: ${actionType} の判断差分`,
+    explanation_full: `この読みは ${targetTitle} に ${actionType} を適用し、質量差分を ${summary.delta_mass}、判断余裕を ${summary.margin_change} 変化させました。主枝変化は「${summary.dominant_branch_change}」です。曖昧性変化は ${summary.ambiguity_change} で、${safeAlternative}`,
+    key_terms: [
+      "この読みで何が変わったか",
+      "質量差分",
+      "判断余裕",
+      "曖昧性",
+    ],
+    created_at: nowIso(),
+  };
+}
+
 function createConcentrationItem(
   id: string,
   title: string,
@@ -407,8 +434,6 @@ function applyPruningAction(
           dynamic_weight: 0,
           posterior_probability: 0,
           prior_probability: 0,
-          lock_mode: "hard_lock",
-          lock_value: 0,
           lock_rationale: action.rationale,
           updated_at: now,
         };

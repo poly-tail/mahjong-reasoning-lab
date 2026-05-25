@@ -21,6 +21,7 @@ import { getMetricInfluences, getInfluenceModel } from "../../domain/influence";
 import { getInferenceSubgraph } from "../../domain/probability";
 import {
   buildTeachingLogs,
+  createTeachingLogFromSimulation,
   estimateAveragingSafety,
   evaluateReadingUtilities,
   getConcentrationItems,
@@ -29,12 +30,17 @@ import {
 } from "../../domain/reasoningLab";
 import {
   lockModes,
-  pruningActionTypes,
   type KnowledgeNode,
   type LockMode,
   type PruningAction,
   type PruningActionType,
 } from "../../domain/schema";
+import {
+  describeActionEffect,
+  getPruningLockWarnings,
+  isLockActionType,
+  pruningActionGroups,
+} from "../../domain/pruningSafety";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Field, Input, Select, Textarea } from "../components/form";
@@ -104,6 +110,16 @@ const ambiguityStatusLabels: Record<string, string> = {
   conflicting: "衝突",
 };
 
+const readingUtilityLabels = {
+  selective_pruning_ratio: "狙った枝だけを削れた度",
+  global_impact_score: "全体への影響",
+  concentration_shift: "候補集中度の変化",
+  ambiguity_reduction: "曖昧性の減少",
+  projected_margin_gain: "判断余裕の改善",
+  cost_estimate: "観測/思考コスト",
+  utility_score: "読みの有用度",
+} as const;
+
 export function ReasoningLab({
   scope = "all",
   initialTab,
@@ -116,6 +132,7 @@ export function ReasoningLab({
   const recordReasoningLabSimulation = useAppStore(
     (state) => state.recordReasoningLabSimulation,
   );
+  const addTeachingLog = useAppStore((state) => state.addTeachingLog);
   const [activeTab, setActiveTab] = useState<TabId>(() =>
     defaultTabForScope(scope, initialTab),
   );
@@ -209,6 +226,17 @@ export function ReasoningLab({
             recordReasoningLabSimulation(
               simulation.action,
               simulation.impact_summary,
+            );
+          }}
+          onCreateTeachingLog={() => {
+            if (!simulation) return;
+            const target = doc.nodes.find((node) => node.id === targetId);
+            addTeachingLog(
+              createTeachingLogFromSimulation(
+                doc.active_case_id ?? doc.cases[0]?.id ?? "case_unknown",
+                simulation,
+                target?.title ?? targetId,
+              ),
             );
           }}
         />
@@ -484,6 +512,7 @@ function PruningLabTab({
   setRationale,
   simulation,
   onSave,
+  onCreateTeachingLog,
 }: {
   nodes: KnowledgeNode[];
   actionType: PruningActionType;
@@ -496,9 +525,14 @@ function PruningLabTab({
   setRationale: (value: string) => void;
   simulation?: ReturnType<typeof simulatePruningAction>;
   onSave: () => void;
+  onCreateTeachingLog: () => void;
 }) {
+  const warnings = simulation
+    ? getPruningLockWarnings(simulation.preview_doc, simulation.action)
+    : [];
   return (
     <div className="grid gap-3">
+      <PruningLockDifferenceCard />
       <Panel title="枝刈り影響シミュレーター">
         <div className="grid grid-cols-[320px_1fr] gap-3 p-3">
           <div className="grid content-start gap-3">
@@ -509,10 +543,14 @@ function PruningLabTab({
                   setActionType(event.target.value as PruningActionType)
                 }
               >
-                {pruningActionTypes.map((type) => (
-                  <option key={type} value={type}>
-                    {pruningActionTypeLabels[type]}
-                  </option>
+                {pruningActionGroups.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.actions.map((type) => (
+                      <option key={type} value={type}>
+                        {pruningActionTypeLabels[type]}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </Select>
             </Field>
@@ -549,6 +587,16 @@ function PruningLabTab({
             <Button variant="primary" onClick={onSave} disabled={!simulation}>
               差分ログを保存
             </Button>
+            <Button onClick={onCreateTeachingLog} disabled={!simulation}>
+              このシミュレーションから解説を作成
+            </Button>
+            {warnings.length > 0 ? (
+              <div className="grid gap-1.5 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs leading-5 text-amber-800">
+                {warnings.map((warning) => (
+                  <p key={warning}>{warning}</p>
+                ))}
+              </div>
+            ) : null}
           </div>
           {simulation ? (
             <SimulationSummary simulation={simulation} nodes={nodes} />
@@ -556,6 +604,47 @@ function PruningLabTab({
         </div>
       </Panel>
     </div>
+  );
+}
+
+function PruningLockDifferenceCard() {
+  return (
+    <Panel title="操作の違い">
+      <div className="grid grid-cols-4 gap-2 p-3 text-sm leading-6 text-stone-700">
+        <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+          <div className="font-semibold text-stone-950">
+            枝刈り: 候補空間を縮める
+          </div>
+          <p className="mt-1 text-xs text-stone-500">
+            hard prune は候補を削り、soft downweight は消さずに弱めます。
+          </p>
+        </div>
+        <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+          <div className="font-semibold text-stone-950">
+            ロック: 分布や比率を固定する
+          </div>
+          <p className="mt-1 text-xs text-stone-500">
+            候補は残したまま、確率や戦略分布を明示的に固定します。
+          </p>
+        </div>
+        <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+          <div className="font-semibold text-stone-950">
+            downweight: 消さずに弱める
+          </div>
+          <p className="mt-1 text-xs text-stone-500">
+            mixed/unknown が残る場合は、強制枝刈りより安全です。
+          </p>
+        </div>
+        <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+          <div className="font-semibold text-stone-950">
+            keep top-k: 複数仮説を残す
+          </div>
+          <p className="mt-1 text-xs text-stone-500">
+            1つに絞らず、比較に必要な候補集合を保持します。
+          </p>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -570,78 +659,81 @@ function LockAnalysisTab({
 }) {
   const safetyById = new Map(safety.map((item) => [item.target_id, item]));
   return (
-    <Panel title="ノードロック / 状態固定分析">
-      <div className="grid gap-2 p-3">
-        {nodes.map((node) => {
-          const item =
-            safetyById.get(node.choice_group_id ?? "") ??
-            safetyById.get(node.id);
-          return (
-            <div
-              key={node.id}
-              className="grid grid-cols-[1.1fr_160px_120px_1.2fr] items-center gap-3 rounded-md border border-stone-200 p-3"
-            >
-              <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-stone-900">
-                  {node.title}
-                </div>
-                <div className="mt-1 flex gap-1">
-                  <Badge tone="cyan">
-                    確率 {format(node.posterior_probability ?? 0)}
-                  </Badge>
-                  <Badge>{node.choice_group_id ?? "単独"}</Badge>
-                </div>
-              </div>
-              <Select
-                value={node.lock_mode}
-                onChange={(event) =>
-                  updateNode(node.id, {
-                    lock_mode: event.target.value as LockMode,
-                  })
-                }
+    <div className="grid gap-3">
+      <PruningLockDifferenceCard />
+      <Panel title="ノードロック / 状態固定分析">
+        <div className="grid gap-2 p-3">
+          {nodes.map((node) => {
+            const item =
+              safetyById.get(node.choice_group_id ?? "") ??
+              safetyById.get(node.id);
+            return (
+              <div
+                key={node.id}
+                className="grid grid-cols-[1.1fr_160px_120px_1.2fr] items-center gap-3 rounded-md border border-stone-200 p-3"
               >
-                {lockOptions.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {lockModeLabels[mode]}
-                  </option>
-                ))}
-              </Select>
-              <Input
-                type="number"
-                step="0.05"
-                value={node.lock_value ?? ""}
-                placeholder="値"
-                onChange={(event) =>
-                  updateNode(node.id, {
-                    lock_value:
-                      event.target.value === ""
-                        ? undefined
-                        : Number(event.target.value),
-                  })
-                }
-              />
-              <div className="min-w-0">
-                <Badge
-                  tone={
-                    item?.label === "safe"
-                      ? "emerald"
-                      : item?.label === "unsafe"
-                        ? "rose"
-                        : "amber"
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-stone-900">
+                    {node.title}
+                  </div>
+                  <div className="mt-1 flex gap-1">
+                    <Badge tone="cyan">
+                      確率 {format(node.posterior_probability ?? 0)}
+                    </Badge>
+                    <Badge>{node.choice_group_id ?? "単独"}</Badge>
+                  </div>
+                </div>
+                <Select
+                  value={node.lock_mode}
+                  onChange={(event) =>
+                    updateNode(node.id, {
+                      lock_mode: event.target.value as LockMode,
+                    })
                   }
                 >
-                  平均化{" "}
-                  {item?.label ? averagingSafetyLabels[item.label] : "不明"}
-                </Badge>
-                <p className="mt-1 truncate text-xs text-stone-500">
-                  {item?.reasons.join(" / ") ?? "推定対象なし"}
-                </p>
+                  {lockOptions.map((mode) => (
+                    <option key={mode} value={mode}>
+                      {lockModeLabels[mode]}
+                    </option>
+                  ))}
+                </Select>
+                <Input
+                  type="number"
+                  step="0.05"
+                  value={node.lock_value ?? ""}
+                  placeholder="値"
+                  onChange={(event) =>
+                    updateNode(node.id, {
+                      lock_value:
+                        event.target.value === ""
+                          ? undefined
+                          : Number(event.target.value),
+                    })
+                  }
+                />
+                <div className="min-w-0">
+                  <Badge
+                    tone={
+                      item?.label === "safe"
+                        ? "emerald"
+                        : item?.label === "unsafe"
+                          ? "rose"
+                          : "amber"
+                    }
+                  >
+                    平均化{" "}
+                    {item?.label ? averagingSafetyLabels[item.label] : "不明"}
+                  </Badge>
+                  <p className="mt-1 truncate text-xs text-stone-500">
+                    {item?.reasons.join(" / ") ?? "推定対象なし"}
+                  </p>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
-    </Panel>
+            );
+          })}
+        </div>
+      </Panel>
+    </div>
   );
 }
 
@@ -823,6 +915,12 @@ function EducationTab({
               <p className="text-sm leading-6 text-stone-600">
                 {log.explanation_full}
               </p>
+              <div className="grid grid-cols-4 gap-2 text-xs text-stone-600">
+                <Badge tone="cyan">この読みで何が変わったか</Badge>
+                <Badge>消えた/弱まった仮説</Badge>
+                <Badge>まだ曖昧な点</Badge>
+                <Badge>次に見るべき情報</Badge>
+              </div>
             </div>
           ))}
         </div>
@@ -839,24 +937,26 @@ function EducationTab({
                   {nodeById.get(utility.target_id)?.title ?? utility.target_id}
                 </div>
                 <div className="truncate text-xs text-stone-500">
-                  選択枝刈り {format(utility.selective_pruning_ratio)} / コスト{" "}
+                  {readingUtilityLabels.selective_pruning_ratio}{" "}
+                  {format(utility.selective_pruning_ratio)} /{" "}
+                  {readingUtilityLabels.cost_estimate}{" "}
                   {format(utility.cost_estimate)}
                 </div>
               </div>
               <MetricBox
-                label={metricLabels.utility}
+                label={readingUtilityLabels.utility_score}
                 value={utility.utility_score}
               />
               <MetricBox
-                label={metricLabels.global}
+                label={readingUtilityLabels.global_impact_score}
                 value={utility.global_impact_score}
               />
               <MetricBox
-                label={metricLabels.ambiguity}
+                label={readingUtilityLabels.ambiguity_reduction}
                 value={utility.ambiguity_reduction}
               />
               <MetricBox
-                label={metricLabels.margin}
+                label={readingUtilityLabels.projected_margin_gain}
                 value={utility.projected_margin_gain}
               />
             </div>
@@ -918,15 +1018,31 @@ function SimulationSummary({
         />
       </div>
       <div className="grid gap-1.5 rounded-md border border-stone-200 p-3">
-        <div className="text-sm font-medium">変化量の要約</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-medium">変化量の要約</div>
+          <Badge tone={isLockActionType(simulation.action.action_type) ? "cyan" : "amber"}>
+            {describeActionEffect(simulation.action.action_type)}
+          </Badge>
+        </div>
         {changed.map((item) => (
           <div
             key={item.id}
-            className="grid grid-cols-[160px_1fr_64px] items-center gap-2 text-xs"
+            className="grid grid-cols-[160px_auto_1fr_64px] items-center gap-2 text-xs"
           >
             <span className="truncate">
               {nodeById.get(item.id)?.title ?? item.id}
             </span>
+            <Badge
+              tone={
+                item.delta < 0
+                  ? "amber"
+                  : item.delta > 0
+                    ? "emerald"
+                    : "stone"
+              }
+            >
+              {item.delta < 0 ? "弱まった" : "強まった"}
+            </Badge>
             <Progress value={Math.min(1, Math.abs(item.delta) * 3)} />
             <span className="text-right tabular-nums">
               {item.delta > 0 ? "+" : ""}

@@ -12,7 +12,7 @@ src/app
   AppShell, navigation, manual save/autosave lifecycle, Zustand store
 
 src/domain
-  zod schemas, seed data, labels, factories, JSON export transformation, propagation engine, influence analysis, Reasoning Lab calculations
+  zod schemas, seed data, labels, taxonomy, mapping templates, rescue-rate helpers, pruning safety, JSON export transformation, propagation engine, influence analysis, Reasoning Lab calculations
 
 src/infrastructure
   IndexedDB persistence and browser file I/O
@@ -33,7 +33,9 @@ The domain layer does not import React. This keeps the JSON schemas and future p
 6. JSON import/export uses `src/domain/export.ts`.
 7. Probability preview uses `src/domain/probability.ts` and only mutates the document after the user applies the preview.
 8. Directional influence views use `src/domain/influence.ts`; influence sign is never read from a node.
-9. Reasoning Lab uses `src/domain/reasoningLab.ts` to create concentration metrics, pruning simulations, reading utility scores, lock safety estimates, chain replay diffs, and teaching logs.
+9. Mapping Inbox uses `src/domain/mappingTemplates.ts` to create schema-compatible draft nodes from user-selected templates.
+10. Domain Lens uses `src/domain/mahjongTaxonomy.ts` to filter the Knowledge Map without changing schema enums.
+11. Reasoning Lab uses `src/domain/reasoningLab.ts` to create concentration metrics, pruning simulations, reading utility scores, lock safety estimates, chain replay diffs, and teaching logs.
 
 ## Screens
 
@@ -61,6 +63,14 @@ Cases attach knowledge nodes by id. Each attached node can be assigned to one la
 - decision
 
 Simple candidate suggestions are based on title/tag text matching and edge proximity to already attached nodes. This is not an inference engine.
+
+Decision Pipeline mode is a derived view over the same attached nodes. It maps nodes to collect, weight, combine, compare, choose, and review columns by node type, tags, lane assignment, and influence edges. It does not add new case lanes to the schema.
+
+### Mapping Inbox and Theory Lenses
+
+Mapping Inbox is a manual structuring aid. It does not call an LLM and does not parse mahjong text automatically. The selected template creates draft nodes using existing fields such as tags, probability role, pruning hints, lock mode, formulas, thresholds, and distribution family.
+
+Hand Value Range Lens and Rescue Rate Lens are UI lenses over existing node/edge fields. They use taxonomy tags and influence edges rather than schema enum expansion.
 
 ### Rule Builder Lite
 
@@ -111,6 +121,8 @@ Lock behavior:
 - soft lock enforces a minimum retained probability
 - keep top-k collapses lower-ranked siblings after propagation
 - freeze ratio blends the computed posterior with the previous posterior
+
+Pruning and lock are kept separate in the UI. Pruning removes or weakens candidates; lock fixes a distribution or ratio while keeping candidates visible. A hard prune sets the target probability mass to zero for the simulation, but it is not presented as a node-lock operation.
 
 ### Directional Influence Layer
 

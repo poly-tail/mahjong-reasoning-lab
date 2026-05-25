@@ -10,6 +10,7 @@ import {
 } from "../domain/factory";
 import { runPropagation, type PropagationPreview } from "../domain/probability";
 import { edgeTypeLabels, nodeTypeLabels } from "../domain/labels";
+import type { MappingDraftNode } from "../domain/mappingTemplates";
 import { seedWorkspace } from "../domain/seed";
 import {
   caseLanes,
@@ -29,7 +30,13 @@ import {
   type WorkspaceDocument,
 } from "../domain/schema";
 
-export type Screen = "case" | "knowledge" | "pruning" | "explanation" | "data";
+export type Screen =
+  | "case"
+  | "theory"
+  | "probability"
+  | "validation"
+  | "teaching"
+  | "data";
 export type SaveStatus = "loading" | "idle" | "saving" | "saved" | "error";
 
 type WorkspaceMutation = (doc: WorkspaceDocument) => WorkspaceDocument;
@@ -72,6 +79,10 @@ type AppState = {
   applySavedView: (id: string) => void;
   deleteSavedView: (id: string) => void;
   addNode: (type: NodeType) => void;
+  createKnowledgeNodesFromDrafts: (
+    drafts: MappingDraftNode[],
+    attachToActiveCase?: boolean,
+  ) => void;
   duplicateSelectedNodes: () => void;
   deleteSelection: () => void;
   groupSelectedNodes: () => void;
@@ -421,6 +432,86 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
     commit(set, get, (doc) => ({ ...doc, nodes: [...doc.nodes, created] }));
     set({ selectedNodeIds: [created.id], selectedEdgeIds: [] });
+  },
+  createKnowledgeNodesFromDrafts: (drafts, attachToActiveCase = false) => {
+    if (drafts.length === 0) return;
+    const existingNodes = get().doc.nodes;
+    const created: KnowledgeNode[] = [];
+    const baseCount = existingNodes.length;
+
+    for (const [index, draft] of drafts.entries()) {
+      const nodeItem = createKnowledgeNode(draft.type, {
+        title: draft.title,
+        summary: draft.summary,
+        description: draft.description ?? draft.summary,
+        tags: draft.tags,
+        confidence: draft.confidence,
+        applicability: draft.applicability,
+        formulas: draft.formulas,
+        thresholds: draft.thresholds,
+        pruning_hints: draft.pruning_hints,
+        probability_role: draft.probability_role,
+        base_weight: draft.base_weight,
+        dynamic_weight: draft.dynamic_weight,
+        prior_probability: draft.prior_probability,
+        posterior_probability: draft.posterior_probability,
+        lock_mode: draft.lock_mode,
+        lock_value: draft.lock_value,
+        distribution_family: draft.distribution_family,
+        resolves_targets: draft.resolves_targets,
+        expected_sign_gain: draft.expected_sign_gain,
+        expected_weight_gain: draft.expected_weight_gain,
+        expected_margin_gain: draft.expected_margin_gain,
+        pruning_safety_change: draft.pruning_safety_change,
+        observation_cost: draft.observation_cost,
+        timeliness: draft.timeliness,
+        source_type: "note",
+        position: {
+          x: 220 + ((baseCount + index) % 7) * 280,
+          y: 120 + Math.floor((baseCount + index) / 7) * 190,
+        },
+      });
+      nodeItem.position = resolveNonOverlappingNodePosition(
+        nodeItem.id,
+        nodeItem.position,
+        [...existingNodes, ...created],
+      );
+      created.push(nodeItem);
+    }
+
+    const activeCaseId = get().doc.active_case_id ?? get().doc.cases[0]?.id;
+    commit(set, get, (doc) => ({
+      ...doc,
+      nodes: [...doc.nodes, ...created],
+      cases:
+        attachToActiveCase && activeCaseId
+          ? doc.cases.map((caseItem) =>
+              caseItem.id === activeCaseId
+                ? {
+                    ...caseItem,
+                    attached_node_ids: unique([
+                      ...caseItem.attached_node_ids,
+                      ...created.map((node) => node.id),
+                    ]),
+                    lane_assignments: {
+                      ...caseItem.lane_assignments,
+                      ...Object.fromEntries(
+                        created.map((node) => [
+                          node.id,
+                          inferLaneFromNodeType(node.type),
+                        ]),
+                      ),
+                    },
+                    updated_at: nowIso(),
+                  }
+                : caseItem,
+            )
+          : doc.cases,
+    }));
+    set({
+      selectedNodeIds: created.map((node) => node.id),
+      selectedEdgeIds: [],
+    });
   },
   duplicateSelectedNodes: () => {
     const selected = get().doc.nodes.filter((node) =>

@@ -201,6 +201,30 @@ Added MVP fields:
 - `condition`
 - `decision`
 
+Decision Pipeline mode does not add schema fields. It derives collect, weight, combine, compare, choose, and review columns from attached nodes, node type, tags, influence edges, and lane assignments.
+
+## Domain Taxonomy Tags
+
+Mahjong-specific taxonomy is stored as tags and lens presets, not as new schema enums.
+
+Examples:
+
+- `hand_value_range`
+- `value_axis`
+- `speed_axis`
+- `shape_axis`
+- `push_fold`
+- `danger_tile`
+- `probability_tree`
+- `pruning`
+- `node_lock`
+- `rescue_rate`
+- `rank_ev`
+- `teaching`
+- `review`
+
+External modifiers such as `turn`, `dealer`, `score_context`, `dora`, `honba`, `riichi_sticks`, and `rank_point` are also represented as tags.
+
 ## Rule Definition
 
 Fields:

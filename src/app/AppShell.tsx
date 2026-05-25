@@ -9,11 +9,12 @@ import {
   type ReactNode,
 } from "react";
 import {
-  BookOpen,
   Braces,
+  ClipboardList,
   Database,
   FlaskConical,
   GitFork,
+  GraduationCap,
   Map,
   Redo2,
   Save,
@@ -30,7 +31,10 @@ import { InfluenceWorkbench } from "../ui/influence/InfluenceWorkbench";
 import { KnowledgeMap } from "../ui/knowledge/KnowledgeMap";
 import { ProbabilityWorkbench } from "../ui/probability/ProbabilityWorkbench";
 import { ReasoningLab } from "../ui/lab/ReasoningLab";
+import { MappingInbox } from "../ui/mapping/MappingInbox";
 import { RuleBuilderLite } from "../ui/rules/RuleBuilderLite";
+import { HandValueRangeLens } from "../ui/theory/HandValueRangeLens";
+import { RescueRateLens } from "../ui/theory/RescueRateLens";
 
 const navItems: {
   screen: Screen;
@@ -38,24 +42,28 @@ const navItems: {
   icon: ComponentType<{ className?: string }>;
 }[] = [
   { screen: "case", label: "局面で考える", icon: GitFork },
-  { screen: "knowledge", label: "知識を作る", icon: Map },
-  { screen: "pruning", label: "枝刈りを検証する", icon: FlaskConical },
-  { screen: "explanation", label: "読みを説明する", icon: BookOpen },
+  { screen: "theory", label: "理論を整理する", icon: Map },
+  { screen: "probability", label: "確率と枝刈り", icon: FlaskConical },
+  { screen: "validation", label: "読みを検証する", icon: ClipboardList },
+  { screen: "teaching", label: "教材化する", icon: GraduationCap },
   { screen: "data", label: "データ管理", icon: Braces },
 ];
 
 const purposeDescriptions: Record<Screen, string> = {
-  case: "実戦局面に観測、仮説、条件、判断を並べ、関連する知識やルールを参照しながら読みを進めます。",
-  knowledge:
-    "読みの知識、条件、根拠、ルールを作成し、意味・確率・影響・枝刈り・教育の観点で整理します。",
-  pruning:
-    "候補の確率伝播、指標への影響、枝刈りやロックの前後差分を確認して、残す読みと削る読みを検証します。",
-  explanation:
-    "集中度、読み筋タイムライン、教育用説明を使い、判断に至る流れと学習向けの説明を組み立てます。",
+  case:
+    "観測、仮説、条件、判断を1つの局面に紐づけて整理します。結論だけでなく、途中の重み付けと迷いも残します。",
+  theory:
+    "手牌価値レンジ理論、押し引き、脇救済率などの抽象概念を、知識ノード・指標・影響・ルールへ変換します。",
+  probability:
+    "choice group、全体100%制約、枝刈り、ロックを分けて確認します。候補を削る操作と分布を固定する操作を混同しないための作業場です。",
+  validation:
+    "読みが選択肢比較、枝刈り、曖昧性解消、追加観測にどれだけ効いたかを検証します。",
+  teaching:
+    "判断がどう変化したか、まだ曖昧な点、次に見るべき情報を教材向けの説明として整理します。",
   data: "ワークスペース全体のJSON入出力、枝刈り画面向けサブグラフ出力、初期化を管理します。",
 };
 
-type KnowledgeWorkspaceTab = "map" | "rules";
+type TheoryWorkspaceTab = "inbox" | "map" | "hand" | "rescue" | "rules";
 type PruningWorkspaceTab = "probability" | "influence" | "lab";
 
 const autoSaveIntervalOptions = [1, 5, 10, 15, 30, 60];
@@ -97,8 +105,7 @@ export function AppShell() {
   const saving = useRef(false);
   const docRef = useRef(doc);
   const saveStatusRef = useRef(saveStatus);
-  const [knowledgeTab, setKnowledgeTab] =
-    useState<KnowledgeWorkspaceTab>("map");
+  const [theoryTab, setTheoryTab] = useState<TheoryWorkspaceTab>("inbox");
   const [pruningTab, setPruningTab] =
     useState<PruningWorkspaceTab>("probability");
 
@@ -224,23 +231,34 @@ export function AppShell() {
       return <CaseWorkspace />;
     }
 
-    if (activeScreen === "knowledge") {
-      return (
-        <KnowledgeWorkspace
-          activeTab={knowledgeTab}
-          setActiveTab={setKnowledgeTab}
-        />
-      );
+    if (activeScreen === "theory") {
+      return <TheoryWorkspace activeTab={theoryTab} setActiveTab={setTheoryTab} />;
     }
 
-    if (activeScreen === "pruning") {
+    if (activeScreen === "probability") {
       return (
         <PruningWorkspace activeTab={pruningTab} setActiveTab={setPruningTab} />
       );
     }
 
-    if (activeScreen === "explanation") {
-      return <ReasoningLab initialTab="concentration" scope="explanation" />;
+    if (activeScreen === "validation") {
+      return (
+        <ReasoningLab
+          key="validation-reasoning"
+          initialTab="concentration"
+          scope="all"
+        />
+      );
+    }
+
+    if (activeScreen === "teaching") {
+      return (
+        <ReasoningLab
+          key="teaching-reasoning"
+          initialTab="education"
+          scope="explanation"
+        />
+      );
     }
 
     return <ImportExportPanel />;
@@ -249,7 +267,7 @@ export function AppShell() {
   return (
     <div className="flex h-screen min-h-[720px] flex-col bg-stone-100 text-stone-900">
       <header className="flex min-h-14 items-center justify-between gap-3 border-b border-stone-300 bg-white px-3">
-        <div className="flex min-w-0 items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-700 bg-cyan-700 text-white">
             <Database className="h-5 w-5" aria-hidden="true" />
           </div>
@@ -263,7 +281,7 @@ export function AppShell() {
           </div>
         </div>
 
-        <nav className="flex min-w-0 flex-1 items-center justify-center gap-1 overflow-x-auto">
+        <nav className="flex min-w-0 flex-1 items-center justify-start gap-1 overflow-x-auto px-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -280,7 +298,7 @@ export function AppShell() {
           })}
         </nav>
 
-        <div className="flex min-w-fit items-center justify-end gap-2 text-xs text-stone-500">
+        <div className="flex min-w-fit shrink-0 items-center justify-end gap-2 text-xs text-stone-500">
           <Button
             size="icon"
             variant="ghost"
@@ -412,25 +430,32 @@ function SubNavigation<T extends string>({
   );
 }
 
-function KnowledgeWorkspace({
+function TheoryWorkspace({
   activeTab,
   setActiveTab,
 }: {
-  activeTab: KnowledgeWorkspaceTab;
-  setActiveTab: (tab: KnowledgeWorkspaceTab) => void;
+  activeTab: TheoryWorkspaceTab;
+  setActiveTab: (tab: TheoryWorkspaceTab) => void;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <SubNavigation
-        label="作成モード"
+        label="整理モード"
         active={activeTab}
         onChange={setActiveTab}
         items={[
+          { id: "inbox", label: "Mapping Inbox" },
           { id: "map", label: "知識マップ" },
+          { id: "hand", label: "手牌価値" },
+          { id: "rescue", label: "脇救済率" },
           { id: "rules", label: "ルール作成" },
         ]}
       />
-      {activeTab === "map" ? <KnowledgeMap /> : <RuleBuilderLite />}
+      {activeTab === "inbox" ? <MappingInbox /> : null}
+      {activeTab === "map" ? <KnowledgeMap /> : null}
+      {activeTab === "hand" ? <HandValueRangeLens /> : null}
+      {activeTab === "rescue" ? <RescueRateLens /> : null}
+      {activeTab === "rules" ? <RuleBuilderLite /> : null}
     </div>
   );
 }

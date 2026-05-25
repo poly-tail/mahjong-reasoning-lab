@@ -34,15 +34,16 @@ import {
   edgeTypeLabels,
   labelTag,
   nodeTypeLabels,
-  relationLayerLabels,
 } from "../../domain/labels";
 import {
-  edgeTypes,
+  createDomainLensSelection,
+  domainLensDefinitions,
+  type DomainLensId,
+} from "../../domain/mahjongTaxonomy";
+import {
   nodeTypes,
   type EdgeType,
-  type KnowledgeEdge,
   type KnowledgeNode,
-  type WorkspaceDocument,
 } from "../../domain/schema";
 import { cn } from "../../shared/cn";
 import { Badge } from "../components/badge";
@@ -53,6 +54,8 @@ import {
   KnowledgeFlowNode,
   type KnowledgeFlowNodeType,
 } from "./KnowledgeFlowNode";
+import { LegendPanel } from "./LegendPanel";
+import { MappingGuidePanel } from "./MappingGuidePanel";
 
 const flowNodeTypes: NodeTypes = {
   knowledgeNode: KnowledgeFlowNode,
@@ -96,165 +99,6 @@ const edgeColors: Record<EdgeType, string> = {
   enables_pruning: "#15803d",
 };
 
-type KnowledgeLens =
-  | "semantic"
-  | "probability"
-  | "influence"
-  | "pruning"
-  | "education"
-  | "all";
-
-const lensItems: { id: KnowledgeLens; label: string }[] = [
-  { id: "semantic", label: "意味" },
-  { id: "probability", label: "確率" },
-  { id: "influence", label: "影響" },
-  { id: "pruning", label: "枝刈り" },
-  { id: "education", label: "教育" },
-  { id: "all", label: "全部" },
-];
-
-const educationLensTerms = [
-  "teaching",
-  "training",
-  "review",
-  "explanation",
-  "教育",
-  "訓練",
-  "レビュー",
-  "説明",
-];
-
-function addEdgeAndEndpoints(
-  edge: KnowledgeEdge,
-  nodeIds: Set<string>,
-  edgeIds: Set<string>,
-) {
-  edgeIds.add(edge.id);
-  nodeIds.add(edge.source);
-  nodeIds.add(edge.target);
-}
-
-function addTouchingEdges(
-  seedNodeIds: Set<string>,
-  edges: KnowledgeEdge[],
-  nodeIds: Set<string>,
-  edgeIds: Set<string>,
-) {
-  for (const edge of edges) {
-    if (seedNodeIds.has(edge.source) || seedNodeIds.has(edge.target)) {
-      addEdgeAndEndpoints(edge, nodeIds, edgeIds);
-    }
-  }
-}
-
-function hasEducationMarker(node: KnowledgeNode) {
-  const text = [
-    node.title,
-    node.summary,
-    node.description,
-    node.notes,
-    node.stage,
-    ...node.tags,
-    ...node.applicability,
-  ]
-    .join(" ")
-    .toLowerCase();
-  return educationLensTerms.some((term) => text.includes(term.toLowerCase()));
-}
-
-function createLensSelection(lens: KnowledgeLens, doc: WorkspaceDocument) {
-  const nodeIds = new Set<string>();
-  const edgeIds = new Set<string>();
-
-  if (lens === "all") {
-    for (const node of doc.nodes) nodeIds.add(node.id);
-    for (const edge of doc.edges) edgeIds.add(edge.id);
-    return { nodeIds, edgeIds };
-  }
-
-  if (lens === "semantic") {
-    for (const node of doc.nodes) {
-      if (node.probability_role === "none") nodeIds.add(node.id);
-    }
-    for (const edge of doc.edges) {
-      if (edge.relation_layer === "semantic") {
-        addEdgeAndEndpoints(edge, nodeIds, edgeIds);
-      }
-    }
-    return { nodeIds, edgeIds };
-  }
-
-  if (lens === "probability") {
-    for (const node of doc.nodes) {
-      if (node.probability_role !== "none") nodeIds.add(node.id);
-    }
-    for (const edge of doc.edges) {
-      if (edge.relation_layer === "probabilistic") {
-        addEdgeAndEndpoints(edge, nodeIds, edgeIds);
-      }
-    }
-    return { nodeIds, edgeIds };
-  }
-
-  if (lens === "influence") {
-    for (const node of doc.nodes) {
-      if (node.tags.includes("influence") || node.type === "metric") {
-        nodeIds.add(node.id);
-      }
-    }
-    for (const edge of doc.edges) {
-      if (edge.relation_layer === "influence") {
-        addEdgeAndEndpoints(edge, nodeIds, edgeIds);
-      }
-    }
-    return { nodeIds, edgeIds };
-  }
-
-  if (lens === "pruning") {
-    const seedNodeIds = new Set<string>();
-    for (const node of doc.nodes) {
-      if (
-        node.pruning_hints.length > 0 ||
-        node.type === "pruning_suggestion" ||
-        node.type === "weight_adjustment_suggestion" ||
-        node.lock_mode !== "none"
-      ) {
-        seedNodeIds.add(node.id);
-        nodeIds.add(node.id);
-      }
-    }
-    for (const edge of doc.edges) {
-      if (edge.type === "blocks_pruning" || edge.type === "enables_pruning") {
-        addEdgeAndEndpoints(edge, nodeIds, edgeIds);
-      }
-    }
-    addTouchingEdges(seedNodeIds, doc.edges, nodeIds, edgeIds);
-    return { nodeIds, edgeIds };
-  }
-
-  const seedNodeIds = new Set<string>();
-  for (const node of doc.nodes) {
-    if (hasEducationMarker(node) || node.reading_utility_ids.length > 0) {
-      seedNodeIds.add(node.id);
-      nodeIds.add(node.id);
-    }
-  }
-  for (const utility of doc.reading_utilities) {
-    seedNodeIds.add(utility.target_id);
-    nodeIds.add(utility.target_id);
-  }
-  for (const chain of doc.reading_chains) {
-    for (const step of chain.steps) {
-      for (const sourceId of step.source_ids) {
-        seedNodeIds.add(sourceId);
-        nodeIds.add(sourceId);
-      }
-    }
-  }
-  addTouchingEdges(seedNodeIds, doc.edges, nodeIds, edgeIds);
-  return { nodeIds, edgeIds };
-}
-
 function normalizeFlowPosition(position: KnowledgeNode["position"]) {
   return {
     x: Math.max(0, Math.round(position.x)),
@@ -291,8 +135,8 @@ function LensBar({
   activeLens,
   onChange,
 }: {
-  activeLens: KnowledgeLens;
-  onChange: (lens: KnowledgeLens) => void;
+  activeLens: DomainLensId;
+  onChange: (lens: DomainLensId) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-stone-200 bg-stone-50 px-3 py-2">
@@ -302,7 +146,7 @@ function LensBar({
         role="toolbar"
         aria-label="レンズ切替"
       >
-        {lensItems.map((lens) => (
+        {domainLensDefinitions.map((lens) => (
           <Button
             key={lens.id}
             size="sm"
@@ -314,123 +158,6 @@ function LensBar({
           </Button>
         ))}
       </div>
-    </div>
-  );
-}
-
-function LegendPanel({
-  collapsed,
-  onToggle,
-}: {
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
-  if (collapsed) {
-    return (
-      <div className="absolute bottom-3 left-14 z-10">
-        <Button
-          size="sm"
-          onClick={onToggle}
-          title="凡例を開く"
-          aria-label="凡例を開く"
-        >
-          凡例
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <aside className="absolute bottom-3 left-14 z-10 max-h-[62%] w-80 overflow-auto rounded-md border border-stone-200 bg-white/95 shadow-lg backdrop-blur">
-      <div className="flex h-9 items-center justify-between border-b border-stone-200 px-3">
-        <h3 className="text-sm font-semibold text-stone-950">凡例</h3>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={onToggle}
-          title="凡例を畳む"
-          aria-label="凡例を畳む"
-        >
-          畳む
-        </Button>
-      </div>
-
-      <div className="grid gap-3 p-3 text-xs text-stone-600">
-        <div>
-          <h4 className="mb-1 font-semibold text-stone-800">線種とレイヤ</h4>
-          <div className="grid gap-1.5">
-            <LegendLine
-              label={relationLayerLabels.semantic}
-              description="意味関係"
-            />
-            <LegendLine
-              label={relationLayerLabels.probabilistic}
-              description="破線 / 確率伝播"
-              dashed="8 4"
-            />
-            <LegendLine
-              label={relationLayerLabels.influence}
-              description="点線 / 指標影響"
-              dashed="3 4"
-            />
-          </div>
-        </div>
-
-        <div>
-          <h4 className="mb-1 font-semibold text-stone-800">線色</h4>
-          <div className="grid grid-cols-2 gap-1.5">
-            {edgeTypes.map((type) => (
-              <div key={type} className="flex min-w-0 items-center gap-1.5">
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: edgeColors[type] }}
-                />
-                <span className="truncate">{edgeTypeLabels[type]}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <h4 className="mb-1 font-semibold text-stone-800">ノード種別</h4>
-          <div className="flex flex-wrap gap-1">
-            {nodeTypes.map((type) => (
-              <Badge key={type} tone="stone">
-                {nodeTypeLabels[type]}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
-function LegendLine({
-  label,
-  description,
-  dashed,
-}: {
-  label: string;
-  description: string;
-  dashed?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <svg className="h-3 w-14 shrink-0" viewBox="0 0 56 12" aria-hidden="true">
-        <line
-          x1="2"
-          y1="6"
-          x2="54"
-          y2="6"
-          stroke="#0e7490"
-          strokeWidth="2"
-          strokeDasharray={dashed}
-          strokeLinecap="round"
-        />
-      </svg>
-      <span className="font-medium text-stone-800">{label}</span>
-      <span className="text-stone-500">{description}</span>
     </div>
   );
 }
@@ -477,8 +204,9 @@ function KnowledgeMapInner() {
   const [dropPreview, setDropPreview] = useState<DropPreview | null>(null);
   const [nodePanelCollapsed, setNodePanelCollapsed] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
-  const [activeLens, setActiveLens] = useState<KnowledgeLens>("all");
+  const [activeLens, setActiveLens] = useState<DomainLensId>("all");
   const [legendCollapsed, setLegendCollapsed] = useState(false);
+  const [guideCollapsed, setGuideCollapsed] = useState(true);
 
   const allTags = useMemo(
     () =>
@@ -494,7 +222,7 @@ function KnowledgeMapInner() {
         .filter((node) => node.is_group && node.collapsed)
         .map((node) => node.id),
     );
-    const lensSelection = createLensSelection(activeLens, doc);
+    const lensSelection = createDomainLensSelection(activeLens, doc);
     const text = search.trim().toLowerCase();
     const matches = (node: KnowledgeNode) => {
       if (node.group_id && collapsedGroupIds.has(node.group_id)) return false;
@@ -639,9 +367,22 @@ function KnowledgeMapInner() {
     updateNodePosition(node.id, node.position);
   };
 
+  const closeGraphPopups = () => {
+    setLegendCollapsed(true);
+    setGuideCollapsed(true);
+  };
+
+  const onNodeDoubleClick = (_event: unknown, node: KnowledgeMapNodeType) => {
+    if (node.type !== "knowledgeNode") return;
+    closeGraphPopups();
+    setSelection([node.id], []);
+    setInspectorCollapsed(false);
+  };
+
   return (
     <div
       className="grid min-h-0 flex-1 gap-3 p-3"
+      onPointerDown={closeGraphPopups}
       style={{
         gridTemplateColumns: `${
           nodePanelCollapsed ? "44px" : "252px"
@@ -873,6 +614,7 @@ function KnowledgeMapInner() {
             onNodeDragStart={onNodeDragStart}
             onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDragStop}
+            onNodeDoubleClick={onNodeDoubleClick}
             onSelectionChange={({ nodes, edges }) => {
               if (
                 nodes.length === 0 &&
@@ -886,7 +628,10 @@ function KnowledgeMapInner() {
                 edges.map((edge) => edge.id),
               );
             }}
-            onPaneClick={() => setSelection([], [])}
+            onPaneClick={() => {
+              closeGraphPopups();
+              setSelection([], []);
+            }}
             fitView
             minZoom={0.25}
             maxZoom={1.8}
@@ -912,6 +657,11 @@ function KnowledgeMapInner() {
             <LegendPanel
               collapsed={legendCollapsed}
               onToggle={() => setLegendCollapsed((value) => !value)}
+              edgeColors={edgeColors}
+            />
+            <MappingGuidePanel
+              collapsed={guideCollapsed}
+              onToggle={() => setGuideCollapsed((value) => !value)}
             />
           </ReactFlow>
         </div>

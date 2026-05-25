@@ -1,16 +1,29 @@
-import { GitBranch, Link, Plus, Search, Unlink } from "lucide-react";
+import {
+  AlertTriangle,
+  GitBranch,
+  Link,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Unlink,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { useAppStore } from "../../app/store";
 import {
   laneLabels,
+  lockModeLabels,
   nodeTypeLabels,
+  probabilityRoleLabels,
+  pruningHintLabels,
   ruleCategoryLabels,
 } from "../../domain/labels";
+import { decisionPipelineSteps } from "../../domain/mahjongTaxonomy";
 import {
   caseLanes,
   type CaseData,
   type CaseLane,
   type KnowledgeNode,
+  type KnowledgeEdge,
 } from "../../domain/schema";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
@@ -40,6 +53,8 @@ const scoreSeatLabels = {
   north: "北",
 } as const;
 
+type CaseViewMode = "lanes" | "pipeline";
+
 export function CaseWorkspace() {
   const doc = useAppStore((state) => state.doc);
   const addCase = useAppStore((state) => state.addCase);
@@ -49,6 +64,7 @@ export function CaseWorkspace() {
   const detachNodeFromCase = useAppStore((state) => state.detachNodeFromCase);
   const setCaseNodeLane = useAppStore((state) => state.setCaseNodeLane);
   const [nodeSearch, setNodeSearch] = useState("");
+  const [viewMode, setViewMode] = useState<CaseViewMode>("lanes");
 
   const activeCase =
     doc.cases.find((caseItem) => caseItem.id === doc.active_case_id) ??
@@ -297,7 +313,26 @@ export function CaseWorkspace() {
               />
               <h2 className="text-sm font-semibold text-stone-950">思考経路</h2>
             </div>
-            <div className="flex items-center gap-2 text-sm text-stone-600">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-stone-600">
+              <div className="flex rounded-md border border-stone-300 bg-white p-0.5">
+                <Button
+                  size="sm"
+                  variant={viewMode === "lanes" ? "primary" : "ghost"}
+                  onClick={() => setViewMode("lanes")}
+                  aria-pressed={viewMode === "lanes"}
+                >
+                  4列
+                </Button>
+                <Button
+                  size="sm"
+                  variant={viewMode === "pipeline" ? "primary" : "ghost"}
+                  onClick={() => setViewMode("pipeline")}
+                  aria-pressed={viewMode === "pipeline"}
+                >
+                  <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+                  判断プロセス
+                </Button>
+              </div>
               <span>上位候補数</span>
               <Input
                 className="w-16"
@@ -316,27 +351,44 @@ export function CaseWorkspace() {
               />
             </div>
           </div>
-          <div className="grid min-h-[360px] grid-cols-4 gap-2 p-2">
-            {caseLanes.map((lane) => (
-              <CaseLaneColumn
-                key={lane}
-                lane={lane}
-                activeCase={activeCase}
-                nodes={attachedNodes.filter(
-                  (node) =>
-                    (activeCase.lane_assignments[node.id] ?? "hypothesis") ===
-                    lane,
-                )}
-                allAttachedNodes={attachedNodes}
-                edges={doc.edges}
-                onLaneChange={(nodeId, nextLane) =>
-                  setCaseNodeLane(activeCase.id, nodeId, nextLane)
-                }
-                onDetach={(nodeId) => detachNodeFromCase(activeCase.id, nodeId)}
-              />
-            ))}
-          </div>
+          {viewMode === "lanes" ? (
+            <div className="grid min-h-[360px] grid-cols-4 gap-2 p-2">
+              {caseLanes.map((lane) => (
+                <CaseLaneColumn
+                  key={lane}
+                  lane={lane}
+                  activeCase={activeCase}
+                  nodes={attachedNodes.filter(
+                    (node) =>
+                      (activeCase.lane_assignments[node.id] ??
+                        "hypothesis") === lane,
+                  )}
+                  allAttachedNodes={attachedNodes}
+                  edges={doc.edges}
+                  onLaneChange={(nodeId, nextLane) =>
+                    setCaseNodeLane(activeCase.id, nodeId, nextLane)
+                  }
+                  onDetach={(nodeId) =>
+                    detachNodeFromCase(activeCase.id, nodeId)
+                  }
+                />
+              ))}
+            </div>
+          ) : (
+            <DecisionPipelineBoard
+              activeCase={activeCase}
+              nodes={attachedNodes}
+              edges={doc.edges}
+              onDetach={(nodeId) => detachNodeFromCase(activeCase.id, nodeId)}
+            />
+          )}
         </section>
+
+        <MissingElementsPanel
+          activeCase={activeCase}
+          nodes={attachedNodes}
+          edges={doc.edges}
+        />
 
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-3">
           <Panel title="判断メモ">
@@ -521,4 +573,238 @@ function CaseLaneColumn({
       </div>
     </section>
   );
+}
+
+function DecisionPipelineBoard({
+  activeCase,
+  nodes,
+  edges,
+  onDetach,
+}: {
+  activeCase: CaseData;
+  nodes: KnowledgeNode[];
+  edges: KnowledgeEdge[];
+  onDetach: (nodeId: string) => void;
+}) {
+  const grouped = decisionPipelineSteps.map((step) => ({
+    ...step,
+    nodes: nodes.filter((node) => nodeMatchesPipelineStep(node, step.id, edges, activeCase)),
+  }));
+
+  return (
+    <div className="grid min-h-[360px] grid-cols-6 gap-2 p-2">
+      {grouped.map((step) => (
+        <section
+          key={step.id}
+          className="min-w-0 rounded-lg border border-stone-200 bg-stone-50"
+        >
+          <div className="border-b border-stone-200 px-2 py-2">
+            <h3 className="text-sm font-semibold text-stone-950">
+              {step.label}
+            </h3>
+          </div>
+          <div className="grid gap-2 p-2">
+            {step.nodes.map((node) => (
+              <PipelineNodeCard
+                key={`${step.id}_${node.id}`}
+                node={node}
+                edges={edges}
+                onDetach={onDetach}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function PipelineNodeCard({
+  node,
+  edges,
+  onDetach,
+}: {
+  node: KnowledgeNode;
+  edges: KnowledgeEdge[];
+  onDetach: (nodeId: string) => void;
+}) {
+  const influences = edges.filter(
+    (edge) =>
+      edge.relation_layer === "influence" &&
+      (edge.source === node.id || edge.target === node.id),
+  );
+  const probability =
+    node.posterior_probability ?? node.prior_probability ?? node.base_weight;
+
+  return (
+    <article className="rounded-lg border border-stone-200 bg-white p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-stone-950">
+            {node.title}
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1">
+            <Badge tone="cyan">{nodeTypeLabels[node.type]}</Badge>
+            {probability !== undefined ? (
+              <Badge>p {formatProbability(probability)}</Badge>
+            ) : null}
+            {node.probability_role !== "none" ? (
+              <Badge>{probabilityRoleLabels[node.probability_role]}</Badge>
+            ) : null}
+            {node.lock_mode !== "none" ? (
+              <Badge tone="amber">{lockModeLabels[node.lock_mode]}</Badge>
+            ) : null}
+          </div>
+        </div>
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => onDetach(node.id)}
+          title="関連付けを解除"
+        >
+          <Unlink className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      </div>
+      <p className="mt-1 line-clamp-2 text-xs leading-4 text-stone-600">
+        {node.summary}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {node.tags.slice(0, 4).map((tag) => (
+          <Badge key={tag}>{tag}</Badge>
+        ))}
+        {node.pruning_hints.map((hint) => (
+          <Badge key={hint} tone="amber">
+            {pruningHintLabels[hint]}
+          </Badge>
+        ))}
+      </div>
+      {influences.length > 0 ? (
+        <p className="mt-2 truncate text-xs text-stone-500">
+          influence:{" "}
+          {influences
+            .slice(0, 3)
+            .map((edge) => `${edge.sign} ${edge.label || edge.type}`)
+            .join(" / ")}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function MissingElementsPanel({
+  activeCase,
+  nodes,
+  edges,
+}: {
+  activeCase: CaseData;
+  nodes: KnowledgeNode[];
+  edges: KnowledgeEdge[];
+}) {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const caseInfluenceEdges = edges.filter(
+    (edge) =>
+      nodeIds.has(edge.source) &&
+      nodeIds.has(edge.target) &&
+      edge.relation_layer === "influence",
+  );
+  const missing = [
+    [
+      "仮説がない",
+      activeCase.hypotheses.length === 0 &&
+        !nodes.some((node) => ["hypothesis", "branch"].includes(node.type)),
+    ],
+    ["metricがない", !nodes.some((node) => node.type === "metric")],
+    ["choice groupがない", !nodes.some((node) => node.type === "choice_group")],
+    ["top-kが未設定", activeCase.top_k_hypotheses < 2],
+    ["判断メモがない", activeCase.decision_note.trim().length === 0],
+    ["反省メモがない", activeCase.review_note.trim().length === 0],
+    [
+      "mixed/unknown influence が残っている",
+      caseInfluenceEdges.some(
+        (edge) => edge.sign === "mixed" || edge.sign === "unknown",
+      ),
+    ],
+    [
+      "hard prune されそうだが ambiguity が高い",
+      nodes.some((node) => node.pruning_hints.includes("hard_gate_candidate")) &&
+        caseInfluenceEdges.some(
+          (edge) => edge.sign === "mixed" || edge.sign === "unknown",
+        ),
+    ],
+  ].filter(([, active]) => active);
+
+  return (
+    <Panel title="この局面で足りない要素">
+      <div className="flex flex-wrap gap-2 p-3">
+        {missing.length > 0 ? (
+          missing.map(([label]) => (
+            <Badge key={label as string} tone="amber">
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+              {label}
+            </Badge>
+          ))
+        ) : (
+          <span className="text-sm text-stone-500">
+            主要な判断要素は揃っています。
+          </span>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function nodeMatchesPipelineStep(
+  node: KnowledgeNode,
+  stepId: string,
+  edges: KnowledgeEdge[],
+  activeCase: CaseData,
+) {
+  const hasInfluence = edges.some(
+    (edge) =>
+      edge.relation_layer === "influence" &&
+      (edge.source === node.id || edge.target === node.id),
+  );
+  const hasTag = (values: string[]) =>
+    values.some((value) => node.tags.includes(value));
+
+  if (stepId === "collect") {
+    return ["observation", "question", "evidence", "signal"].includes(
+      node.type,
+    );
+  }
+  if (stepId === "weight") {
+    return (
+      ["weight_modifier", "heuristic", "metric"].includes(node.type) ||
+      hasInfluence ||
+      hasTag(["weight", "weight-modifier"])
+    );
+  }
+  if (stepId === "combine") {
+    return (
+      ["probability_aggregate", "metric"].includes(node.type) ||
+      hasTag(["combine", "probability_tree"])
+    );
+  }
+  if (stepId === "compare") {
+    return (
+      ["choice_group", "branch", "hypothesis", "scenario"].includes(node.type) ||
+      hasTag(["compare", "choice-group"])
+    );
+  }
+  if (stepId === "choose") {
+    return (
+      node.type === "action" ||
+      activeCase.lane_assignments[node.id] === "decision" ||
+      hasTag(["choose"])
+    );
+  }
+  return (
+    node.type === "evidence" ||
+    node.reading_utility_ids.length > 0 ||
+    hasTag(["review", "teaching", "training", "レビュー", "反省"])
+  );
+}
+
+function formatProbability(value: number) {
+  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
 }
