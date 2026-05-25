@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createDomainLensSelection,
+  getLegacyAxisMapping,
   handValueAxes,
   nodeMatchesDomainLens,
 } from "../../src/domain/mahjongTaxonomy";
@@ -32,6 +33,31 @@ describe("mahjong taxonomy, rescue rate, and pruning safety", () => {
     expect(handValueAxes.flatMap((axis) => axis.aliases)).toEqual(
       expect.arrayContaining(["speed_axis", "shape_axis", "external_modifier"]),
     );
+  });
+
+  it("maps legacy axis labels to the canonical four axes", () => {
+    expect(getLegacyAxisMapping()).toEqual([
+      {
+        legacy: "早さ",
+        current: "進行度・聴牌率",
+        note: "旧『早さ』は、聴牌率・先制率・巡目に対する進行度として扱う。",
+      },
+      {
+        legacy: "打点分布",
+        current: "打点",
+        note: "UI上は『打点』と表示し、内部説明ではレンジ・分布として扱う。",
+      },
+      {
+        legacy: "形",
+        current: "待ち・形の良さ",
+        note: "旧『形』は、良形/愚形・待ち候補・和了しやすさ・危険牌比較まで含めて扱う。",
+      },
+      {
+        legacy: "局面価値・行動閾値",
+        current: "点数状況・行動閾値",
+        note: "局面価値という抽象語ではなく、点数状況と行動閾値として表示する。",
+      },
+    ]);
   });
 
   it("calculates rescue rate with capped warnings", () => {
