@@ -2,19 +2,28 @@ import { useEffect, useRef, useState } from "react";
 import { Box, ChevronDown, ChevronRight, Link2, Trash2 } from "lucide-react";
 import { useAppStore } from "../../app/store";
 import {
+  combinationModeLabels,
   edgeTypeLabels,
+  influenceSignLabels,
   nodeTypeLabels,
   pruningHintLabels,
+  relationLayerLabels,
   sourceTypeLabels,
 } from "../../domain/labels";
 import {
+  combinationModes,
   edgeTypes,
+  influenceSigns,
   nodeTypes,
   pruningHints,
+  relationLayers,
   sourceTypes,
+  type CombinationMode,
+  type InfluenceSign,
   type KnowledgeEdge,
   type KnowledgeNode,
   type PruningHint,
+  type RelationLayer,
 } from "../../domain/schema";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
@@ -69,6 +78,178 @@ function RangeField({ label, value, onCommit }: RangeFieldProps) {
   );
 }
 
+function InfluenceEdgeFields({
+  edge,
+  updateEdge,
+}: {
+  edge: KnowledgeEdge;
+  updateEdge: (id: string, patch: Partial<KnowledgeEdge>) => void;
+}) {
+  return (
+    <section className="grid gap-2 rounded-lg border border-stone-200 p-2">
+      <h3 className="text-sm font-semibold text-stone-900">影響エッジ</h3>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="sign">
+          <Select
+            value={edge.sign}
+            onChange={(event) =>
+              updateEdge(edge.id, {
+                sign: event.target.value as InfluenceSign,
+              })
+            }
+          >
+            {influenceSigns.map((sign) => (
+              <option key={sign} value={sign}>
+                {influenceSignLabels[sign]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="combination">
+          <Select
+            value={edge.combination_mode}
+            onChange={(event) =>
+              updateEdge(edge.id, {
+                combination_mode: event.target.value as CombinationMode,
+              })
+            }
+          >
+            {combinationModes.map((mode) => (
+              <option key={mode} value={mode}>
+                {combinationModeLabels[mode]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="magnitude">
+          <Input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={edge.magnitude}
+            onChange={(event) =>
+              updateEdge(edge.id, {
+                magnitude: Number(event.target.value),
+              })
+            }
+          />
+        </Field>
+        <Field label="confidence">
+          <Input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={edge.confidence}
+            onChange={(event) =>
+              updateEdge(edge.id, {
+                confidence: Number(event.target.value),
+              })
+            }
+          />
+        </Field>
+        <Field label="conditional weight">
+          <Input
+            type="number"
+            step={0.05}
+            value={edge.conditional_weight ?? ""}
+            onChange={(event) =>
+              updateEdge(edge.id, {
+                conditional_weight: optionalNumber(event.target.value),
+              })
+            }
+          />
+        </Field>
+        <label className="mt-7 flex items-center gap-2 text-sm text-stone-700">
+          <input
+            type="checkbox"
+            checked={edge.propagate_probability}
+            onChange={(event) =>
+              updateEdge(edge.id, {
+                propagate_probability: event.target.checked,
+              })
+            }
+          />
+          確率を伝播する
+        </label>
+      </div>
+      <Field label="context gate">
+        <Input
+          value={
+            Array.isArray(edge.context_gate)
+              ? edge.context_gate.join(", ")
+              : (edge.context_gate ?? "")
+          }
+          onChange={(event) =>
+            updateEdge(edge.id, {
+              context_gate: event.target.value || undefined,
+            })
+          }
+        />
+      </Field>
+    </section>
+  );
+}
+
+function ProbabilisticEdgeFields({
+  edge,
+  updateEdge,
+}: {
+  edge: KnowledgeEdge;
+  updateEdge: (id: string, patch: Partial<KnowledgeEdge>) => void;
+}) {
+  return (
+    <section className="grid gap-2 rounded-lg border border-stone-200 p-2">
+      <h3 className="text-sm font-semibold text-stone-900">確率エッジ</h3>
+      <Field label="conditional weight">
+        <Input
+          type="number"
+          step={0.05}
+          value={edge.conditional_weight ?? ""}
+          onChange={(event) =>
+            updateEdge(edge.id, {
+              conditional_weight: optionalNumber(event.target.value),
+            })
+          }
+        />
+      </Field>
+      <label className="flex items-center gap-2 text-sm text-stone-700">
+        <input
+          type="checkbox"
+          checked={edge.propagate_probability}
+          onChange={(event) =>
+            updateEdge(edge.id, {
+              propagate_probability: event.target.checked,
+            })
+          }
+        />
+        確率を伝播する
+      </label>
+      <Field label="transition rule">
+        <Input
+          value={edge.transition_rule ?? ""}
+          onChange={(event) =>
+            updateEdge(edge.id, {
+              transition_rule: event.target.value || undefined,
+            })
+          }
+        />
+      </Field>
+      <Field label="edge group id">
+        <Input
+          value={edge.edge_group_id ?? ""}
+          onChange={(event) =>
+            updateEdge(edge.id, {
+              edge_group_id: event.target.value || undefined,
+            })
+          }
+        />
+      </Field>
+    </section>
+  );
+}
+
 function toCsv(values: string[]) {
   return values.join(", ");
 }
@@ -112,6 +293,12 @@ function textToThresholds(value: string): Threshold[] {
       note,
     };
   });
+}
+
+function optionalNumber(value: string) {
+  if (value.trim() === "") return undefined;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : undefined;
 }
 
 export function Inspector() {
@@ -411,6 +598,22 @@ export function Inspector() {
               ))}
             </Select>
           </Field>
+          <Field label="関係レイヤー">
+            <Select
+              value={edge.relation_layer}
+              onChange={(event) =>
+                updateEdge(edge.id, {
+                  relation_layer: event.target.value as RelationLayer,
+                })
+              }
+            >
+              {relationLayers.map((layer) => (
+                <option key={layer} value={layer}>
+                  {relationLayerLabels[layer]}
+                </option>
+              ))}
+            </Select>
+          </Field>
           <Field label="ラベル">
             <Input
               value={edge.label}
@@ -419,6 +622,12 @@ export function Inspector() {
               }
             />
           </Field>
+          {edge.relation_layer === "influence" ? (
+            <InfluenceEdgeFields edge={edge} updateEdge={updateEdge} />
+          ) : null}
+          {edge.relation_layer === "probabilistic" ? (
+            <ProbabilisticEdgeFields edge={edge} updateEdge={updateEdge} />
+          ) : null}
           <Field label="メモ">
             <Textarea
               value={edge.notes}

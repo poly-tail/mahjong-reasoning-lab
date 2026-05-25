@@ -9,6 +9,10 @@ import {
   nowIso,
 } from "../domain/factory";
 import { runPropagation, type PropagationPreview } from "../domain/probability";
+import {
+  buildReadingImpactPreview,
+  type ReadingImpactDraft,
+} from "../domain/readingNumerics";
 import { edgeTypeLabels, nodeTypeLabels } from "../domain/labels";
 import type { MappingDraftNode } from "../domain/mappingTemplates";
 import { seedWorkspace } from "../domain/seed";
@@ -81,6 +85,10 @@ type AppState = {
   addNode: (type: NodeType) => void;
   createKnowledgeNodesFromDrafts: (
     drafts: MappingDraftNode[],
+    attachToActiveCase?: boolean,
+  ) => void;
+  applyReadingImpactDraft: (
+    draft: ReadingImpactDraft,
     attachToActiveCase?: boolean,
   ) => void;
   duplicateSelectedNodes: () => void;
@@ -511,6 +519,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       selectedNodeIds: created.map((node) => node.id),
       selectedEdgeIds: [],
+    });
+  },
+  applyReadingImpactDraft: (draft, attachToActiveCase) => {
+    let createdNodeIds: string[] = [];
+    const effectiveDraft = {
+      ...draft,
+      attach_to_active_case:
+        attachToActiveCase ?? draft.attach_to_active_case,
+    };
+    commit(set, get, (doc) => {
+      const preview = buildReadingImpactPreview(doc, effectiveDraft);
+      createdNodeIds = preview.createdNodeIds;
+      return preview.nextDoc;
+    });
+    set({
+      selectedNodeIds: createdNodeIds,
+      selectedEdgeIds: [],
+      lastPropagationPreview: undefined,
     });
   },
   duplicateSelectedNodes: () => {

@@ -164,7 +164,10 @@ export function ProbabilityWorkbench() {
                         <span className="truncate font-medium text-stone-900">
                           {node.title}
                         </span>
-                        <span className="text-xs tabular-nums text-stone-500">
+                        <span className="flex items-center gap-1 text-xs tabular-nums text-stone-500">
+                          {node.tags.includes("quick_reading") ? (
+                            <Badge tone="cyan">読み数値入力</Badge>
+                          ) : null}
                           {formatProbability(node.posterior_probability)}
                         </span>
                       </div>
@@ -204,6 +207,9 @@ export function ProbabilityWorkbench() {
                         <Badge>
                           {probabilityRoleLabels[node.probability_role]}
                         </Badge>
+                        {node.tags.includes("quick_reading") ? (
+                          <Badge tone="cyan">読み数値入力</Badge>
+                        ) : null}
                       </div>
                     </button>
                   ))}
@@ -270,6 +276,9 @@ function ProbabilityInspector({
             {probabilityRoleLabels[node.probability_role]}
           </Badge>
           <Badge>{nodeTypeLabels[node.type]}</Badge>
+          {node.tags.includes("quick_reading") ? (
+            <Badge tone="cyan">読み数値入力</Badge>
+          ) : null}
           {node.lock_mode !== "none" ? (
             <Badge tone="amber">{lockModeLabels[node.lock_mode]}</Badge>
           ) : null}

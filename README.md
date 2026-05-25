@@ -152,6 +152,7 @@ tests/
 ### Case Workspace
 
 - 局、供託、本場、巡目、点数、親/自家、リーチ、副露、捨て牌メモを入力
+- 「読みを数値で反映」で、思いついた読みを4軸影響、候補確率、重み、枝刈り/ロック方針としてactive caseへ即反映
 - 観測事象、仮説メモを管理
 - 関連知識ノードをattach
 - attachしたノードを「観測 → 仮説 → 条件 → 判断」列へ配置
@@ -313,6 +314,7 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 - Mapping Inboxで考察メモから下書きノードを作れる
 - 具体局面に知識ノードを貼り、観測/仮説/条件/判断に並べてレビューできる
 - Case Workspaceで判断プロセスモードを使える
+- Case Workspaceで読み数値入力から4軸influence edgeとchoice group候補を作成できる
 - 手牌価値レンジ理論と脇救済率を専用Lensで整理できる
 - Hard gate / Soft score / Override / Fallbackを最低限のrule JSONとして保存できる
 - workspace JSONとpruning-ui向けsubgraph JSONをexport/importできる

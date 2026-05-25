@@ -29,6 +29,7 @@ import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Field, Input, Select, Textarea } from "../components/form";
 import { Panel } from "../components/panel";
+import { QuickReadingInputPanel } from "../reading/QuickReadingInputPanel";
 
 function fromLines(value: string) {
   return value
@@ -63,6 +64,11 @@ export function CaseWorkspace() {
   const attachNodeToCase = useAppStore((state) => state.attachNodeToCase);
   const detachNodeFromCase = useAppStore((state) => state.detachNodeFromCase);
   const setCaseNodeLane = useAppStore((state) => state.setCaseNodeLane);
+  const setScreen = useAppStore((state) => state.setScreen);
+  const setSelection = useAppStore((state) => state.setSelection);
+  const duplicateSelectedNodes = useAppStore(
+    (state) => state.duplicateSelectedNodes,
+  );
   const [nodeSearch, setNodeSearch] = useState("");
   const [viewMode, setViewMode] = useState<CaseViewMode>("lanes");
 
@@ -304,6 +310,8 @@ export function CaseWorkspace() {
       </aside>
 
       <main className="flex min-h-0 flex-col gap-3">
+        <QuickReadingInputPanel />
+
         <section className="rounded-lg border border-stone-200 bg-white">
           <div className="flex min-h-10 items-center justify-between border-b border-stone-200 px-3">
             <div className="flex items-center gap-2">
@@ -388,6 +396,19 @@ export function CaseWorkspace() {
           activeCase={activeCase}
           nodes={attachedNodes}
           edges={doc.edges}
+        />
+
+        <NumericReadingSummaryPanel
+          nodes={attachedNodes}
+          edges={doc.edges}
+          onOpenProbability={(nodeId) => {
+            setSelection([nodeId], []);
+            setScreen("probability");
+          }}
+          onDuplicate={(nodeId) => {
+            setSelection([nodeId], []);
+            duplicateSelectedNodes();
+          }}
         />
 
         <div className="grid min-h-0 flex-1 grid-cols-2 gap-3">
@@ -731,6 +752,41 @@ function MissingElementsPanel({
           (edge) => edge.sign === "mixed" || edge.sign === "unknown",
         ),
     ],
+    [
+      "読みメモはあるが数値がない",
+      nodes.some(
+        (node) =>
+          node.tags.includes("reading") &&
+          node.probability_role === "none" &&
+          node.base_weight === undefined &&
+          node.dynamic_weight === undefined &&
+          node.posterior_probability === undefined,
+      ),
+    ],
+    [
+      "数値はあるが4軸影響がない",
+      nodes.some((node) => hasNumericFields(node)) &&
+        !caseInfluenceEdges.some((edge) =>
+          nodes.some((node) => node.id === edge.source),
+        ),
+    ],
+    [
+      "choice groupに属していない仮説が複数ある",
+      nodes.filter(
+        (node) =>
+          ["hypothesis", "branch"].includes(node.type) && !node.choice_group_id,
+      ).length > 1,
+    ],
+    [
+      "posterior合計が100%になっていない",
+      choiceGroupTotals(nodes).some((total) => Math.abs(total - 1) > 0.001),
+    ],
+    [
+      "confidenceが低いのにmagnitudeが大きい",
+      caseInfluenceEdges.some(
+        (edge) => edge.confidence < 0.4 && edge.magnitude >= 0.8,
+      ),
+    ],
   ].filter(([, active]) => active);
 
   return (
@@ -747,6 +803,109 @@ function MissingElementsPanel({
           <span className="text-sm text-stone-500">
             主要な判断要素は揃っています。
           </span>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function NumericReadingSummaryPanel({
+  nodes,
+  edges,
+  onOpenProbability,
+  onDuplicate,
+}: {
+  nodes: KnowledgeNode[];
+  edges: KnowledgeEdge[];
+  onOpenProbability: (nodeId: string) => void;
+  onDuplicate: (nodeId: string) => void;
+}) {
+  const numericReadings = nodes.filter(
+    (node) =>
+      node.tags.some((tag) =>
+        [
+          "quick_reading",
+          "reading",
+          "weight_modifier",
+          "hand_value_range",
+          "probability_tree",
+        ].includes(tag),
+      ) &&
+      (node.probability_role !== "none" || hasNumericFields(node)),
+  );
+
+  return (
+    <Panel title="数値反映済みの読み">
+      <div className="grid gap-2 p-3">
+        {numericReadings.length === 0 ? (
+          <p className="text-sm text-stone-500">
+            active case に数値反映済みの読みはまだありません。
+          </p>
+        ) : (
+          numericReadings.slice(0, 6).map((node) => {
+            const influences = edges.filter(
+              (edge) =>
+                edge.source === node.id && edge.relation_layer === "influence",
+            );
+            return (
+              <article
+                key={node.id}
+                className="rounded-md border border-stone-200 p-2"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-stone-950">
+                      {node.title}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <Badge>{Math.round(node.confidence * 100)}%</Badge>
+                      {node.prior_probability !== undefined ? (
+                        <Badge>prior {formatProbability(node.prior_probability)}</Badge>
+                      ) : null}
+                      {node.posterior_probability !== undefined ? (
+                        <Badge>
+                          posterior {formatProbability(node.posterior_probability)}
+                        </Badge>
+                      ) : null}
+                      {node.base_weight !== undefined ? (
+                        <Badge>base {node.base_weight}</Badge>
+                      ) : null}
+                      {node.dynamic_weight !== undefined ? (
+                        <Badge>dyn {node.dynamic_weight}</Badge>
+                      ) : null}
+                      {node.lock_mode !== "none" ? (
+                        <Badge tone="amber">{lockModeLabels[node.lock_mode]}</Badge>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <Button size="sm" onClick={() => onOpenProbability(node.id)}>
+                      確率画面で調整
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => onDuplicate(node.id)}
+                    >
+                      複製
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {node.pruning_hints.map((hint) => (
+                    <Badge key={hint} tone="amber">
+                      {pruningHintLabels[hint]}
+                    </Badge>
+                  ))}
+                  {influences.map((edge) => (
+                    <Badge key={edge.id} tone="cyan">
+                      {edge.label || `${edge.sign} ${edge.magnitude}`}
+                    </Badge>
+                  ))}
+                </div>
+              </article>
+            );
+          })
         )}
       </div>
     </Panel>
@@ -806,5 +965,28 @@ function nodeMatchesPipelineStep(
 }
 
 function formatProbability(value: number) {
-  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+  return Number.isFinite(value) ? `${Math.round(value * 1000) / 10}%` : "0%";
+}
+
+function hasNumericFields(node: KnowledgeNode) {
+  return (
+    node.base_weight !== undefined ||
+    node.dynamic_weight !== undefined ||
+    node.posterior_probability !== undefined ||
+    node.prior_probability !== undefined ||
+    node.lock_mode !== "none"
+  );
+}
+
+function choiceGroupTotals(nodes: KnowledgeNode[]) {
+  const totals = new Map<string, number>();
+  for (const node of nodes) {
+    if (!node.choice_group_id) continue;
+    totals.set(
+      node.choice_group_id,
+      (totals.get(node.choice_group_id) ?? 0) +
+        (node.posterior_probability ?? 0),
+    );
+  }
+  return Array.from(totals.values());
 }

@@ -5,8 +5,10 @@ import { useAppStore } from "../../src/app/store";
 import { edgeTypes, type EdgeType } from "../../src/domain/schema";
 import { seedWorkspace } from "../../src/domain/seed";
 import { CaseWorkspace } from "../../src/ui/case/CaseWorkspace";
+import { Inspector } from "../../src/ui/knowledge/Inspector";
 import { LegendPanel } from "../../src/ui/knowledge/LegendPanel";
 import { MappingInbox } from "../../src/ui/mapping/MappingInbox";
+import { QuickReadingInputPanel } from "../../src/ui/reading/QuickReadingInputPanel";
 import { HandValueRangeLens } from "../../src/ui/theory/HandValueRangeLens";
 import { RescueRateLens } from "../../src/ui/theory/RescueRateLens";
 
@@ -41,6 +43,48 @@ describe("workbench components", () => {
 
     expect(
       useAppStore.getState().doc.nodes.some((node) => node.title === "脇救済率"),
+    ).toBe(true);
+  });
+
+  it("shows numeric hints in Mapping Inbox", async () => {
+    const user = userEvent.setup();
+    render(<MappingInbox />);
+
+    await user.type(
+      screen.getByLabelText("考察メモを貼り付け"),
+      "染め本線 p=60% confidence=0.65 打点+0.25 keep_top_k=3",
+    );
+
+    expect(screen.getByText("数値ヒント")).toBeVisible();
+    expect(screen.getByText(/posterior 60%/)).toBeVisible();
+    expect(screen.getByText("keep_top_k")).toBeVisible();
+  });
+
+  it("previews and applies a quick numeric reading", async () => {
+    const user = userEvent.setup();
+    render(<QuickReadingInputPanel />);
+
+    await user.clear(screen.getByLabelText("読みタイトル"));
+    await user.type(screen.getByLabelText("読みタイトル"), "染め本線の数値読み");
+    await user.click(screen.getAllByRole("button", { name: "プレビュー" })[0]);
+
+    expect(screen.getByText(/作成予定ノード/)).toBeVisible();
+    expect(screen.getByText("choice group確率")).toBeVisible();
+
+    await user.click(screen.getAllByRole("button", { name: "active caseに反映" })[0]);
+
+    const state = useAppStore.getState();
+    expect(state.doc.nodes.some((node) => node.title === "染め本線の数値読み")).toBe(
+      true,
+    );
+    expect(
+      state.doc.cases
+        .find((caseItem) => caseItem.id === state.doc.active_case_id)
+        ?.attached_node_ids.some((id) =>
+          state.doc.nodes.find(
+            (node) => node.id === id && node.title === "染め本線の数値読み",
+          ),
+        ),
     ).toBe(true);
   });
 
@@ -87,5 +131,24 @@ describe("workbench components", () => {
     expect(screen.getByText("意味関係")).toBeVisible();
     expect(screen.getByText("確率伝播対象")).toBeVisible();
     expect(screen.getByText("pruning hints")).toBeVisible();
+  });
+
+  it("edits influence edge numeric fields in Inspector", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({
+      selectedNodeIds: [],
+      selectedEdgeIds: ["edge_hand_value_speed"],
+    });
+    render(<Inspector />);
+
+    await user.selectOptions(screen.getByLabelText("sign"), "+");
+    await user.clear(screen.getByLabelText("magnitude"));
+    await user.type(screen.getByLabelText("magnitude"), "0.7");
+
+    const edge = useAppStore
+      .getState()
+      .doc.edges.find((item) => item.id === "edge_hand_value_speed");
+    expect(edge?.sign).toBe("+");
+    expect(edge?.magnitude).toBe(0.7);
   });
 });

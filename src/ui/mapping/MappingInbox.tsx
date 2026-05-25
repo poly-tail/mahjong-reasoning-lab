@@ -7,6 +7,7 @@ import {
   type MappingDraftNode,
   type MappingTemplateId,
 } from "../../domain/mappingTemplates";
+import { parseReadingNumericHints } from "../../domain/readingNumericParser";
 import {
   nodeTypeLabels,
   pruningHintLabels,
@@ -38,6 +39,7 @@ export function MappingInbox() {
     () => createMappingDraft(templateId, text),
     [templateId, text],
   );
+  const numericHints = useMemo(() => parseReadingNumericHints(text), [text]);
   const allSelected =
     selectedDraftIds.length === 0
       ? draftResult.nodes
@@ -99,6 +101,7 @@ export function MappingInbox() {
                 ?.description
             }
           </div>
+          <NumericHintsPanel hints={numericHints} />
           <div className="flex flex-wrap gap-2">
             <Button
               variant="primary"
@@ -182,6 +185,80 @@ export function MappingInbox() {
       </section>
     </main>
   );
+}
+
+function NumericHintsPanel({
+  hints,
+}: {
+  hints: ReturnType<typeof parseReadingNumericHints>;
+}) {
+  const hasHints =
+    hints.confidence !== undefined ||
+    hints.prior_probability !== undefined ||
+    hints.posterior_probability !== undefined ||
+    hints.base_weight !== undefined ||
+    hints.dynamic_weight !== undefined ||
+    hints.lock_mode !== undefined ||
+    (hints.axis_impacts?.length ?? 0) > 0 ||
+    hints.pruning_action !== undefined ||
+    hints.warnings.length > 0;
+
+  if (!hasHints) {
+    return (
+      <div className="rounded-md border border-stone-200 bg-white p-3 text-xs leading-5 text-stone-500">
+        数値記法がある場合はここに表示します。例: p=60% confidence=0.65
+        打点+0.25 進行+0.10 keep_top_k=3
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-cyan-200 bg-cyan-50/50 p-3">
+      <div className="mb-2 text-sm font-semibold text-stone-900">
+        数値ヒント
+      </div>
+      <div className="flex flex-wrap gap-1 text-xs">
+        {hints.confidence !== undefined ? (
+          <Badge>confidence {formatPercent(hints.confidence)}</Badge>
+        ) : null}
+        {hints.prior_probability !== undefined ? (
+          <Badge>prior {formatPercent(hints.prior_probability)}</Badge>
+        ) : null}
+        {hints.posterior_probability !== undefined ? (
+          <Badge>posterior {formatPercent(hints.posterior_probability)}</Badge>
+        ) : null}
+        {hints.base_weight !== undefined ? (
+          <Badge>base {hints.base_weight}</Badge>
+        ) : null}
+        {hints.dynamic_weight !== undefined ? (
+          <Badge>dynamic {hints.dynamic_weight}</Badge>
+        ) : null}
+        {hints.lock_mode ? <Badge>lock {hints.lock_mode}</Badge> : null}
+        {hints.lock_value !== undefined ? (
+          <Badge>lock value {hints.lock_value}</Badge>
+        ) : null}
+        {hints.pruning_action ? (
+          <Badge tone="amber">{hints.pruning_action}</Badge>
+        ) : null}
+        {hints.axis_impacts?.map((impact) => (
+          <Badge key={impact.axis_id} tone="cyan">
+            {impact.axis_id} {impact.sign} {impact.magnitude}
+          </Badge>
+        ))}
+      </div>
+      {hints.warnings.length > 0 ? (
+        <div className="mt-2 grid gap-1 text-xs text-amber-700">
+          {hints.warnings.map((warning) => (
+            <div key={warning}>{warning}</div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(value * 1000) / 10}%`;
 }
 
 function DraftNodeCard({

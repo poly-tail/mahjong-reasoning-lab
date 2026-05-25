@@ -8,6 +8,13 @@ test("runs the judgment workbench smoke flow", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText("この画面でできること")).toBeVisible();
   await expect(page.getByRole("heading", { name: "局面作業場" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "読みを数値で反映" }),
+  ).toBeVisible();
+  await page.getByLabel("読みタイトル").fill("E2E 同色副露の数値読み");
+  await page.getByRole("button", { name: "プレビュー" }).first().click();
+  await expect(page.getByText(/作成予定ノード/)).toBeVisible();
+  await page.getByRole("button", { name: "active caseに反映" }).first().click();
 
   await page.getByRole("button", { name: "理論を整理する" }).click();
   await expect(
@@ -61,6 +68,7 @@ test("runs the judgment workbench smoke flow", async ({ page }) => {
 
   await page.getByRole("button", { name: "確率と枝刈り" }).click();
   await expect(page.getByRole("heading", { name: "選択候補群" })).toBeVisible();
+  await expect(page.getByText("E2E 同色副露の数値読み")).toBeVisible();
   const validationToolbar = page.getByRole("toolbar", { name: "検証モード" });
   await validationToolbar.getByRole("button", { name: "枝刈りラボ" }).click();
   await expect(
