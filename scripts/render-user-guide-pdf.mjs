@@ -5,7 +5,7 @@ import { chromium } from "playwright";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = resolve(rootDir, "docs/user-guide.md");
-const outputPath = resolve(rootDir, "docs/user-guide.pdf");
+const outputPath = resolve(rootDir, process.argv[2] ?? "docs/user-guide.pdf");
 
 const markdown = await readFile(sourcePath, "utf8");
 
