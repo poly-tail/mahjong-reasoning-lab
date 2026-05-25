@@ -19,7 +19,7 @@ import { Field, Select, Textarea } from "../components/form";
 import { Panel } from "../components/panel";
 
 const placeholder =
-  "例: 中盤に同色副露が入り、手出し字牌が続いた場合、染め本線の打点レンジが上がる。ただし速度副露や役牌バックも残るため、染め薄い仮説を完全に消すのではなく downweight に留める。";
+  "例: 中盤に同色副露が入り、手出し字牌が続いた場合、染め本線の打点レンジが上がる。ただし副露進行や役牌バックも残るため、染め薄い仮説を完全に消すのではなく downweight に留める。";
 
 export function MappingInbox() {
   const createKnowledgeNodesFromDrafts = useAppStore(

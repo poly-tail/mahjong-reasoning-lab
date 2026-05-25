@@ -2,8 +2,9 @@ import { Gauge, HelpCircle, TrendingDown, TrendingUp } from "lucide-react";
 import { useMemo } from "react";
 import { useAppStore } from "../../app/store";
 import {
-  externalModifiers,
   handValueAxes,
+  scoreSituationThresholdFactors,
+  type HandValueAxisId,
 } from "../../domain/mahjongTaxonomy";
 import { influenceSignLabels, nodeTypeLabels } from "../../domain/labels";
 import { getMetricInfluences } from "../../domain/influence";
@@ -11,11 +12,65 @@ import type { InfluenceSign, KnowledgeNode } from "../../domain/schema";
 import { Badge } from "../components/badge";
 import { Panel } from "../components/panel";
 
-const axisTags = {
-  value_axis: ["value_axis", "value", "打点", "打点レンジ推定", "打点価値"],
-  speed_axis: ["speed_axis", "speed", "速度", "早さ"],
-  shape_axis: ["shape_axis", "shape", "形", "愚形", "良形"],
+const axisTags: Record<HandValueAxisId, readonly string[]> = {
+  progress_tenpai_axis: [
+    "progress_tenpai_axis",
+    "speed_axis",
+    "speed",
+    "速度",
+    "早さ",
+    "進行度・聴牌率",
+    "聴牌率",
+    "先制率",
+    "シャンテン",
+  ],
+  value_axis: [
+    "value_axis",
+    "value_distribution_axis",
+    "value_distribution",
+    "score_distribution",
+    "value",
+    "打点",
+    "打点レンジ",
+    "打点レンジ推定",
+    "打点価値",
+  ],
+  wait_shape_quality_axis: [
+    "wait_shape_quality_axis",
+    "shape_axis",
+    "shape",
+    "wait_danger_distribution_axis",
+    "wait_distribution",
+    "danger_tile_distribution",
+    "形",
+    "待ち",
+    "良形",
+    "愚形",
+    "危険牌分布",
+    "安全度",
+  ],
+  score_situation_threshold_axis: [
+    "score_situation_threshold_axis",
+    "situation_threshold_axis",
+    "situation_value",
+    "action_threshold",
+    "rank_ev",
+    "rank_point",
+    "score_context",
+    "external_modifier",
+    "点数状況・行動閾値",
+    "局面価値",
+    "行動閾値",
+    "順位期待値",
+    "条件戦",
+  ],
 } as const;
+
+const handValueMarkers = [
+  "hand_value_range",
+  "手牌価値",
+  ...Object.values(axisTags).flat(),
+];
 
 export function HandValueRangeLens() {
   const doc = useAppStore((state) => state.doc);
@@ -49,7 +104,7 @@ export function HandValueRangeLens() {
   const observationCandidates = doc.nodes.filter(
     (node) =>
       node.type === "observation_candidate" &&
-      (hasAnyMarker(node, ["hand_value_range", "value", "speed", "shape"]) ||
+      (hasAnyMarker(node, handValueMarkers) ||
         node.resolves_targets.some((targetId) =>
           axisModels.some((axis) =>
             axis.metrics.some((metric) => metric.id === targetId),
@@ -64,8 +119,8 @@ export function HandValueRangeLens() {
   return (
     <main className="min-h-0 flex-1 overflow-auto p-3">
       <div className="grid gap-3">
-        <Panel title="打点・早さ・形のどの軸が動いたか">
-          <div className="grid grid-cols-3 gap-3 p-3">
+        <Panel title="進行度・聴牌率 / 打点 / 待ち・形の良さ / 点数状況・行動閾値のどこが動いたか">
+          <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2 xl:grid-cols-4">
             {axisModels.map((axis) => (
               <AxisCard key={axis.id} axis={axis} />
             ))}
@@ -73,9 +128,9 @@ export function HandValueRangeLens() {
         </Panel>
 
         <div className="grid grid-cols-[1.1fr_0.9fr] gap-3">
-          <Panel title="外部補正">
+          <Panel title="点数状況・行動閾値で見る条件">
             <div className="grid grid-cols-3 gap-2 p-3">
-              {externalModifiers.map((modifier) => (
+              {scoreSituationThresholdFactors.map((modifier) => (
                 <div
                   key={modifier.id}
                   className="rounded-md border border-stone-200 bg-stone-50 p-2"
@@ -97,7 +152,7 @@ export function HandValueRangeLens() {
                 "非テンパイと仮定する",
                 "愚形固定と仮定する",
                 "染め本線を残す",
-                "速度副露を残す",
+                "条件戦の押し引き閾値を上げる",
               ].map((item) => (
                 <div
                   key={item}
@@ -133,7 +188,7 @@ export function HandValueRangeLens() {
               ))}
               {observationCandidates.length === 0 ? (
                 <p className="text-sm text-stone-500">
-                  打点/早さ/形の解像に対応する観測候補がまだありません。
+                  4軸の解像に対応する観測候補がまだありません。
                 </p>
               ) : null}
             </div>
@@ -150,6 +205,7 @@ function AxisCard({
   axis: {
     id: string;
     label: string;
+    role: readonly string[];
     metrics: KnowledgeNode[];
     influences: ReturnType<typeof getMetricInfluences>;
     summary: InfluenceSign;
@@ -163,6 +219,9 @@ function AxisCard({
           {influenceSignLabels[axis.summary]}
         </Badge>
       </div>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-stone-500">
+        {axis.role.slice(0, 4).join(" / ")}
+      </p>
       <div className="mt-3 grid gap-2">
         {axis.metrics.map((metric) => (
           <div key={metric.id} className="rounded border border-stone-200 bg-white p-2">
@@ -232,9 +291,10 @@ function NodeRow({ node }: { node: KnowledgeNode }) {
 
 function hasHandValueMarker(node: KnowledgeNode) {
   return (
+    hasAnyMarker(node, axisTags.progress_tenpai_axis) ||
     hasAnyMarker(node, axisTags.value_axis) ||
-    hasAnyMarker(node, axisTags.speed_axis) ||
-    hasAnyMarker(node, axisTags.shape_axis) ||
+    hasAnyMarker(node, axisTags.wait_shape_quality_axis) ||
+    hasAnyMarker(node, axisTags.score_situation_threshold_axis) ||
     hasAnyMarker(node, ["hand_value_range", "手牌価値"])
   );
 }

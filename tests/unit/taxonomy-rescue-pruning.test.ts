@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createDomainLensSelection,
+  handValueAxes,
   nodeMatchesDomainLens,
 } from "../../src/domain/mahjongTaxonomy";
 import { getPruningLockWarnings } from "../../src/domain/pruningSafety";
@@ -19,6 +20,18 @@ describe("mahjong taxonomy, rescue rate, and pruning safety", () => {
         "hand_value",
       ),
     ).toBe(true);
+  });
+
+  it("uses the canonical four hand value axes while retaining old aliases", () => {
+    expect(handValueAxes.map((axis) => axis.label)).toEqual([
+      "進行度・聴牌率",
+      "打点",
+      "待ち・形の良さ",
+      "点数状況・行動閾値",
+    ]);
+    expect(handValueAxes.flatMap((axis) => axis.aliases)).toEqual(
+      expect.arrayContaining(["speed_axis", "shape_axis", "external_modifier"]),
+    );
   });
 
   it("calculates rescue rate with capped warnings", () => {

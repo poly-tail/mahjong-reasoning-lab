@@ -8,9 +8,17 @@ describe("mappingTemplates", () => {
       "中盤に同色副露が入り、打点レンジが上がる。",
     );
 
-    expect(draft.nodes.map((node) => node.title)).toContain("打点レンジ");
-    expect(draft.nodes.map((node) => node.title)).toContain("速度レンジ");
-    expect(draft.nodes.map((node) => node.title)).toContain("形レンジ");
+    expect(draft.nodes.map((node) => node.title)).toEqual(
+      expect.arrayContaining([
+        "進行度・聴牌率",
+        "打点",
+        "待ち・形の良さ",
+        "点数状況・行動閾値",
+      ]),
+    );
+    expect(draft.nodes.flatMap((node) => node.tags)).toEqual(
+      expect.arrayContaining(["speed_axis", "shape_axis", "external_modifier"]),
+    );
     expect(draft.nodes.some((node) => node.tags.includes("hand_value_range"))).toBe(
       true,
     );

@@ -129,7 +129,7 @@ tests/
 ### Domain Lens / Theory Lenses
 
 - Knowledge MapのDomain Lensで、全部、手牌価値、押し引き、安全度、確率木、枝刈り、ロック、脇救済、教育、反省のプリセット表示を切り替え
-- Hand Value Range Lensで、打点・早さ・形、外部補正、mixed/unknown influence、追加観測候補を確認
+- Hand Value Range Lensで、進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値、mixed/unknown influence、追加観測候補を確認
 - Rescue Rate Lensで、時間窓、脇の救済イベント束、概算 `q_total = 1 - product(1 - q_i)`、上限警告を管理
 - 脇救済率は正確な局面シミュレータではなく、他力救済を短時間窓と上限レンジで制御する整理UI
 
@@ -264,7 +264,7 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 1. Mapping Inbox: 脇救済率テンプレートで下書きノード案が見える状態
 2. Knowledge Map: Domain Lens、凡例、マッピングガイド、右Inspectorが見える状態
 3. Case Workspace: seed caseの4列思考経路と判断プロセスモードが見える状態
-4. Hand Value Range Lens: 打点・早さ・形の3軸が見える状態
+4. Hand Value Range Lens: 正規4軸（進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値）が見える状態
 5. Rescue Rate Lens: 時間窓、イベント入力、上限警告が見える状態
 6. Reasoning Lab: Pruning Labでbefore/after diff、Lock Analysis、Educational Explanationが見える状態
 7. JSON I/O: workspace JSONとsubgraph export欄が見える状態

@@ -33,7 +33,7 @@ test("runs the judgment workbench smoke flow", async ({ page }) => {
     "aria-pressed",
     "true",
   );
-  await expect(page.getByRole("button", { name: "凡例を畳む" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "凡例を開く" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "マッピングガイドを開く" }),
   ).toBeVisible();
@@ -43,7 +43,9 @@ test("runs the judgment workbench smoke flow", async ({ page }) => {
     .getByRole("button", { name: "手牌価値" })
     .click();
   await expect(
-    page.getByRole("heading", { name: "打点・早さ・形のどの軸が動いたか" }),
+    page.getByRole("heading", {
+      name: "進行度・聴牌率 / 打点 / 待ち・形の良さ / 点数状況・行動閾値のどこが動いたか",
+    }),
   ).toBeVisible();
 
   await page

@@ -57,9 +57,10 @@ describe("workbench components", () => {
   it("shows hand value metrics and influence signs", () => {
     render(<HandValueRangeLens />);
 
-    expect(screen.getByText("打点価値")).toBeVisible();
-    expect(screen.getByText("速度")).toBeVisible();
-    expect(screen.getAllByText("形レンジ").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("進行度・聴牌率").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("打点").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("待ち・形の良さ").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("点数状況・行動閾値").length).toBeGreaterThan(0);
   });
 
   it("estimates rescue rate from event probabilities and warns on overestimation", async () => {

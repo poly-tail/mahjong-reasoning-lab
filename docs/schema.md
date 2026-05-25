@@ -210,7 +210,10 @@ Mahjong-specific taxonomy is stored as tags and lens presets, not as new schema 
 Examples:
 
 - `hand_value_range`
+- `progress_tenpai_axis`
 - `value_axis`
+- `wait_shape_quality_axis`
+- `score_situation_threshold_axis`
 - `speed_axis`
 - `shape_axis`
 - `push_fold`
@@ -223,7 +226,9 @@ Examples:
 - `teaching`
 - `review`
 
-External modifiers such as `turn`, `dealer`, `score_context`, `dora`, `honba`, `riichi_sticks`, and `rank_point` are also represented as tags.
+`speed_axis`, `shape_axis`, `rank_ev`, `score_context`, and `external_modifier` remain valid alias tags for imported v4 workspaces. New UI labels map hand value work to the canonical four axes: `progress_tenpai_axis`, `value_axis`, `wait_shape_quality_axis`, and `score_situation_threshold_axis`.
+
+Score and threshold factors such as `turn`, `dealer`, `score_context`, `dora`, `honba`, `riichi_sticks`, and `rank_point` are represented as tags under `score_situation_threshold_axis`.
 
 ## Rule Definition
 

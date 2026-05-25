@@ -72,7 +72,7 @@ export const mappingTemplates: MappingTemplate[] = [
   {
     id: "hand_value_range",
     label: "手牌価値レンジ",
-    description: "打点・早さ・形と外部補正を指標へ分ける。",
+    description: "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値へ分ける。",
   },
   {
     id: "push_fold",
@@ -107,7 +107,7 @@ export const mappingTemplates: MappingTemplate[] = [
   {
     id: "rank_condition",
     label: "条件戦/順位点",
-    description: "点棒状況、順位点、局面条件を外部補正にする。",
+    description: "点棒状況、順位点、局面条件を行動閾値へ接続する。",
   },
   {
     id: "intermediate_state",
@@ -132,54 +132,80 @@ export function createMappingDraft(
           "手牌価値",
           "theory",
         ]),
-        draft("metric", "打点レンジ", "打点が上がった/下がった理由を集約する。", [
+        draft("metric", "進行度・聴牌率", "シャンテン数、聴牌率、先制率、和了到達の近さを集約する。", [
           "hand_value_range",
-          "value_axis",
-          "value",
-          "打点",
-          "metric",
-          "influence",
-        ]),
-        draft("metric", "速度レンジ", "先制性、テンパイ近さ、鳴き速度を集約する。", [
-          "hand_value_range",
+          "progress_tenpai_axis",
           "speed_axis",
           "speed",
+          "速度",
           "早さ",
           "metric",
           "influence",
         ]),
-        draft("metric", "形レンジ", "良形/愚形/受け入れの幅を集約する。", [
+        draft("metric", "打点", "打点は固定値ではなく、レンジ・分布として上振れと尾部リスクまで見る。", [
           "hand_value_range",
-          "shape_axis",
-          "shape",
-          "形",
+          "value_axis",
+          "value_distribution_axis",
+          "value_distribution",
+          "score_distribution",
+          "value",
+          "打点",
+          "打点レンジ",
+          "打点レンジ推定",
           "metric",
           "influence",
         ]),
-        draft("condition", "外部補正", "巡目、親子、点棒、ドラ、供託、本場、順位点を条件として扱う。", [
+        draft("metric", "待ち・形の良さ", "良形/愚形、待ち候補、危険牌比較、安全度評価への接続を扱う。", [
+          "hand_value_range",
+          "wait_shape_quality_axis",
+          "shape_axis",
+          "wait_danger_distribution_axis",
+          "wait_distribution",
+          "danger_tile_distribution",
+          "shape",
+          "形",
+          "待ち",
+          "良形",
+          "愚形",
+          "安全度",
+          "metric",
+          "influence",
+        ]),
+        draft("metric", "点数状況・行動閾値", "点棒状況、順位点、親子、局、巡目、供託、本場で押し引き閾値を動かす。", [
+          "hand_value_range",
+          "score_situation_threshold_axis",
+          "situation_threshold_axis",
+          "situation_value",
+          "action_threshold",
+          "rank_ev",
+          "rank_point",
           "external_modifier",
           "turn",
           "dealer",
+          "round",
           "score_context",
           "dora",
           "honba",
           "riichi_sticks",
-          "rank_point",
+          "条件戦",
+          "metric",
+          "influence",
         ]),
-        draft("heuristic", "レンジ更新ルール", "観測がどの軸を動かしたかを明示してから比較する。", [
+        draft("heuristic", "レンジ更新ルール", "観測が4軸のどこを動かしたかを明示してから比較する。", [
           "hand_value_range",
           "reweight",
           "heuristic",
         ]),
-        draft("question", "どの軸が上がったのか？", "打点・速度・形のどれが判断を動かしたかを確認する。", [
+        draft("question", "どの軸が上がったのか？", "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値のどれが判断を動かしたかを確認する。", [
           "hand_value_range",
           "review",
         ]),
       ],
       edge_candidates: [
-        "観測/仮説 -> 打点レンジ",
-        "観測/仮説 -> 速度レンジ",
-        "観測/仮説 -> 形レンジ",
+        "観測/仮説 -> 進行度・聴牌率",
+        "観測/仮説 -> 打点",
+        "観測/仮説 -> 待ち・形の良さ",
+        "観測/仮説 -> 点数状況・行動閾値",
       ],
     };
   }
@@ -303,7 +329,7 @@ export function createMappingDraft(
 }
 
 export function createRescueRateDraft(
-  sourceSummary = "脇救済率を短時間窓の外部補正として整理する。",
+  sourceSummary = "脇救済率を短時間窓の行動閾値補正として整理する。",
 ): MappingDraftResult {
   return {
     template_id: "rescue_rate",
@@ -426,13 +452,20 @@ function createGenericDraft(
     ],
     rank_condition: [
       draft("condition", "条件戦/順位点補正", sourceSummary, [
+        "score_situation_threshold_axis",
+        "action_threshold",
         "rank_ev",
         "rank_point",
         "score_context",
       ]),
-      draft("metric", "順位期待値", "点棒状況と順位点の外部補正。", [
+      draft("metric", "点数状況・行動閾値", "点棒状況と順位点で押し引き閾値がどう変わるかを見る。", [
         "metric",
+        "score_situation_threshold_axis",
+        "action_threshold",
         "rank_ev",
+        "rank_point",
+        "score_context",
+        "順位期待値",
       ]),
     ],
   };
