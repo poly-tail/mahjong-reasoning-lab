@@ -55,6 +55,12 @@ npx playwright install chromium
 node scripts/render-specification-pdf.mjs
 ```
 
+ユーザー目線の使い方ガイドPDFを再生成する場合は次を実行します。
+
+```powershell
+node scripts/render-user-guide-pdf.mjs
+```
+
 ## コマンド一覧
 
 ```bash
@@ -285,6 +291,8 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 
 - [specification.md](./docs/specification.md)
 - [specification.pdf](./docs/specification.pdf)
+- [user-guide.md](./docs/user-guide.md)
+- [user-guide.pdf](./docs/user-guide.pdf)
 - [architecture.md](./docs/architecture.md)
 - [schema.md](./docs/schema.md)
 - [future-integration.md](./docs/future-integration.md)
