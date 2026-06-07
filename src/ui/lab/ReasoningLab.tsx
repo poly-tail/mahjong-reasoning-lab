@@ -386,8 +386,8 @@ function MetricLensTab({
                     <Badge tone={signTone(item.edge.sign)}>
                       方向 {influenceSignLabels[item.edge.sign]}
                     </Badge>
-                    <Badge>影響量 {format(item.edge.magnitude)}</Badge>
-                    <Badge>確信度 {format(item.edge.confidence)}</Badge>
+                    <Badge>影響ウェイト {formatScore(item.edge.magnitude)}</Badge>
+                    <Badge>軸確信度 {formatScore(item.edge.confidence)}</Badge>
                   </div>
                 </div>
                 <p className="text-xs leading-5 text-stone-500">
@@ -1150,6 +1150,10 @@ function signTone(sign: string): "stone" | "amber" | "rose" | "emerald" {
 
 function format(value: number) {
   return Number.isFinite(value) ? value.toFixed(3) : "0.000";
+}
+
+function formatScore(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(value * 100)))}/100`;
 }
 
 function formatContext(context: unknown) {

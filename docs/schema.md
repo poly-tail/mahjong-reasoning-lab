@@ -151,8 +151,8 @@ Probability and influence edge fields:
 - `propagate_probability`
 - `edge_group_id`
 - `sign`: `+` | `-` | `mixed` | `unknown`
-- `magnitude`
-- `confidence`
+- `magnitude`: UI上は「影響ウェイト」。0〜1で保存し、表示は0〜100スコア。
+- `confidence`: influence edgeでは「軸確信度」。0〜1で保存し、表示は0〜100スコア。
 - `context_gate`
 - `combination_mode`: `additive` | `multiplicative` | `override`
 - `ambiguity_group_id`

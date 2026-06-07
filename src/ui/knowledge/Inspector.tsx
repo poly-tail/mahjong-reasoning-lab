@@ -121,34 +121,16 @@ function InfluenceEdgeFields({
             ))}
           </Select>
         </Field>
-        <Field label="magnitude">
-          <Input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={edge.magnitude}
-            onChange={(event) =>
-              updateEdge(edge.id, {
-                magnitude: Number(event.target.value),
-              })
-            }
-          />
-        </Field>
-        <Field label="confidence">
-          <Input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={edge.confidence}
-            onChange={(event) =>
-              updateEdge(edge.id, {
-                confidence: Number(event.target.value),
-              })
-            }
-          />
-        </Field>
+        <EdgeScoreField
+          label="影響ウェイト"
+          value={edge.magnitude}
+          onChange={(magnitude) => updateEdge(edge.id, { magnitude })}
+        />
+        <EdgeScoreField
+          label="軸確信度"
+          value={edge.confidence}
+          onChange={(confidence) => updateEdge(edge.id, { confidence })}
+        />
         <Field label="conditional weight">
           <Input
             type="number"
@@ -189,6 +171,34 @@ function InfluenceEdgeFields({
         />
       </Field>
     </section>
+  );
+}
+
+function EdgeScoreField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const score = Math.max(0, Math.min(100, Math.round(value * 100)));
+  return (
+    <Field label={`${label} ${score}/100`}>
+      <Input
+        aria-label={`${label} number`}
+        type="number"
+        min={0}
+        max={100}
+        step={5}
+        value={score}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          onChange(Number.isFinite(next) ? Math.max(0, Math.min(100, next)) / 100 : 0);
+        }}
+      />
+    </Field>
   );
 }
 

@@ -136,4 +136,28 @@ describe("reading numerics", () => {
       expect.objectContaining({ code: "hard_prune_with_ambiguity" }),
     );
   });
+
+  it("warns when impact weight is high but axis confidence is low", () => {
+    const draft = createDefaultReadingImpactDraft();
+    draft.title = "過大反映チェック";
+    draft.axis_impacts = draft.axis_impacts.map((impact) =>
+      impact.axis_id === "progress_tenpai_axis"
+        ? {
+            ...impact,
+            enabled: true,
+            sign: "+",
+            magnitude: 0.7,
+            confidence: 0.4,
+          }
+        : { ...impact, enabled: false },
+    );
+
+    expect(buildReadingImpactPreview(seedWorkspace, draft).warnings).toContainEqual(
+      expect.objectContaining({
+        code: "large_low_confidence_impact",
+        message:
+          "影響ウェイトが高い一方で軸確信度が低いです。過大反映の可能性があります。",
+      }),
+    );
+  });
 });

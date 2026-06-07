@@ -242,7 +242,8 @@ function NumericHintsPanel({
         ) : null}
         {hints.axis_impacts?.map((impact) => (
           <Badge key={impact.axis_id} tone="cyan">
-            {impact.axis_id} {impact.sign} {impact.magnitude}
+            {impact.axis_id} {impact.sign} 影響ウェイト{" "}
+            {formatScore(impact.magnitude)}
           </Badge>
         ))}
       </div>
@@ -259,6 +260,10 @@ function NumericHintsPanel({
 
 function formatPercent(value: number) {
   return `${Math.round(value * 1000) / 10}%`;
+}
+
+function formatScore(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(value * 100)))}/100`;
 }
 
 function DraftNodeCard({

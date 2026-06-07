@@ -87,8 +87,8 @@ The current export separates these by `relation_layer` and `probability_role`.
 Directional influence is not stored on nodes. It is stored on `source -> target metric` edges.
 
 - `sign` describes direction: `+`, `-`, `mixed`, `unknown`
-- `magnitude` describes effect size
-- `confidence` describes confidence in that directional assessment
+- `magnitude` is the internal 0-1 field for UI "影響ウェイト" and is displayed as a 0-100 score
+- `confidence` is the internal 0-1 field for UI "軸確信度" and is displayed as a 0-100 score
 - `context_gate` describes when the direction applies
 - `combination_mode` describes how multiple influences compose
 

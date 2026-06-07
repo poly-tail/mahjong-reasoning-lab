@@ -101,6 +101,7 @@ export function QuickReadingInputPanel() {
   return (
     <Panel
       title="読みを数値で反映"
+      className="flex max-h-[calc(100vh-12rem)] min-h-0 flex-col overflow-hidden"
       action={
         <div className="flex gap-1">
           <Button size="sm" onClick={() => setPreviewVisible(true)}>
@@ -119,12 +120,16 @@ export function QuickReadingInputPanel() {
         </div>
       }
     >
-      <div className="grid gap-3 p-3">
+      <div className="shrink-0 border-b border-stone-100 px-3 py-2">
         <p className="text-sm leading-6 text-stone-600">
-          読みをただのメモで終わらせず、4軸への影響・候補確率・枝刈り方針として反映します。
+          読みをただのメモで終わらせず、4軸への影響ウェイト、候補確率、枝刈り方針として反映します。
+          候補確率と未配分確率は%で扱い、影響ウェイトと軸確信度は0〜100のスコアとして扱います。
         </p>
+      </div>
 
-        <div className="grid grid-cols-[1fr_180px_140px] gap-2">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 pr-2">
+        <div className="grid gap-3">
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(0,1fr)_180px_180px]">
           <Field label="読みタイトル">
             <Input
               value={draft.title}
@@ -152,8 +157,8 @@ export function QuickReadingInputPanel() {
               ))}
             </Select>
           </Field>
-          <PercentField
-            label="確信度"
+          <ScoreField
+            label="読み全体の確信度"
             value={draft.confidence}
             onChange={(confidence) =>
               setDraft((current) => ({ ...current, confidence }))
@@ -172,7 +177,15 @@ export function QuickReadingInputPanel() {
         </Field>
 
         <section className="grid gap-2">
-          <div className="text-sm font-semibold text-stone-900">4軸影響</div>
+          <div>
+            <div className="text-sm font-semibold text-stone-900">
+              4軸影響
+            </div>
+            <p className="mt-1 text-xs leading-5 text-stone-600">
+              影響ウェイトは、その読みが正しい場合に、その軸をどれだけ動かすかを表す重みスコアです。確率ではないため、4軸の合計を100にする必要はありません。
+            </p>
+          </div>
+          <AxisScoreGuide />
           <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
             {handValueRangeAxes.map((axis) => {
               const impact = draft.axis_impacts.find(
@@ -242,6 +255,7 @@ export function QuickReadingInputPanel() {
             propagationWarnings={propagationPreview.warnings}
           />
         ) : null}
+        </div>
       </div>
     </Panel>
   );
@@ -298,19 +312,24 @@ function AxisImpactCard({
           disabled={!impact.enabled}
           onChange={(dynamic_weight) => onChange({ dynamic_weight })}
         />
-        <PercentField
-          label="影響量"
+        <ScoreField
+          label="影響ウェイト"
           value={impact.magnitude}
           disabled={!impact.enabled}
           onChange={(magnitude) => onChange({ magnitude })}
         />
-        <PercentField
+        <ScoreField
           label="軸確信度"
           value={impact.confidence}
           disabled={!impact.enabled}
           onChange={(confidence) => onChange({ confidence })}
         />
       </div>
+      {impact.magnitude >= 0.6 && impact.confidence <= 0.4 ? (
+        <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs leading-5 text-amber-800">
+          影響ウェイトが高い一方で軸確信度が低いです。過大反映の可能性があります。
+        </div>
+      ) : null}
       <details className="mt-2">
         <summary className="cursor-pointer text-xs text-stone-500">メモ</summary>
         <Textarea
@@ -321,6 +340,47 @@ function AxisImpactCard({
         />
       </details>
     </section>
+  );
+}
+
+function AxisScoreGuide() {
+  return (
+    <details className="rounded-md border border-stone-200 bg-stone-50 p-2">
+      <summary className="cursor-pointer text-sm font-semibold text-stone-900">
+        影響ウェイトと軸確信度の目安
+      </summary>
+      <div className="mt-2 grid gap-3 text-xs leading-5 text-stone-700 md:grid-cols-2">
+        <div>
+          <div className="font-semibold text-stone-900">影響ウェイト</div>
+          <ul className="mt-1 grid gap-1">
+            <li>0: 影響なし</li>
+            <li>1〜20: 弱い</li>
+            <li>21〜40: 中</li>
+            <li>41〜60: 強い</li>
+            <li>61〜80: 非常に強い</li>
+            <li>81〜100: 決定的級、過信注意</li>
+          </ul>
+        </div>
+        <div>
+          <div className="font-semibold text-stone-900">軸確信度</div>
+          <ul className="mt-1 grid gap-1">
+            <li>0〜20: 根拠がかなり弱い</li>
+            <li>21〜40: 弱い根拠</li>
+            <li>41〜60: 仮説として置ける</li>
+            <li>61〜80: 比較的信頼できる</li>
+            <li>81〜100: 強い根拠</li>
+          </ul>
+        </div>
+      </div>
+      <div className="mt-2 grid gap-1 text-xs leading-5 text-amber-700">
+        <p>
+          影響ウェイトが高くても、軸確信度が低い場合は過大反映に注意してください。
+        </p>
+        <p>
+          mixed/unknown の軸が残る場合、hard pruneではなく downweight / keep top-k を検討してください。
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -396,7 +456,7 @@ function ChoiceGroupEditor({
 
       {enabled && draft.choice_group ? (
         <div className="mt-3 grid gap-2">
-          <div className="grid grid-cols-[1fr_180px] gap-2">
+          <div className="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(0,1fr)_180px]">
             <Field label="choice group label">
               <Input
                 value={draft.choice_group.label}
@@ -712,8 +772,9 @@ function CandidateRow({
   onRemove: () => void;
 }) {
   return (
-    <div className="grid grid-cols-[1fr_80px_90px_90px_130px_32px] gap-1.5">
+    <div className="grid grid-cols-2 gap-1.5 xl:grid-cols-[minmax(0,1fr)_80px_90px_90px_130px_32px]">
       <Input
+        className="col-span-2 xl:col-span-1"
         aria-label="候補名"
         value={candidate.label}
         onChange={(event) => onChange({ ...candidate, label: event.target.value })}
@@ -815,7 +876,7 @@ function PruningPolicyEditor({
         <div>lock: 候補を残したまま分布を固定する</div>
         <div>keep top-k: 1つに絞らず複数仮説を残す</div>
       </div>
-      <div className="grid grid-cols-[220px_1fr] gap-2">
+      <div className="grid grid-cols-1 gap-2 xl:grid-cols-[220px_minmax(0,1fr)]">
         <Field label="方針">
           <Select
             value={policy.action}
@@ -833,7 +894,7 @@ function PruningPolicyEditor({
             ))}
           </Select>
         </Field>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
           <NumberField
             label="strength"
             value={policy.strength ?? 0}
@@ -918,7 +979,9 @@ function ReadingPreview({
               );
               return (
                 <Badge key={impact.axis_id} tone="stone">
-                  {axis?.label}: {impact.sign} {Math.round(impact.magnitude * 100)}%
+                  {axis?.label}: {impact.sign} 影響ウェイト{" "}
+                  {formatScore(impact.magnitude)} / 軸確信度{" "}
+                  {formatScore(impact.confidence)}
                 </Badge>
               );
             })}
@@ -957,7 +1020,7 @@ function ReadingPreview({
   );
 }
 
-function PercentField({
+function ScoreField({
   label,
   value,
   disabled,
@@ -968,18 +1031,33 @@ function PercentField({
   disabled?: boolean;
   onChange: (value: number) => void;
 }) {
+  const score = scoreValue(value);
   return (
-    <Field label={`${label} ${Math.round(value * 100)}%`}>
-      <Input
-        type="range"
-        min={0}
-        max={100}
-        value={Math.round(value * 100)}
-        disabled={disabled}
-        onChange={(event) =>
-          onChange(normalizePercentInput(Number(event.target.value)) ?? 0)
-        }
-      />
+    <Field label={`${label} ${score}/100`}>
+      <div className="grid grid-cols-[1fr_72px] items-center gap-2">
+        <Input
+          aria-label={`${label} slider`}
+          type="range"
+          min={0}
+          max={100}
+          value={score}
+          disabled={disabled}
+          onChange={(event) =>
+            onChange(scoreInputToInternal(Number(event.target.value)))
+          }
+        />
+        <Input
+          aria-label={`${label} number`}
+          type="number"
+          min={0}
+          max={100}
+          value={score}
+          disabled={disabled}
+          onChange={(event) =>
+            onChange(scoreInputToInternal(Number(event.target.value)))
+          }
+        />
+      </div>
     </Field>
   );
 }
@@ -1082,4 +1160,17 @@ function optionalNumber(value: string) {
   if (value.trim() === "") return undefined;
   const next = Number(value);
   return Number.isFinite(next) ? next : undefined;
+}
+
+function scoreValue(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value * 100)));
+}
+
+function scoreInputToInternal(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value))) / 100;
+}
+
+function formatScore(value: number) {
+  return `${scoreValue(value)}/100`;
 }

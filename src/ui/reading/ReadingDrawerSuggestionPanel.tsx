@@ -120,8 +120,8 @@ export function ReadingDrawerSuggestionPanel({
               <div className="flex flex-wrap gap-1">
                 {item.axis_impacts?.map((impact) => (
                   <Badge key={`${item.id}_${impact.axis_id}`} tone="stone">
-                    {impact.axis_id} {impact.sign}{" "}
-                    {formatPercent(impact.magnitude)}
+                    {impact.axis_id} {impact.sign} 影響ウェイト{" "}
+                    {formatScore(impact.magnitude)}
                   </Badge>
                 ))}
                 {item.caution ? <Badge tone="amber">{item.caution}</Badge> : null}
@@ -159,4 +159,8 @@ export function ReadingDrawerSuggestionPanel({
       </div>
     </section>
   );
+}
+
+function formatScore(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(value * 100)))}/100`;
 }

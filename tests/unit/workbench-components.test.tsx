@@ -64,8 +64,28 @@ describe("workbench components", () => {
     const user = userEvent.setup();
     render(<QuickReadingInputPanel />);
 
+    expect(screen.getByText(/4軸の合計を100にする必要はありません/)).toBeVisible();
+    expect(screen.getByText("影響ウェイト 10/100")).toBeVisible();
+    expect(screen.getAllByText("軸確信度 55/100").length).toBeGreaterThan(0);
+    expect(screen.queryByText("影響ウェイト 10%")).not.toBeInTheDocument();
     expect(screen.getByText("候補合計 85%")).toBeVisible();
     expect(screen.getByText("未配分 15%")).toBeVisible();
+
+    const impactWeightInputs = screen.getAllByLabelText("影響ウェイト number");
+    const axisConfidenceInputs = screen.getAllByLabelText("軸確信度 number");
+    await user.clear(impactWeightInputs[0]);
+    await user.type(impactWeightInputs[0], "70");
+    await user.clear(axisConfidenceInputs[0]);
+    await user.type(axisConfidenceInputs[0], "40");
+    expect(
+      screen.getByText(
+        "影響ウェイトが高い一方で軸確信度が低いです。過大反映の可能性があります。",
+      ),
+    ).toBeVisible();
+    await user.clear(axisConfidenceInputs[0]);
+    await user.type(axisConfidenceInputs[0], "80");
+    expect(screen.getByText("影響ウェイト 70/100")).toBeVisible();
+    expect(screen.getByText("軸確信度 80/100")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "候補を提案" }));
     expect(screen.getByText("候補提案")).toBeVisible();
@@ -82,9 +102,19 @@ describe("workbench components", () => {
     await user.click(screen.getAllByRole("button", { name: "active caseに反映" })[0]);
 
     const state = useAppStore.getState();
-    expect(state.doc.nodes.some((node) => node.title === "染め本線の数値読み")).toBe(
-      true,
+    const readingNode = state.doc.nodes.find(
+      (node) => node.title === "染め本線の数値読み",
     );
+    expect(readingNode).toBeDefined();
+    expect(
+      state.doc.edges.some(
+        (edge) =>
+          edge.source === readingNode?.id &&
+          edge.relation_layer === "influence" &&
+          edge.magnitude === 0.7 &&
+          edge.confidence === 0.8,
+      ),
+    ).toBe(true);
     expect(
       state.doc.cases
         .find((caseItem) => caseItem.id === state.doc.active_case_id)
@@ -150,8 +180,8 @@ describe("workbench components", () => {
     render(<Inspector />);
 
     await user.selectOptions(screen.getByLabelText("sign"), "+");
-    await user.clear(screen.getByLabelText("magnitude"));
-    await user.type(screen.getByLabelText("magnitude"), "0.7");
+    await user.clear(screen.getByLabelText("影響ウェイト number"));
+    await user.type(screen.getByLabelText("影響ウェイト number"), "70");
 
     const edge = useAppStore
       .getState()

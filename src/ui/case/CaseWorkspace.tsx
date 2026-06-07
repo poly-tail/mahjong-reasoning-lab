@@ -812,9 +812,9 @@ function MissingElementsPanel({
       choiceGroupTotals(nodes).some((total) => Math.abs(total - 1) > 0.001),
     ],
     [
-      "confidenceが低いのにmagnitudeが大きい",
+      "軸確信度が低いのに影響ウェイトが大きい",
       caseInfluenceEdges.some(
-        (edge) => edge.confidence < 0.4 && edge.magnitude >= 0.8,
+        (edge) => edge.confidence <= 0.4 && edge.magnitude >= 0.6,
       ),
     ],
   ].filter(([, active]) => active);
@@ -929,7 +929,8 @@ function NumericReadingSummaryPanel({
                   ))}
                   {influences.map((edge) => (
                     <Badge key={edge.id} tone="cyan">
-                      {edge.label || `${edge.sign} ${edge.magnitude}`}
+                      {edge.label ||
+                        `${edge.sign} 影響ウェイト ${formatScore(edge.magnitude)}`}
                     </Badge>
                   ))}
                 </div>
@@ -996,6 +997,10 @@ function nodeMatchesPipelineStep(
 
 function formatProbability(value: number) {
   return Number.isFinite(value) ? `${Math.round(value * 1000) / 10}%` : "0%";
+}
+
+function formatScore(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(value * 100)))}/100`;
 }
 
 function hasNumericFields(node: KnowledgeNode) {

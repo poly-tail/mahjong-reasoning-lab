@@ -183,7 +183,7 @@ export function validateReadingImpactDraft(
   if (draft.confidence < 0 || draft.confidence > 1) {
     warnings.push({
       code: "confidence_range",
-      message: "確信度は0-100%の範囲で入力してください。",
+      message: "読み全体の確信度は0〜100のスコア範囲で入力してください。",
       severity: "danger",
     });
   }
@@ -209,21 +209,22 @@ export function validateReadingImpactDraft(
     if (impact.magnitude < 0 || impact.magnitude > 1) {
       warnings.push({
         code: "magnitude_range",
-        message: `${axisMetricTitles[impact.axis_id]} の影響量は0-100%の範囲で入力してください。`,
+        message: `${axisMetricTitles[impact.axis_id]} の影響ウェイトは0〜100のスコア範囲で入力してください。`,
         severity: "danger",
       });
     }
     if (impact.confidence < 0 || impact.confidence > 1) {
       warnings.push({
         code: "axis_confidence_range",
-        message: `${axisMetricTitles[impact.axis_id]} の確信度は0-100%の範囲で入力してください。`,
+        message: `${axisMetricTitles[impact.axis_id]} の軸確信度は0〜100のスコア範囲で入力してください。`,
         severity: "danger",
       });
     }
-    if (impact.magnitude >= 0.8 && impact.confidence < 0.4) {
+    if (impact.magnitude >= 0.6 && impact.confidence <= 0.4) {
       warnings.push({
         code: "large_low_confidence_impact",
-        message: "確信度が低い割に影響量が大きいです。過大反映の可能性があります。",
+        message:
+          "影響ウェイトが高い一方で軸確信度が低いです。過大反映の可能性があります。",
         severity: "warning",
       });
     }
@@ -349,7 +350,7 @@ export function buildReadingImpactPreview(
       magnitude: round(impact.magnitude),
       confidence: round(impact.confidence),
       context_gate: draft.context_gate?.trim() || undefined,
-      label: `${axisMetricTitles[impact.axis_id]} ${impact.sign} ${round(impact.magnitude)}`,
+      label: `${axisMetricTitles[impact.axis_id]} ${impact.sign} 影響ウェイト ${formatScore(impact.magnitude)}`,
       notes: impact.note ?? "",
       conditional_weight: impact.dynamic_weight,
     });
@@ -705,4 +706,8 @@ function round(value: number) {
 
 function formatPercent(value: number) {
   return `${Math.round(value * 1000) / 10}%`;
+}
+
+function formatScore(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(value * 100)))}/100`;
 }

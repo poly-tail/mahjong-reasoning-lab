@@ -154,8 +154,8 @@ function MetricLens({
             </div>
             <InfluenceBar edge={item.edge} />
             <div className="mt-1 text-xs text-stone-600">
-              影響量 {item.edge.magnitude.toFixed(2)} / 確信度{" "}
-              {Math.round(item.edge.confidence * 100)}%
+              影響ウェイト {formatScore(item.edge.magnitude)} / 軸確信度{" "}
+              {formatScore(item.edge.confidence)}
             </div>
             <ContextLine edge={item.edge} />
           </button>
@@ -423,4 +423,8 @@ function ContextLine({ edge }: { edge: KnowledgeEdge }) {
     ? edge.context_gate.join(", ")
     : edge.context_gate;
   return <div className="mt-1 text-xs text-stone-500">文脈: {value}</div>;
+}
+
+function formatScore(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(value * 100)))}/100`;
 }

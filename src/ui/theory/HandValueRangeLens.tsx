@@ -82,10 +82,20 @@ export function HandValueRangeLens() {
     <main className="min-h-0 flex-1 overflow-auto p-3">
       <div className="grid gap-3">
         <Panel title="進行度・聴牌率 / 打点 / 待ち・形の良さ / 点数状況・行動閾値のどこが動いたか">
-          <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2 xl:grid-cols-4">
-            {axisModels.map((axis) => (
-              <AxisCard key={axis.id} axis={axis} />
-            ))}
+          <div className="grid gap-3 p-3">
+            <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm leading-6 text-stone-700">
+              <p>
+                4軸は排他的候補ではありません。影響ウェイトは各軸を独立にどれだけ動かすかを表す0〜100の重みスコアで、4軸の合計を100にする必要はありません。
+              </p>
+              <p className="mt-1">
+                候補確率と未配分確率は%で扱います。影響ウェイトと軸確信度は%ではなく、0〜100のスコアとして扱います。
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {axisModels.map((axis) => (
+                <AxisCard key={axis.id} axis={axis} />
+              ))}
+            </div>
           </div>
         </Panel>
 
@@ -205,9 +215,11 @@ function AxisCard({
         {axis.influences.slice(0, 5).map((item) => (
           <div
             key={item.edge.id}
-            className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs"
+            className="flex flex-wrap items-center gap-2 text-xs"
           >
-            <span className="truncate text-stone-600">{item.source.title}</span>
+            <span className="min-w-0 flex-1 truncate text-stone-600">
+              {item.source.title}
+            </span>
             <Badge tone={signTone(item.edge.sign)}>
               {item.edge.sign === "+" ? (
                 <TrendingUp className="h-3 w-3" aria-hidden="true" />
@@ -217,6 +229,12 @@ function AxisCard({
                 <HelpCircle className="h-3 w-3" aria-hidden="true" />
               )}
               {influenceSignLabels[item.edge.sign]}
+            </Badge>
+            <Badge tone="stone">
+              影響ウェイト {formatScore(item.edge.magnitude)}
+            </Badge>
+            <Badge tone="stone">
+              軸確信度 {formatScore(item.edge.confidence)}
             </Badge>
           </div>
         ))}
@@ -298,4 +316,8 @@ function signTone(sign: InfluenceSign): "stone" | "amber" | "rose" | "emerald" {
   if (sign === "-") return "rose";
   if (sign === "mixed") return "amber";
   return "stone";
+}
+
+function formatScore(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(value * 100)))}/100`;
 }

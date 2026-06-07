@@ -107,6 +107,8 @@ docs/
   pruning-impact.md
   node-lock.md
   reading-utility.md
+  quick-reading-input.md
+  hand-value-range-theory.md
   residual-mass.md
   reading-drawer.md
   exception-library.md
