@@ -40,13 +40,15 @@ export function estimateRescueRate(
     .filter((event) => event.enabled && event.probability !== undefined)
     .map((event) => event.probability ?? 0);
   const qTotal = calculateRescueRate(activeValues);
-  const band = qTotal === undefined ? bandRanges[fallbackBand] : bandFor(qTotal);
+  const band =
+    qTotal === undefined ? bandRanges[fallbackBand] : bandFor(qTotal);
   const warnings = rescueRateWarnings(qTotal, events);
 
   return {
     q_total: qTotal,
     band_label: band.label,
-    range_label: qTotal === undefined ? band.range : `${Math.round(qTotal * 100)}%`,
+    range_label:
+      qTotal === undefined ? band.range : `${Math.round(qTotal * 100)}%`,
     warnings,
   };
 }
@@ -57,14 +59,18 @@ export function rescueRateWarnings(
 ) {
   const warnings: string[] = [];
   if (qTotal !== undefined && qTotal > 0.3) {
-    warnings.push("脇救済率を高く見積もりすぎている可能性があります。");
+    warnings.push("卓上動態読みを高く見積もりすぎている可能性があります。");
   }
   const enabledCount = events.filter((event) => event.enabled).length;
   if (enabledCount >= 3) {
-    warnings.push("救済イベントが独立とは限らないため、合算は上限レンジとして扱ってください。");
+    warnings.push(
+      "救済イベントが独立とは限らないため、合算は上限レンジとして扱ってください。",
+    );
   }
   if (qTotal !== undefined && qTotal > 0.2) {
-    warnings.push("他力期待で危険牌選択を正当化していないか確認してください。");
+    warnings.push(
+      "この値は行動推奨ではありません。候補確率・未配分・例外候補の整理に使ってください。",
+    );
   }
   return warnings;
 }

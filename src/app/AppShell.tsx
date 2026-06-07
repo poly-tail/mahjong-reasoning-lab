@@ -50,10 +50,9 @@ const navItems: {
 ];
 
 const purposeDescriptions: Record<Screen, string> = {
-  case:
-    "観測、仮説、条件、判断を1つの局面に紐づけて整理します。結論だけでなく、途中の重み付けと迷いも残します。",
+  case: "観測、仮説、条件、判断を1つの局面に紐づけて整理します。結論だけでなく、途中の重み付けと迷いも残します。",
   theory:
-    "手牌価値レンジ理論、押し引き、脇救済率などの抽象概念を、知識ノード・指標・影響・ルールへ変換します。",
+    "手牌価値レンジ4軸、押し引き文脈、卓上動態/他家介入読みなどを、読み整理用の知識ノード・指標・影響・ルールへ変換します。",
   probability:
     "choice group、全体100%制約、枝刈り、ロックを分けて確認します。候補を削る操作と分布を固定する操作を混同しないための作業場です。",
   validation:
@@ -232,7 +231,9 @@ export function AppShell() {
     }
 
     if (activeScreen === "theory") {
-      return <TheoryWorkspace activeTab={theoryTab} setActiveTab={setTheoryTab} />;
+      return (
+        <TheoryWorkspace activeTab={theoryTab} setActiveTab={setTheoryTab} />
+      );
     }
 
     if (activeScreen === "probability") {
@@ -447,7 +448,7 @@ function TheoryWorkspace({
           { id: "inbox", label: "Mapping Inbox" },
           { id: "map", label: "知識マップ" },
           { id: "hand", label: "手牌価値" },
-          { id: "rescue", label: "脇救済率" },
+          { id: "rescue", label: "卓上動態" },
           { id: "rules", label: "ルール作成" },
         ]}
       />

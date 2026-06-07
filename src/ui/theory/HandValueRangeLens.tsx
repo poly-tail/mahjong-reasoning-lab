@@ -48,7 +48,8 @@ export function HandValueRangeLens() {
     () =>
       handValueAxes.map((axis) => {
         const metrics = doc.nodes.filter(
-          (node) => node.type === "metric" && hasAnyMarker(node, axisTags[axis.id]),
+          (node) =>
+            node.type === "metric" && hasAnyMarker(node, axisTags[axis.id]),
         );
         const influences = metrics.flatMap((metric) =>
           getMetricInfluences(doc, metric.id),
@@ -85,7 +86,7 @@ export function HandValueRangeLens() {
           <div className="grid gap-3 p-3">
             <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm leading-6 text-stone-700">
               <p>
-                4軸は排他的候補ではありません。影響ウェイトは各軸を独立にどれだけ動かすかを表す0〜100の重みスコアで、4軸の合計を100にする必要はありません。
+                4軸は読みの影響射影先であり、最終的な押し引き/牌選択軸ではありません。影響ウェイトは各軸を独立にどれだけ動かすかを表す0〜100の重みスコアで、4軸の合計を100にする必要はありません。
               </p>
               <p className="mt-1">
                 候補確率と未配分確率は%で扱います。影響ウェイトと軸確信度は%ではなく、0〜100のスコアとして扱います。
@@ -124,7 +125,7 @@ export function HandValueRangeLens() {
                 "非テンパイと仮定する",
                 "愚形固定と仮定する",
                 "染め本線を残す",
-                "条件戦の押し引き閾値を上げる",
+                "条件戦で確認優先度を上げる",
               ].map((item) => (
                 <div
                   key={item}
@@ -141,9 +142,11 @@ export function HandValueRangeLens() {
         <div className="grid grid-cols-[1fr_1fr] gap-3">
           <Panel title="この局面に紐づいた手牌価値ノード">
             <div className="grid gap-2 p-3">
-              {caseNodes.filter((node) => hasHandValueMarker(node)).map((node) => (
-                <NodeRow key={node.id} node={node} />
-              ))}
+              {caseNodes
+                .filter((node) => hasHandValueMarker(node))
+                .map((node) => (
+                  <NodeRow key={node.id} node={node} />
+                ))}
               {caseNodes.filter((node) => hasHandValueMarker(node)).length ===
               0 ? (
                 <p className="text-sm text-stone-500">
@@ -196,7 +199,10 @@ function AxisCard({
       </p>
       <div className="mt-3 grid gap-2">
         {axis.metrics.map((metric) => (
-          <div key={metric.id} className="rounded border border-stone-200 bg-white p-2">
+          <div
+            key={metric.id}
+            className="rounded border border-stone-200 bg-white p-2"
+          >
             <div className="truncate text-sm font-medium text-stone-900">
               {metric.title}
             </div>
@@ -241,7 +247,8 @@ function AxisCard({
       </div>
       {axis.summary === "mixed" || axis.summary === "unknown" ? (
         <p className="mt-3 text-xs leading-5 text-amber-700">
-          この軸は確定しません。不確実なものを勝手に hard prune しないでください。
+          この軸は確定しません。不確実なものを勝手に hard prune
+          しないでください。
         </p>
       ) : null}
     </section>

@@ -19,7 +19,11 @@ import {
 } from "../../domain/readingNumerics";
 import { handValueRangeAxes } from "../../domain/rangetheory";
 import { lockModeLabels } from "../../domain/labels";
-import { lockModes, type InfluenceSign, type LockMode } from "../../domain/schema";
+import {
+  lockModes,
+  type InfluenceSign,
+  type LockMode,
+} from "../../domain/schema";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Field, Input, Select, Textarea } from "../components/form";
@@ -61,7 +65,7 @@ const axisDescriptions: Record<AxisImpactDraft["axis_id"], string> = {
   wait_shape_quality_axis:
     "良形/愚形、待ち候補、和了しやすさ、安全度評価を動かす読み",
   score_situation_threshold_axis:
-    "点棒状況、順位点、条件戦により押し引き閾値を動かす読み",
+    "点棒状況、順位点、条件戦により読みの重みや確認優先度を動かす読み",
 };
 
 export function QuickReadingInputPanel() {
@@ -129,132 +133,141 @@ export function QuickReadingInputPanel() {
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 pr-2">
         <div className="grid gap-3">
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(0,1fr)_180px_180px]">
-          <Field label="読みタイトル">
-            <Input
-              value={draft.title}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, title: event.target.value }))
+          <div className="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(0,1fr)_180px_180px]">
+            <Field label="読みタイトル">
+              <Input
+                value={draft.title}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    title: event.target.value,
+                  }))
+                }
+                placeholder="例: 同色副露＋手出し字牌で染め本線上昇"
+              />
+            </Field>
+            <Field label="読みタイプ">
+              <Select
+                value={draft.reading_type}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    reading_type: event.target
+                      .value as ReadingImpactDraft["reading_type"],
+                  }))
+                }
+              >
+                {readingTypeOptions.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <ScoreField
+              label="読み全体の確信度"
+              value={draft.confidence}
+              onChange={(confidence) =>
+                setDraft((current) => ({ ...current, confidence }))
               }
-              placeholder="例: 同色副露＋手出し字牌で染め本線上昇"
             />
-          </Field>
-          <Field label="読みタイプ">
-            <Select
-              value={draft.reading_type}
+          </div>
+
+          <Field label="読みメモ">
+            <Textarea
+              value={draft.memo}
               onChange={(event) =>
                 setDraft((current) => ({
                   ...current,
-                  reading_type: event.target
-                    .value as ReadingImpactDraft["reading_type"],
+                  memo: event.target.value,
                 }))
               }
-            >
-              {readingTypeOptions.map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </Select>
+              placeholder="例: 中盤に同色副露が入り、手出し字牌が続いたため染め本線を上げる。ただし速度副露/役牌バックも残すので hard prune はしない。"
+            />
           </Field>
-          <ScoreField
-            label="読み全体の確信度"
-            value={draft.confidence}
-            onChange={(confidence) =>
-              setDraft((current) => ({ ...current, confidence }))
-            }
-          />
-        </div>
 
-        <Field label="読みメモ">
-          <Textarea
-            value={draft.memo}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, memo: event.target.value }))
-            }
-            placeholder="例: 中盤に同色副露が入り、手出し字牌が続いたため染め本線を上げる。ただし速度副露/役牌バックも残すので hard prune はしない。"
-          />
-        </Field>
-
-        <section className="grid gap-2">
-          <div>
-            <div className="text-sm font-semibold text-stone-900">
-              4軸影響
+          <section className="grid gap-2">
+            <div>
+              <div className="text-sm font-semibold text-stone-900">
+                4軸影響
+              </div>
+              <p className="mt-1 text-xs leading-5 text-stone-600">
+                影響ウェイトは、その読みが正しい場合に、その軸をどれだけ動かすかを表す重みスコアです。確率ではないため、4軸の合計を100にする必要はありません。
+              </p>
             </div>
-            <p className="mt-1 text-xs leading-5 text-stone-600">
-              影響ウェイトは、その読みが正しい場合に、その軸をどれだけ動かすかを表す重みスコアです。確率ではないため、4軸の合計を100にする必要はありません。
-            </p>
+            <AxisScoreGuide />
+            <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+              {handValueRangeAxes.map((axis) => {
+                const impact = draft.axis_impacts.find(
+                  (item) => item.axis_id === axis.id,
+                );
+                if (!impact) return null;
+                return (
+                  <AxisImpactCard
+                    key={axis.id}
+                    axisId={axis.id}
+                    label={axis.label}
+                    description={axisDescriptions[axis.id]}
+                    impact={impact}
+                    onChange={(patch) => updateAxis(axis.id, patch)}
+                  />
+                );
+              })}
+            </div>
+          </section>
+
+          <ChoiceGroupEditor draft={draft} onChange={setDraft} />
+          <PruningPolicyEditor draft={draft} onChange={setDraft} />
+
+          <Field label="context gate">
+            <Input
+              value={draft.context_gate ?? ""}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  context_gate: event.target.value,
+                }))
+              }
+              placeholder="例: 中盤 / 親番 / 南3 / 自分2着目 / 条件戦"
+            />
+          </Field>
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setPreviewVisible(true)}>
+              <Eye className="h-4 w-4" aria-hidden="true" />
+              プレビュー
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => applyReadingImpactDraft(draft, true)}
+            >
+              <Save className="h-4 w-4" aria-hidden="true" />
+              active caseに反映
+            </Button>
+            <Button onClick={() => applyReadingImpactDraft(draft, false)}>
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              知識マップにだけ作成
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setDraft(createDefaultReadingImpactDraft());
+                setPreviewVisible(false);
+              }}
+            >
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              入力をリセット
+            </Button>
           </div>
-          <AxisScoreGuide />
-          <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
-            {handValueRangeAxes.map((axis) => {
-              const impact = draft.axis_impacts.find(
-                (item) => item.axis_id === axis.id,
-              );
-              if (!impact) return null;
-              return (
-                <AxisImpactCard
-                  key={axis.id}
-                  axisId={axis.id}
-                  label={axis.label}
-                  description={axisDescriptions[axis.id]}
-                  impact={impact}
-                  onChange={(patch) => updateAxis(axis.id, patch)}
-                />
-              );
-            })}
-          </div>
-        </section>
 
-        <ChoiceGroupEditor draft={draft} onChange={setDraft} />
-        <PruningPolicyEditor draft={draft} onChange={setDraft} />
-
-        <Field label="context gate">
-          <Input
-            value={draft.context_gate ?? ""}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                context_gate: event.target.value,
-              }))
-            }
-            placeholder="例: 中盤 / 親番 / 南3 / 自分2着目 / 条件戦"
-          />
-        </Field>
-
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={() => setPreviewVisible(true)}>
-            <Eye className="h-4 w-4" aria-hidden="true" />
-            プレビュー
-          </Button>
-          <Button variant="primary" onClick={() => applyReadingImpactDraft(draft, true)}>
-            <Save className="h-4 w-4" aria-hidden="true" />
-            active caseに反映
-          </Button>
-          <Button onClick={() => applyReadingImpactDraft(draft, false)}>
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            知識マップにだけ作成
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setDraft(createDefaultReadingImpactDraft());
-              setPreviewVisible(false);
-            }}
-          >
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            入力をリセット
-          </Button>
-        </div>
-
-        {previewVisible ? (
-          <ReadingPreview
-            draft={draft}
-            preview={preview}
-            propagationDiffs={propagationPreview.diffs}
-            propagationWarnings={propagationPreview.warnings}
-          />
-        ) : null}
+          {previewVisible ? (
+            <ReadingPreview
+              draft={draft}
+              preview={preview}
+              propagationDiffs={propagationPreview.diffs}
+              propagationWarnings={propagationPreview.warnings}
+            />
+          ) : null}
         </div>
       </div>
     </Panel>
@@ -331,7 +344,9 @@ function AxisImpactCard({
         </div>
       ) : null}
       <details className="mt-2">
-        <summary className="cursor-pointer text-xs text-stone-500">メモ</summary>
+        <summary className="cursor-pointer text-xs text-stone-500">
+          メモ
+        </summary>
         <Textarea
           className="mt-1 min-h-14"
           value={impact.note ?? ""}
@@ -377,7 +392,8 @@ function AxisScoreGuide() {
           影響ウェイトが高くても、軸確信度が低い場合は過大反映に注意してください。
         </p>
         <p>
-          mixed/unknown の軸が残る場合、hard pruneではなく downweight / keep top-k を検討してください。
+          mixed/unknown の軸が残る場合、hard pruneではなく downweight / keep
+          top-k を検討してください。
         </p>
       </div>
     </details>
@@ -460,7 +476,9 @@ function ChoiceGroupEditor({
             <Field label="choice group label">
               <Input
                 value={draft.choice_group.label}
-                onChange={(event) => setChoiceGroup({ label: event.target.value })}
+                onChange={(event) =>
+                  setChoiceGroup({ label: event.target.value })
+                }
               />
             </Field>
             <label className="mt-7 flex items-center gap-2 text-sm text-stone-700">
@@ -632,7 +650,9 @@ function ChoiceGroupEditor({
                 }
                 onRemove={() =>
                   setChoiceGroup({
-                    candidates: candidates.filter((_, itemIndex) => itemIndex !== index),
+                    candidates: candidates.filter(
+                      (_, itemIndex) => itemIndex !== index,
+                    ),
                   })
                 }
               />
@@ -682,9 +702,12 @@ function ChoiceGroupEditor({
                     className="grid grid-cols-[1fr_80px_80px] gap-2"
                   >
                     <span className="truncate">{candidate.label}</span>
-                    <span>raw {formatPercent(candidate.raw_probability ?? 0)}</span>
                     <span>
-                      norm {formatPercent(candidate.normalized_probability ?? 0)}
+                      raw {formatPercent(candidate.raw_probability ?? 0)}
+                    </span>
+                    <span>
+                      norm{" "}
+                      {formatPercent(candidate.normalized_probability ?? 0)}
                     </span>
                   </div>
                 ))}
@@ -777,7 +800,9 @@ function CandidateRow({
         className="col-span-2 xl:col-span-1"
         aria-label="候補名"
         value={candidate.label}
-        onChange={(event) => onChange({ ...candidate, label: event.target.value })}
+        onChange={(event) =>
+          onChange({ ...candidate, label: event.target.value })
+        }
       />
       <Input
         aria-label="確率%"
@@ -945,8 +970,12 @@ function ReadingPreview({
   return (
     <section className="rounded-md border border-cyan-200 bg-cyan-50/40 p-3">
       <div className="mb-2 flex flex-wrap gap-2">
-        <Badge tone="cyan">作成予定ノード {preview.createdNodeIds.length}</Badge>
-        <Badge tone="cyan">作成予定エッジ {preview.createdEdgeIds.length}</Badge>
+        <Badge tone="cyan">
+          作成予定ノード {preview.createdNodeIds.length}
+        </Badge>
+        <Badge tone="cyan">
+          作成予定エッジ {preview.createdEdgeIds.length}
+        </Badge>
         <Badge>{draft.pruning_policy.action}</Badge>
       </div>
       <div className="grid gap-2">
@@ -1005,9 +1034,13 @@ function ReadingPreview({
           <div className="font-semibold text-stone-900">伝播diff</div>
           <div className="mt-1 grid gap-1">
             {propagationDiffs.slice(0, 6).map((diff) => (
-              <div key={diff.node_id} className="rounded border border-stone-200 bg-white p-1.5">
-                {diff.title}: {Math.round((diff.before ?? 0) * 1000) / 10}% {"->"}{" "}
-                {Math.round((diff.after ?? 0) * 1000) / 10}% / {diff.reason}
+              <div
+                key={diff.node_id}
+                className="rounded border border-stone-200 bg-white p-1.5"
+              >
+                {diff.title}: {Math.round((diff.before ?? 0) * 1000) / 10}%{" "}
+                {"->"} {Math.round((diff.after ?? 0) * 1000) / 10}% /{" "}
+                {diff.reason}
               </div>
             ))}
             {propagationDiffs.length === 0 ? (
@@ -1099,10 +1132,15 @@ function PresetButton({
   onApply,
 }: {
   values: number[];
-  onApply: (patch: Partial<NonNullable<ReadingImpactDraft["choice_group"]>>) => void;
+  onApply: (
+    patch: Partial<NonNullable<ReadingImpactDraft["choice_group"]>>,
+  ) => void;
 }) {
   return (
-    <Button size="sm" onClick={() => onApply({ candidates: presetCandidates(values) })}>
+    <Button
+      size="sm"
+      onClick={() => onApply({ candidates: presetCandidates(values) })}
+    >
       {values.map((value) => Math.round(value * 100)).join("/")}
     </Button>
   );

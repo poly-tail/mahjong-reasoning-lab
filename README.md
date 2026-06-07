@@ -1,7 +1,10 @@
 # Mahjong Reasoning Lab
 
-麻雀の「読み」「条件分岐設計」「思考経路」を、local-firstで整理するための知識マップGUIです。
-完全自動推論器ではなく、知識構造化、局面への投影、確率伝播の限定プレビュー、pruning impact分析、将来のpruning-ui / 確率木編集UIへのJSON連携点を作るMVPです。
+麻雀の「読み」「候補確率」「未配分確率」「4軸影響」「例外候補」を、local-firstで整理するための知識マップGUIです。
+
+Phase1の正式名称は **Reading Probability Core** です。完全自動推論器ではなく、読み候補・確率・影響ウェイト・軸確信度・未配分・例外集を構造化するMVPです。
+
+Phase1は押し引き判断AI、牌選択AI、局収支EVエンジン、順位点EVエンジン、Action Recommendationではありません。4軸は読みの影響軸であり、押し引きや牌選択の最終判断軸ではありません。
 
 ## 実行方法
 
@@ -49,10 +52,22 @@ Playwrightのブラウザが未インストールの場合は、先に次を実�
 npx playwright install chromium
 ```
 
-ユーザー向け仕様書PDFを再生成する場合は次を実行します。
+要件定義書PDFを再生成する場合は次を実行します。
+
+```powershell
+node scripts/render-requirements-pdf.mjs
+```
+
+詳細仕様書PDFを再生成する場合は次を実行します。
 
 ```powershell
 node scripts/render-specification-pdf.mjs
+```
+
+ユーザー向け仕様書PDFを再生成する場合は次を実行します。
+
+```powershell
+node scripts/render-user-specification-pdf.mjs
 ```
 
 ユーザー目線の使い方ガイドPDFを再生成する場合は次を実行します。
@@ -107,6 +122,9 @@ docs/
   pruning-impact.md
   node-lock.md
   reading-utility.md
+  requirements-definition.md
+  detailed-specification.md
+  specification.md
   quick-reading-input.md
   hand-value-range-theory.md
   residual-mass.md
@@ -133,16 +151,26 @@ tests/
 ### Mapping Inbox
 
 - ChatGPTやnoteの麻雀考察を貼り付け、テンプレートから下書きノード案を作成
-- テンプレート: 手牌価値レンジ、押し引き、危険牌比較、脇救済率、ノードロック、枝刈り、読みの有用性、条件戦/順位点、中間状態
+- テンプレート: 手牌価値レンジ、押し引き（読み整理）、危険牌比較、卓上動態/他家介入読み、ノードロック、枝刈り、読みの有用性、条件戦/順位点、中間状態
+- 押し引き、危険牌比較、条件戦/順位点、安全度、卓上動態テンプレートは、Phase1では読み候補カテゴリ、context tag、observation candidate、exception candidateとして扱い、行動推奨は出さない
 - 自然言語解析やLLM連携はせず、選んだテンプレートに沿って既存schemaの `type` / `tags` / `probability_role` / `pruning_hints` / `lock_mode` を埋める
 - 作成ノードは通常のZustand commit、zod validation、undo historyに乗る
 
 ### Domain Lens / Theory Lenses
 
-- Knowledge MapのDomain Lensで、全部、手牌価値、押し引き、安全度、確率木、枝刈り、ロック、脇救済、教育、反省のプリセット表示を切り替え
+- Knowledge MapのDomain Lensで、全部、手牌価値、押し引き文脈、安全度、確率木、枝刈り、ロック、卓上動態、教育、反省のプリセット表示を切り替え
 - Hand Value Range Lensで、進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値、mixed/unknown influence、追加観測候補を確認
-- Rescue Rate Lensで、時間窓、脇の救済イベント束、概算 `q_total = 1 - product(1 - q_i)`、上限警告を管理
-- 脇救済率は正確な局面シミュレータではなく、他力救済を短時間窓と上限レンジで制御する整理UI
+- Rescue Rate Lensは卓上動態/他家介入読みとして、時間窓、脇介入イベント仮説、概算 `q_total = 1 - product(1 - q_i)`、上限警告を管理
+- 旧称の脇救済率はPhase1では押し判断ではなく、卓上動態/他家介入読みとして扱う
+
+正規4軸:
+
+1. 進行度・聴牌率
+2. 打点
+3. 待ち・形の良さ
+4. 点数状況・行動閾値
+
+4軸は読みの影響先です。影響ウェイトは0〜100スコアであり、候補確率ではありません。4軸の合計を100にする必要はありません。同じ読みが複数軸を同時に強く動かしてよいです。軸確信度も0〜100スコアで、候補確率とは別です。
 
 ### Knowledge Map
 
@@ -237,8 +265,8 @@ tests/
 Directionality is edge-based, not node-based.
 
 - `sign`: 方向。`+` / `-` / `mixed` / `unknown`
-- `magnitude`: 影響の大きさ
-- `confidence`: その影響評価への確信度
+- `magnitude`: UI上の「影響ウェイト」。0〜100スコアとして表示し、内部は0〜1で保存
+- `confidence`: UI上の「軸確信度」。0〜100スコアとして表示し、候補確率とは別に扱う
 - `mixed`: 方向が文脈により割れている
 - `unknown`: まだ評価不能
 
@@ -269,17 +297,17 @@ Ambiguityが大きい場合、pruningは警告または禁止されます。prun
 - 読みの分布形状: 平均集中、区間拡散、二極化、多峰性、非対称テール
 - 観測の癖: 選択バイアス、時系列ジャンプ、相関構造、類型混合
 - 条件設計: State abstraction、Hard gate、Soft score、Override、Fallback、Top-k、Hysteresis、Event-driven update
-- 対象テーマ: 押し引き、染め読み、安全度評価、愚形固定仮説、相手手牌推定、打点レンジ推定
+- 対象テーマ: 押し引き文脈、染め読み、安全度評価、愚形固定仮説、相手手牌推定、打点レンジ推定
 - inference seed: 染め本線 / 染め薄い / 染め否定、愚形固定 / 両面固定 / トイツ処理、高打点事故率、同色副露観測、選択バイアス注意modifier
 - influence seed: 中盤の無筋手出し -> fold_risk(+)、現物増加 -> fold_risk(-)、手牌価値上昇 -> win_rate/value(+)、染め本線 -> safety(mixed)、手出し字牌連打 observation candidate
 - reasoning lab seed: 上位質量集中、薄く広い枝集合、二極化枝集合、多峰性枝集合、狭い一点だけ削る読み、上位2枝に効く読み、ambiguityを減らす観測、marginが動かない観測、training case
-- 判断ワークベンチseed: 中盤の染め副露読み、脇救済率を考慮した終盤押し引き、中間状態モデル、枝刈りとノードロックの違い
+- 判断ワークベンチseed: 中盤の染め副露読み、卓上動態読みを含む終盤読み整理、中間状態モデル、枝刈りとノードロックの違い
 
 ## Screenshots For README
 
 READMEにスクリーンショットを貼る場合は、開発サーバを起動して以下を撮ると主要画面が揃います。
 
-1. Mapping Inbox: 脇救済率テンプレートで下書きノード案が見える状態
+1. Mapping Inbox: 卓上動態/他家介入読みテンプレートで下書きノード案が見える状態
 2. Knowledge Map: Domain Lens、凡例、マッピングガイド、右Inspectorが見える状態
 3. Case Workspace: seed caseの4列思考経路と判断プロセスモードが見える状態
 4. Hand Value Range Lens: 正規4軸（進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値）が見える状態
@@ -301,6 +329,10 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 
 ## Docs
 
+- [requirements-definition.md](./docs/requirements-definition.md)
+- [requirements-definition.pdf](./docs/requirements-definition.pdf)
+- [detailed-specification.md](./docs/detailed-specification.md)
+- [detailed-specification.pdf](./docs/detailed-specification.pdf)
 - [specification.md](./docs/specification.md)
 - [specification.pdf](./docs/specification.pdf)
 - [user-guide.md](./docs/user-guide.md)
@@ -326,7 +358,7 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 - 具体局面に知識ノードを貼り、観測/仮説/条件/判断に並べてレビューできる
 - Case Workspaceで判断プロセスモードを使える
 - Case Workspaceで読み数値入力から4軸influence edgeとchoice group候補を作成できる
-- 手牌価値レンジ理論と脇救済率を専用Lensで整理できる
+- 手牌価値レンジ理論と卓上動態/他家介入読みを専用Lensで整理できる
 - Hard gate / Soft score / Override / Fallbackを最低限のrule JSONとして保存できる
 - workspace JSONとpruning-ui向けsubgraph JSONをexport/importできる
 - 確率inference subgraphの正規化、lock、preview、scenario compareができる
@@ -378,7 +410,7 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 
 ## 麻雀専用 / 汎用化できる部分
 
-麻雀専用なのは seed data、metric名、局面フォーム、押し引き/染め読み/安全度評価の語彙です。
+麻雀専用なのは seed data、metric名、局面フォーム、押し引き文脈/染め読み/安全度評価の語彙です。
 
 汎用化できるのは Knowledge Graph / Probabilistic Inference Layer / Directional Influence Layer / Concentration Lens / Impact Simulator / Lock Analysis / Reading Chain / Educational Log の構造です。
 

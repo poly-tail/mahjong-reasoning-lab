@@ -7,7 +7,10 @@ import {
   nodeMatchesDomainLens,
 } from "../../src/domain/mahjongTaxonomy";
 import { getPruningLockWarnings } from "../../src/domain/pruningSafety";
-import { calculateRescueRate, estimateRescueRate } from "../../src/domain/rescueRate";
+import {
+  calculateRescueRate,
+  estimateRescueRate,
+} from "../../src/domain/rescueRate";
 import { seedWorkspace } from "../../src/domain/seed";
 import type { PruningAction } from "../../src/domain/schema";
 
@@ -55,7 +58,7 @@ describe("mahjong taxonomy, rescue rate, and pruning safety", () => {
       "速度",
       "早さ",
     ]);
-    expect(handValueRangeAxes[3].metricTitles).toContain("押し引き閾値");
+    expect(handValueRangeAxes[3].metricTitles).toContain("候補保持閾値");
   });
 
   it("maps legacy axis labels to the canonical four axes", () => {
@@ -123,9 +126,9 @@ describe("mahjong taxonomy, rescue rate, and pruning safety", () => {
       action_type: "hard_lock",
     };
 
-    expect(getPruningLockWarnings(seedWorkspace, hardPrune).join(" ")).toContain(
-      "must_keep_top_k",
-    );
+    expect(
+      getPruningLockWarnings(seedWorkspace, hardPrune).join(" "),
+    ).toContain("must_keep_top_k");
     expect(getPruningLockWarnings(seedWorkspace, hardLock)).toEqual([]);
   });
 

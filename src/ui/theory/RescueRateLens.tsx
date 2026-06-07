@@ -54,19 +54,18 @@ export function RescueRateLens() {
       ? customWindow.trim()
       : timeWindow;
 
-  const updateEvent = (
-    id: string,
-    patch: Partial<RescueRateEventEstimate>,
-  ) => {
+  const updateEvent = (id: string, patch: Partial<RescueRateEventEstimate>) => {
     setEvents((current) =>
-      current.map((event) => (event.id === id ? { ...event, ...patch } : event)),
+      current.map((event) =>
+        event.id === id ? { ...event, ...patch } : event,
+      ),
     );
   };
 
   const createNodes = () => {
     const draft = createRescueRateDraft(
       memo.trim() ||
-        `脇救済率を ${windowLabel} の時間窓で、上限レンジ ${estimate.range_label} として扱う。`,
+        `卓上動態 / 他家介入読みを ${windowLabel} の時間窓で、上限レンジ ${estimate.range_label} として扱う。`,
     );
     createKnowledgeNodesFromDrafts(draft.nodes, true);
   };
@@ -74,7 +73,7 @@ export function RescueRateLens() {
   return (
     <main className="min-h-0 flex-1 overflow-auto p-3">
       <div className="grid gap-3">
-        <Panel title="脇救済率">
+        <Panel title="卓上動態 / 他家介入読み">
           <div className="grid grid-cols-[340px_1fr] gap-3 p-3">
             <div className="grid content-start gap-3">
               <Field label="時間窓">
@@ -96,11 +95,14 @@ export function RescueRateLens() {
                   <Input
                     value={customWindow}
                     onChange={(event) => setCustomWindow(event.target.value)}
-                    placeholder="例: 自分の危険牌選択まで"
+                    placeholder="例: 自分の次手番まで"
                   />
                 </Field>
               ) : null}
-              <Field label="定性的な帯" hint="個別確率を入れない場合に使います。">
+              <Field
+                label="定性的な帯"
+                hint="個別確率を入れない場合に使います。"
+              >
                 <Select
                   value={fallbackBand}
                   onChange={(event) =>
@@ -139,12 +141,19 @@ export function RescueRateLens() {
                       {windowLabel}
                     </h3>
                   </div>
-                  <Badge tone={estimate.q_total && estimate.q_total > 0.3 ? "rose" : "cyan"}>
+                  <Badge
+                    tone={
+                      estimate.q_total && estimate.q_total > 0.3
+                        ? "rose"
+                        : "cyan"
+                    }
+                  >
                     {estimate.band_label} / {estimate.range_label}
                   </Badge>
                 </div>
                 <p className="mt-2 text-sm leading-6 text-stone-600">
-                  q_total = 1 - product(1 - q_i)。入力値がある場合だけ概算計算し、UI上では上限レンジとして扱います。
+                  q_total = 1 - product(1 -
+                  q_i)。入力値がある場合だけ概算計算し、UI上では上限レンジとして扱います。押し引きEVではありません。
                 </p>
               </div>
 
@@ -188,13 +197,13 @@ export function RescueRateLens() {
         </Panel>
 
         <div className="grid grid-cols-2 gap-3">
-          <Panel title="押し引きへの影響">
+          <Panel title="読み整理上の扱い">
             <div className="grid gap-2 p-3 text-sm text-stone-700">
               <div className="rounded-md border border-stone-200 p-3">
-                fold_risk を下げる方向。ただし救済イベントは独立とは限りません。
+                この項目は押し引き判断ではなく、卓上動態の読み候補です。
               </div>
               <div className="rounded-md border border-stone-200 p-3">
-                push_value を上げる補正になり得ますが、他力期待で危険牌選択を正当化しないよう上限を置きます。
+                行動推奨には使わず、候補確率・未配分・例外候補の整理に使ってください。
               </div>
             </div>
           </Panel>
@@ -207,7 +216,10 @@ export function RescueRateLens() {
                     key={warning}
                     className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-sm leading-6 text-amber-800"
                   >
-                    <AlertTriangle className="mt-0.5 h-4 w-4" aria-hidden="true" />
+                    <AlertTriangle
+                      className="mt-0.5 h-4 w-4"
+                      aria-hidden="true"
+                    />
                     <span>{warning}</span>
                   </div>
                 ))

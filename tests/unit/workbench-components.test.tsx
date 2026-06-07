@@ -36,13 +36,22 @@ describe("workbench components", () => {
       screen.getByLabelText("考察メモを貼り付け"),
       "一巡以内の脇救済率を上限レンジで見る。",
     );
-    await user.selectOptions(screen.getByLabelText("テンプレート"), "rescue_rate");
-
-    expect(screen.getAllByText("脇救済率").length).toBeGreaterThan(0);
-    await user.click(screen.getByRole("button", { name: "ケースに紐づけて作成" }));
+    await user.selectOptions(
+      screen.getByLabelText("テンプレート"),
+      "rescue_rate",
+    );
 
     expect(
-      useAppStore.getState().doc.nodes.some((node) => node.title === "脇救済率"),
+      screen.getAllByText("卓上動態 / 他家介入読み").length,
+    ).toBeGreaterThan(0);
+    await user.click(
+      screen.getByRole("button", { name: "ケースに紐づけて作成" }),
+    );
+
+    expect(
+      useAppStore
+        .getState()
+        .doc.nodes.some((node) => node.title === "卓上動態 / 他家介入読み"),
     ).toBe(true);
   });
 
@@ -64,7 +73,9 @@ describe("workbench components", () => {
     const user = userEvent.setup();
     render(<QuickReadingInputPanel />);
 
-    expect(screen.getByText(/4軸の合計を100にする必要はありません/)).toBeVisible();
+    expect(
+      screen.getByText(/4軸の合計を100にする必要はありません/),
+    ).toBeVisible();
     expect(screen.getByText("影響ウェイト 10/100")).toBeVisible();
     expect(screen.getAllByText("軸確信度 55/100").length).toBeGreaterThan(0);
     expect(screen.queryByText("影響ウェイト 10%")).not.toBeInTheDocument();
@@ -93,13 +104,18 @@ describe("workbench components", () => {
     expect(screen.getByText("未配分 7%")).toBeVisible();
 
     await user.clear(screen.getByLabelText("読みタイトル"));
-    await user.type(screen.getByLabelText("読みタイトル"), "染め本線の数値読み");
+    await user.type(
+      screen.getByLabelText("読みタイトル"),
+      "染め本線の数値読み",
+    );
     await user.click(screen.getAllByRole("button", { name: "プレビュー" })[0]);
 
     expect(screen.getByText(/作成予定ノード/)).toBeVisible();
     expect(screen.getByText("choice group確率")).toBeVisible();
 
-    await user.click(screen.getAllByRole("button", { name: "active caseに反映" })[0]);
+    await user.click(
+      screen.getAllByRole("button", { name: "active caseに反映" })[0],
+    );
 
     const state = useAppStore.getState();
     const readingNode = state.doc.nodes.find(

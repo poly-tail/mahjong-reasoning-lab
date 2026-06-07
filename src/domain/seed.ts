@@ -782,7 +782,8 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       node("metric", {
         id: "metric_rank_ev",
         title: "点数状況・行動閾値",
-        summary: "点棒状況、順位点、親子、局、巡目で押し引き閾値を動かす指標。",
+        summary:
+          "点棒状況、順位点、親子、局、巡目で読みをどれくらい重く扱うかを表す文脈射影指標。",
         tags: [
           "metric",
           "influence",
@@ -816,7 +817,8 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       node("concept", {
         id: "node_hand_value_range_theory",
         title: "手牌価値レンジ理論",
-        summary: "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値でレンジ更新する。",
+        summary:
+          "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値でレンジ更新する。",
         tags: [
           "hand_value_range",
           "手牌価値",
@@ -862,8 +864,9 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       }),
       node("metric", {
         id: "metric_push_value",
-        title: "押し価値",
-        summary: "和了価値、順位価値、救済補正を含む押し側の指標。",
+        title: "攻撃寄り文脈",
+        summary:
+          "和了価値、順位価値、卓上動態読みを含む攻撃寄りの文脈指標。行動推奨ではない。",
         tags: ["metric", "influence", "push_value", "push_fold", "押し引き"],
         confidence: 0.66,
         stage: "metric",
@@ -875,7 +878,8 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       node("condition", {
         id: "node_external_modifiers",
         title: "点数状況・行動閾値",
-        summary: "巡目、親子、点棒状況、ドラ、供託、本場、順位点で押し引き閾値を補正する。",
+        summary:
+          "巡目、親子、点棒状況、ドラ、供託、本場、順位点で読みの重みや確認優先度を補正する。",
         tags: [
           "score_situation_threshold_axis",
           "situation_threshold_axis",
@@ -900,9 +904,18 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       }),
       node("metric", {
         id: "metric_rescue_rate",
-        title: "脇救済率",
-        summary: "短時間窓内に脇の和了、放銃、鳴き、安牌供給などで不利局面が緩和される概算確率。",
-        tags: ["metric", "influence", "rescue_rate", "脇救済率", "push_fold"],
+        title: "卓上動態 / 他家介入読み",
+        summary:
+          "短時間窓内に脇の和了、放銃、鳴き、安牌供給などで局面文脈が変わる可能性を表す読み。",
+        tags: [
+          "metric",
+          "influence",
+          "rescue_rate",
+          "table_dynamics",
+          "side_intervention",
+          "脇救済率",
+          "push_fold",
+        ],
         confidence: 0.58,
         thresholds: [
           { name: "低い", value: "0-0.10", note: "ほぼ補正しない" },
@@ -916,8 +929,9 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       }),
       node("probability_aggregate", {
         id: "node_rescue_event_bundle",
-        title: "脇救済イベント束",
-        summary: "脇の和了、放銃、鳴き、安牌供給、流局接近を独立決め打ちせず上限レンジで束ねる。",
+        title: "脇介入イベント仮説",
+        summary:
+          "脇の和了、放銃、鳴き、安牌供給、流局接近を独立決め打ちせず上限レンジで束ねる。",
         tags: [
           "rescue_rate",
           "probability_tree",
@@ -935,11 +949,22 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       }),
       node("observation_candidate", {
         id: "obs_candidate_side_rescue_events",
-        title: "脇救済イベントを観測",
-        summary: "脇の鳴き、和了、放銃、安牌供給、流局接近で危険牌選択が緩和されるかを見る。",
-        tags: ["rescue_rate", "observation_candidate", "side_call", "safe_tile_supply"],
+        title: "他家介入イベントを観測",
+        summary:
+          "脇の鳴き、和了、放銃、安牌供給、流局接近で局面文脈が変わるかを見る。",
+        tags: [
+          "rescue_rate",
+          "table_dynamics",
+          "observation_candidate",
+          "side_call",
+          "safe_tile_supply",
+        ],
         confidence: 0.62,
-        resolves_targets: ["metric_rescue_rate", "metric_fold_risk", "metric_push_value"],
+        resolves_targets: [
+          "metric_rescue_rate",
+          "metric_fold_risk",
+          "metric_push_value",
+        ],
         expected_sign_gain: 0.32,
         expected_weight_gain: 0.24,
         expected_margin_gain: 0.14,
@@ -954,8 +979,9 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       }),
       node("heuristic", {
         id: "node_rescue_cap_warning",
-        title: "脇救済率は上限レンジで扱う",
-        summary: "他力期待を無制限に見積もらず、時間窓と上限レンジを固定する。",
+        title: "卓上動態読みは上限レンジで扱う",
+        summary:
+          "他家介入を無制限に見積もらず、時間窓と上限レンジを固定する。行動推奨へ直結しない。",
         tags: ["rescue_rate", "warning", "heuristic", "teaching"],
         confidence: 0.76,
         applicability: ["終盤", "押し引き", "危険牌比較"],
@@ -968,7 +994,8 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       node("concept", {
         id: "node_intermediate_state_model",
         title: "中間状態モデル",
-        summary: "洗い出し、重み付け、加算/合成、比較、選択、反省を判断過程として残す。",
+        summary:
+          "洗い出し、重み付け、加算/合成、比較、選択、反省を判断過程として残す。",
         tags: ["intermediate_state", "decision_pipeline", "teaching"],
         confidence: 0.74,
         applicability: ["レビュー", "教材化", "局面検討"],
@@ -1038,8 +1065,15 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       node("concept", {
         id: "node_pruning_vs_lock",
         title: "枝刈りとノードロックの違い",
-        summary: "枝刈りは候補を削る/弱める操作、ロックは候補を残して分布を固定する操作。",
-        tags: ["pruning", "node_lock", "teaching", "freeze_ratio", "keep_top_k"],
+        summary:
+          "枝刈りは候補を削る/弱める操作、ロックは候補を残して分布を固定する操作。",
+        tags: [
+          "pruning",
+          "node_lock",
+          "teaching",
+          "freeze_ratio",
+          "keep_top_k",
+        ],
         confidence: 0.78,
         applicability: ["確率木", "レビュー", "教材化"],
         stage: "理論",
@@ -1075,7 +1109,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       node("hypothesis", {
         id: "node_hand_value_rise",
         title: "手牌価値上昇",
-        summary: "自手の打点や和了率が上がり、押し文脈が強くなる。",
+        summary: "自手の打点や和了率が上がり、攻撃寄り文脈が強くなる。",
         tags: ["influence", "押し引き", "value"],
         confidence: 0.7,
         probability_role: "posterior",
@@ -1583,12 +1617,12 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
         source: "metric_rescue_rate",
         target: "metric_fold_risk",
         type: "influences",
-        label: "脇救済率 -> 放銃率 -",
+        label: "卓上動態読み -> 放銃率文脈 mixed",
         relation_layer: "influence",
-        sign: "-",
+        sign: "mixed",
         magnitude: 0.28,
         confidence: 0.48,
-        context_gate: ["一巡以内", "上限レンジ"],
+        context_gate: ["一巡以内", "上限レンジ", "行動推奨ではない"],
         combination_mode: "additive",
       }),
       edge({
@@ -1596,12 +1630,12 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
         source: "metric_rescue_rate",
         target: "metric_push_value",
         type: "influences",
-        label: "脇救済率 -> 押し価値 +",
+        label: "卓上動態読み -> 攻撃寄り文脈 mixed",
         relation_layer: "influence",
-        sign: "+",
+        sign: "mixed",
         magnitude: 0.22,
         confidence: 0.46,
-        context_gate: ["一巡以内", "上限レンジ"],
+        context_gate: ["一巡以内", "上限レンジ", "行動推奨ではない"],
         combination_mode: "additive",
       }),
       edge({
@@ -1656,15 +1690,15 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
         source: "node_hand_value_rise",
         target: "metric_fold_risk",
         type: "influences",
-        label: "押し文脈の放銃率 +",
+        label: "攻撃寄り文脈の放銃率 +",
         relation_layer: "influence",
         sign: "+",
         magnitude: 0.36,
         confidence: 0.62,
-        context_gate: ["押し判断", "危険牌を押す"],
+        context_gate: ["攻撃寄り文脈", "危険読みの扱い"],
         combination_mode: "additive",
         ambiguity_group_id: "amb_push_value_risk",
-        note: "手牌価値上昇そのものではなく、押し選択により放銃率が上がる。",
+        note: "手牌価値上昇そのものではなく、攻撃寄り文脈で放銃率評価が重くなる。",
       }),
       edge({
         id: "edge_flush_mainline_safety_mixed",
@@ -1740,7 +1774,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
     rules: [
       rule({
         id: "rule_push_pull_gate",
-        name: "対リーチ押し引き強制ゲート",
+        name: "対リーチ文脈ゲート",
         category: "hard_gate",
         target_node_ids: [
           "node_theme_push_pull",
@@ -1766,7 +1800,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
             note: "高打点事故率の非対称テールを別枠で確認する。",
           },
         ],
-        override_conditions: ["ラス目で局収支より順位点価値が極端に高い"],
+        override_conditions: ["ラス目で順位点文脈の記録優先度が極端に高い"],
         fallback_behavior:
           "スコア差が小さい場合は上位候補仮説を残し、判断メモに保留理由を書く。",
         note: "試作版用の構造化例。",
@@ -1829,7 +1863,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
     cases: [
       createCase({
         id: "case_seed_push_pull",
-        title: "東3局 対リーチ押し引きレビュー",
+        title: "東3局 対リーチ文脈レビュー",
         round: "東3局",
         honba: 1,
         riichi_sticks: 1,
@@ -1975,7 +2009,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       }),
       createCase({
         id: "case_seed_rescue_rate_endgame",
-        title: "脇救済率を考慮した終盤押し引き",
+        title: "卓上動態読みを含む終盤読み整理",
         round: "南3局",
         honba: 1,
         riichi_sticks: 1,
@@ -1989,8 +2023,8 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
         observations: ["終盤", "危険牌候補", "脇の副露", "安牌供給可能性"],
         hypotheses: [
           "fold_risk が高い",
-          "push_value は条件戦で少し上がる",
-          "脇救済率は上限レンジで見る",
+          "攻撃寄り文脈は条件戦で少し強い",
+          "卓上動態読みは上限レンジで見る",
         ],
         attached_node_ids: [
           "metric_fold_risk",
@@ -2013,7 +2047,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
         },
         top_k_hypotheses: 2,
         decision_note:
-          "脇救済率は他力期待ではなく、時間窓を固定した行動閾値への補正として扱う。",
+          "卓上動態読みは他力期待ではなく、時間窓を固定した読み候補として扱う。",
         review_note:
           "救済イベントを独立とみなして過大評価していないかを見直す。",
         created_at: seededAt,
@@ -2058,8 +2092,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
         top_k_hypotheses: 3,
         decision_note:
           "洗い出しから反省までを判断プロセスモードで追えるか確認する。",
-        review_note:
-          "結論だけでなく、どの要素が判断を動かしたかを教材化する。",
+        review_note: "結論だけでなく、どの要素が判断を動かしたかを教材化する。",
         created_at: seededAt,
         updated_at: seededAt,
       }),
@@ -2099,7 +2132,7 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
       },
       {
         id: "view_rescue_rate",
-        name: "脇救済率",
+        name: "卓上動態読み",
         search: "",
         tag_filter: ["rescue_rate"],
         node_type_filter: [],

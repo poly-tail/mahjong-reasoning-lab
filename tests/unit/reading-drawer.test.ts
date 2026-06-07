@@ -27,7 +27,15 @@ describe("reading drawer", () => {
     expect(findReadingDrawerItem("call_intent_速度副露")).toBeDefined();
     expect(findReadingDrawerItem("value_pattern_染め")).toBeDefined();
     expect(findReadingDrawerItem("wait_shape_待ち候補不明")).toBeDefined();
+    expect(findReadingDrawerItem("table_dynamics_他家介入仮説")).toBeDefined();
     expect(findReadingDrawerItem("exception_noise_観測ミス")).toBeDefined();
+  });
+
+  it("keeps table dynamics as reading candidates instead of action recommendations", () => {
+    const item = findReadingDrawerItem("table_dynamics_他家介入仮説");
+    expect(item).toBeDefined();
+    expect(`${item!.label} ${item!.description}`).not.toMatch(/推奨|押し/);
+    expect(item!.tags).toEqual(expect.arrayContaining(["table_dynamics"]));
   });
 
   it("converts drawer items to choice candidate drafts", () => {

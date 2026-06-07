@@ -16,12 +16,7 @@ export const handValueRangeAxes = [
       "先制率",
     ],
     legacyAliases: ["speed_axis", "speed", "速度", "早さ"],
-    metricTitles: [
-      "進行度・聴牌率",
-      "聴牌率",
-      "先制率",
-      "シャンテン進行度",
-    ],
+    metricTitles: ["進行度・聴牌率", "聴牌率", "先制率", "シャンテン進行度"],
   },
   {
     id: "value_axis",
@@ -90,7 +85,7 @@ export const handValueRangeAxes = [
     label: "点数状況・行動閾値",
     shortLabel: "点数/閾値",
     description:
-      "点棒状況、順位点、親子、局、巡目、供託、本場、条件戦によって、押し引きや危険牌選択の閾値がどう動くかを扱う軸。",
+      "点棒状況、順位点、親子、局、巡目、供託、本場、条件戦によって、読みを局面文脈上どれくらい重く扱うかを表す文脈射影軸。",
     tags: [
       "score_situation_threshold_axis",
       "score_situation",
@@ -102,7 +97,6 @@ export const handValueRangeAxes = [
       "行動閾値",
       "順位期待値",
       "条件戦",
-      "押し引き閾値",
     ],
     legacyAliases: [
       "situation_threshold_axis",
@@ -119,7 +113,7 @@ export const handValueRangeAxes = [
     metricTitles: [
       "点数状況・行動閾値",
       "点数状況",
-      "押し引き閾値",
+      "候補保持閾値",
       "順位期待値",
       "条件戦価値",
     ],

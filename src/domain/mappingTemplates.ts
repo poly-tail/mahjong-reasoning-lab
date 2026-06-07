@@ -72,12 +72,14 @@ export const mappingTemplates: MappingTemplate[] = [
   {
     id: "hand_value_range",
     label: "手牌価値レンジ",
-    description: "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値へ分ける。",
+    description:
+      "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値へ分ける。",
   },
   {
     id: "push_fold",
-    label: "押し引き",
-    description: "押し価値、放銃リスク、順位価値の比較へ落とす。",
+    label: "押し引き（読み整理）",
+    description:
+      "押し/守備寄り文脈を読み候補カテゴリとして整理する。行動推奨は出さない。",
   },
   {
     id: "danger_tile",
@@ -86,8 +88,9 @@ export const mappingTemplates: MappingTemplate[] = [
   },
   {
     id: "rescue_rate",
-    label: "脇救済率",
-    description: "短時間窓の救済イベント束と上限レンジを作る。",
+    label: "卓上動態 / 他家介入読み",
+    description:
+      "脇の和了、放銃、鳴き、安牌供給、流局接近を読み候補として残す。",
   },
   {
     id: "node_lock",
@@ -102,12 +105,12 @@ export const mappingTemplates: MappingTemplate[] = [
   {
     id: "reading_utility",
     label: "読みの有用性",
-    description: "判断を動かした量、曖昧性低減、観測コストを残す。",
+    description: "候補集中、曖昧性低減、観測コストへの効きを残す。",
   },
   {
     id: "rank_condition",
     label: "条件戦/順位点",
-    description: "点棒状況、順位点、局面条件を行動閾値へ接続する。",
+    description: "点棒状況、順位点、局面条件を読みの文脈射影として残す。",
   },
   {
     id: "intermediate_state",
@@ -132,74 +135,97 @@ export function createMappingDraft(
           "手牌価値",
           "theory",
         ]),
-        draft("metric", "進行度・聴牌率", "シャンテン数、聴牌率、先制率、和了到達の近さを集約する。", [
-          "hand_value_range",
-          "progress_tenpai_axis",
-          "speed_axis",
-          "speed",
-          "速度",
-          "早さ",
+        draft(
           "metric",
-          "influence",
-        ]),
-        draft("metric", "打点", "打点は固定値ではなく、レンジ・分布として上振れと尾部リスクまで見る。", [
-          "hand_value_range",
-          "value_axis",
-          "value_distribution_axis",
-          "value_distribution",
-          "score_distribution",
-          "value",
+          "進行度・聴牌率",
+          "シャンテン数、聴牌率、先制率、和了到達の近さを集約する。",
+          [
+            "hand_value_range",
+            "progress_tenpai_axis",
+            "speed_axis",
+            "speed",
+            "速度",
+            "早さ",
+            "metric",
+            "influence",
+          ],
+        ),
+        draft(
+          "metric",
           "打点",
-          "打点レンジ",
-          "打点レンジ推定",
+          "打点は固定値ではなく、レンジ・分布として上振れと尾部リスクまで見る。",
+          [
+            "hand_value_range",
+            "value_axis",
+            "value_distribution_axis",
+            "value_distribution",
+            "score_distribution",
+            "value",
+            "打点",
+            "打点レンジ",
+            "打点レンジ推定",
+            "metric",
+            "influence",
+          ],
+        ),
+        draft(
           "metric",
-          "influence",
-        ]),
-        draft("metric", "待ち・形の良さ", "良形/愚形、待ち候補、危険牌比較、安全度評価への接続を扱う。", [
-          "hand_value_range",
-          "wait_shape_quality_axis",
-          "shape_axis",
-          "wait_danger_distribution_axis",
-          "wait_distribution",
-          "danger_tile_distribution",
-          "shape",
-          "形",
-          "待ち",
-          "良形",
-          "愚形",
-          "安全度",
+          "待ち・形の良さ",
+          "良形/愚形、待ち候補、危険牌比較、安全度評価への接続を扱う。",
+          [
+            "hand_value_range",
+            "wait_shape_quality_axis",
+            "shape_axis",
+            "wait_danger_distribution_axis",
+            "wait_distribution",
+            "danger_tile_distribution",
+            "shape",
+            "形",
+            "待ち",
+            "良形",
+            "愚形",
+            "安全度",
+            "metric",
+            "influence",
+          ],
+        ),
+        draft(
           "metric",
-          "influence",
-        ]),
-        draft("metric", "点数状況・行動閾値", "点棒状況、順位点、親子、局、巡目、供託、本場で押し引き閾値を動かす。", [
-          "hand_value_range",
-          "score_situation_threshold_axis",
-          "situation_threshold_axis",
-          "situation_value",
-          "action_threshold",
-          "rank_ev",
-          "rank_point",
-          "external_modifier",
-          "turn",
-          "dealer",
-          "round",
-          "score_context",
-          "dora",
-          "honba",
-          "riichi_sticks",
-          "条件戦",
-          "metric",
-          "influence",
-        ]),
-        draft("heuristic", "レンジ更新ルール", "観測が4軸のどこを動かしたかを明示してから比較する。", [
-          "hand_value_range",
-          "reweight",
+          "点数状況・行動閾値",
+          "点棒状況、順位点、親子、局、巡目、供託、本場が読みの重みや確認優先度にどう効くかを扱う。",
+          [
+            "hand_value_range",
+            "score_situation_threshold_axis",
+            "situation_threshold_axis",
+            "situation_value",
+            "action_threshold",
+            "rank_ev",
+            "rank_point",
+            "external_modifier",
+            "turn",
+            "dealer",
+            "round",
+            "score_context",
+            "dora",
+            "honba",
+            "riichi_sticks",
+            "条件戦",
+            "metric",
+            "influence",
+          ],
+        ),
+        draft(
           "heuristic",
-        ]),
-        draft("question", "どの軸が上がったのか？", "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値のどれが判断を動かしたかを確認する。", [
-          "hand_value_range",
-          "review",
-        ]),
+          "レンジ更新ルール",
+          "観測が4軸のどこを動かしたかを明示してから比較する。",
+          ["hand_value_range", "reweight", "heuristic"],
+        ),
+        draft(
+          "question",
+          "どの軸が上がったのか？",
+          "進行度・聴牌率、打点、待ち・形の良さ、点数状況・行動閾値のどれへ読みが射影されたかを確認する。",
+          ["hand_value_range", "review"],
+        ),
       ],
       edge_candidates: [
         "観測/仮説 -> 進行度・聴牌率",
@@ -223,20 +249,24 @@ export function createMappingDraft(
           "intermediate_state",
           "decision_pipeline",
         ]),
-        draft("heuristic", "洗い出し", "観測、問い、根拠、シグナルを列挙する。", [
-          "collect",
-          "decision_pipeline",
-        ]),
-        draft("weight_modifier", "重み付け", "仮説や指標に対して弱い根拠を重みとして足す。", [
-          "weight",
-          "decision_pipeline",
-          "weight-modifier",
-        ]),
-        draft("probability_aggregate", "加算/合成", "複数の重みや確率を合成する中間状態。", [
-          "combine",
-          "decision_pipeline",
-          "probability_tree",
-        ]),
+        draft(
+          "heuristic",
+          "洗い出し",
+          "観測、問い、根拠、シグナルを列挙する。",
+          ["collect", "decision_pipeline"],
+        ),
+        draft(
+          "weight_modifier",
+          "重み付け",
+          "仮説や指標に対して弱い根拠を重みとして足す。",
+          ["weight", "decision_pipeline", "weight-modifier"],
+        ),
+        draft(
+          "probability_aggregate",
+          "加算/合成",
+          "複数の重みや確率を合成する中間状態。",
+          ["combine", "decision_pipeline", "probability_tree"],
+        ),
         draft("scenario", "比較", "候補同士を同じ軸で比較する。", [
           "compare",
           "decision_pipeline",
@@ -271,23 +301,31 @@ export function createMappingDraft(
           "lock",
           "probability_tree",
         ]),
-        draft("lock_controller", "比率固定", "候補を消さず、分布の比率を固定して比較する。", [
-          "node_lock",
-          "freeze_ratio",
-        ], {
-          lock_mode: "freeze_ratio",
-          probability_role: "control",
-        }),
-        draft("distribution_assumption", "固定して比較する分布", "hard pruneとは別に、比較用の分布仮定として残す。", [
-          "node_lock",
-          "distribution",
-        ], {
-          distribution_family: "categorical",
-        }),
-        draft("question", "何を固定しているのか？", "候補削除ではなく、確率/戦略分布の固定かを確認する。", [
-          "node_lock",
-          "review",
-        ]),
+        draft(
+          "lock_controller",
+          "比率固定",
+          "候補を消さず、分布の比率を固定して比較する。",
+          ["node_lock", "freeze_ratio"],
+          {
+            lock_mode: "freeze_ratio",
+            probability_role: "control",
+          },
+        ),
+        draft(
+          "distribution_assumption",
+          "固定して比較する分布",
+          "hard pruneとは別に、比較用の分布仮定として残す。",
+          ["node_lock", "distribution"],
+          {
+            distribution_family: "categorical",
+          },
+        ),
+        draft(
+          "question",
+          "何を固定しているのか？",
+          "候補削除ではなく、確率/戦略分布の固定かを確認する。",
+          ["node_lock", "review"],
+        ),
       ],
       edge_candidates: ["ロック制御 -> 分布仮定", "分布仮定 -> 比較対象"],
     };
@@ -298,28 +336,39 @@ export function createMappingDraft(
       template_id: templateId,
       source_summary: sourceSummary,
       nodes: [
-        draft("concept", "枝刈り", sourceSummary, ["pruning", "probability_tree"]),
-        draft("pruning_suggestion", "hard prune候補", "候補を削ってよい条件が強い場合だけ使う。", [
+        draft("concept", "枝刈り", sourceSummary, [
           "pruning",
-          "hard_prune",
-        ], {
-          pruning_hints: ["can_prune", "hard_gate_candidate"],
-        }),
-        draft("weight_adjustment_suggestion", "soft downweight候補", "消さずに弱め、曖昧性を残す。", [
-          "pruning",
-          "downweight",
-          "soft_downweight",
-        ], {
-          pruning_hints: ["score_only"],
-        }),
-        draft("heuristic", "keep top-k", "1つに絞らず複数仮説を残す。", [
-          "pruning",
-          "keep_top_k",
-        ], {
-          pruning_hints: ["must_keep_top_k"],
-          lock_mode: "keep_top_k",
-          lock_value: 3,
-        }),
+          "probability_tree",
+        ]),
+        draft(
+          "pruning_suggestion",
+          "hard prune候補",
+          "候補を削ってよい条件が強い場合だけ使う。",
+          ["pruning", "hard_prune"],
+          {
+            pruning_hints: ["can_prune", "hard_gate_candidate"],
+          },
+        ),
+        draft(
+          "weight_adjustment_suggestion",
+          "soft downweight候補",
+          "消さずに弱め、曖昧性を残す。",
+          ["pruning", "downweight", "soft_downweight"],
+          {
+            pruning_hints: ["score_only"],
+          },
+        ),
+        draft(
+          "heuristic",
+          "keep top-k",
+          "1つに絞らず複数仮説を残す。",
+          ["pruning", "keep_top_k"],
+          {
+            pruning_hints: ["must_keep_top_k"],
+            lock_mode: "keep_top_k",
+            lock_value: 3,
+          },
+        ),
       ],
       edge_candidates: ["曖昧性 -> hard prune禁止", "観測 -> downweight候補"],
     };
@@ -329,65 +378,92 @@ export function createMappingDraft(
 }
 
 export function createRescueRateDraft(
-  sourceSummary = "脇救済率を短時間窓の行動閾値補正として整理する。",
+  sourceSummary = "卓上動態 / 他家介入読みを短時間窓の候補として整理する。",
 ): MappingDraftResult {
   return {
     template_id: "rescue_rate",
     source_summary: sourceSummary,
     nodes: [
-      draft("concept", "脇救済率", sourceSummary, [
+      draft("concept", "卓上動態 / 他家介入読み", sourceSummary, [
         "rescue_rate",
+        "table_dynamics",
+        "side_intervention",
         "脇救済率",
         "push_fold",
       ]),
-      draft("metric", "rescue_rate", "短時間窓内に不利局面が緩和される概算確率。", [
+      draft(
         "metric",
-        "influence",
         "rescue_rate",
-        "脇救済率",
-      ], {
-        thresholds: [
-          { name: "低い", value: "0-0.10", note: "ほぼ補正しない" },
-          { name: "ややある", value: "0.10-0.20", note: "小さく補正" },
-          { name: "高すぎ注意", value: "0.30+", note: "過大評価警告" },
+        "短時間窓内に他家介入で局面文脈が変わる可能性を表す読みスコア。",
+        [
+          "metric",
+          "influence",
+          "rescue_rate",
+          "table_dynamics",
+          "side_intervention",
+          "脇救済率",
         ],
-      }),
-      draft("metric", "fold_risk", "危険牌選択時の放銃リスク。", [
+        {
+          thresholds: [
+            { name: "低い", value: "0-0.10", note: "ほぼ補正しない" },
+            { name: "ややある", value: "0.10-0.20", note: "小さく補正" },
+            { name: "高すぎ注意", value: "0.30+", note: "過大評価警告" },
+          ],
+        },
+      ),
+      draft(
         "metric",
-        "influence",
-        "fold_risk",
-        "push_fold",
-      ]),
-      draft("probability_aggregate", "脇救済イベント束", "脇の和了、放銃、鳴き、安牌供給、流局接近を束で扱う。", [
-        "rescue_rate",
-        "probability_tree",
-        "side_win",
-        "side_deal_in",
-        "side_call",
-        "safe_tile_supply",
-        "exhaustive_draw_approach",
-      ], {
-        probability_role: "control",
-        distribution_family: "categorical",
-      }),
-      draft("observation_candidate", "脇の救済イベント観測", "脇の鳴き/和了/放銃/安牌供給/流局接近を見る。", [
-        "rescue_rate",
+        "卓上動態の文脈射影",
+        "他家介入が候補保持、確認優先度、未配分候補にどう効くかを見る。",
+        [
+          "metric",
+          "influence",
+          "table_dynamics",
+          "score_situation_threshold_axis",
+        ],
+      ),
+      draft(
+        "probability_aggregate",
+        "脇介入イベント仮説",
+        "脇の和了、放銃、鳴き、安牌供給、流局接近を束で扱う。",
+        [
+          "rescue_rate",
+          "table_dynamics",
+          "side_intervention",
+          "probability_tree",
+          "side_win",
+          "side_deal_in",
+          "side_call",
+          "safe_tile_supply",
+          "exhaustive_draw_approach",
+        ],
+        {
+          probability_role: "control",
+          distribution_family: "categorical",
+        },
+      ),
+      draft(
         "observation_candidate",
-      ], {
-        expected_sign_gain: 0.24,
-        expected_weight_gain: 0.18,
-        observation_cost: 0.22,
-        timeliness: 0.8,
-      }),
-      draft("heuristic", "上限レンジで見積もる", "救済イベントを独立と決めつけず、時間窓と上限で制御する。", [
-        "rescue_rate",
-        "warning",
+        "他家介入イベント観測",
+        "脇の鳴き/和了/放銃/安牌供給/流局接近を見る。",
+        ["rescue_rate", "table_dynamics", "observation_candidate"],
+        {
+          expected_sign_gain: 0.24,
+          expected_weight_gain: 0.18,
+          observation_cost: 0.22,
+          timeliness: 0.8,
+        },
+      ),
+      draft(
         "heuristic",
-      ]),
+        "行動推奨に直結しない",
+        "他家介入読みは行動判断の免罪符ではなく、候補確率・未配分・例外候補の整理に使う。",
+        ["rescue_rate", "table_dynamics", "warning", "heuristic"],
+      ),
     ],
     edge_candidates: [
-      "脇救済率 -> fold_risk は sign: -",
-      "脇救済率 -> push_value は sign: +",
+      "卓上動態読み -> 未配分候補の提案",
+      "他家介入仮説 -> 点数状況・行動閾値 は context projection",
       "confidenceは控えめにし、context_gateに時間窓を入れる",
     ],
   };
@@ -408,21 +484,29 @@ function createGenericDraft(
 ): MappingDraftResult {
   const genericByTemplate: Record<GenericTemplateId, MappingDraftNode[]> = {
     push_fold: [
-      draft("scenario", "押し引き判断", sourceSummary, ["push_fold", "押し引き"]),
-      draft("metric", "push_value", "押す価値を和了率・打点・順位点で見る。", [
-        "metric",
-        "push_value",
-        "rank_ev",
-      ]),
-      draft("metric", "fold_risk", "放銃率と放銃時損失を分けて見る。", [
-        "metric",
-        "fold_risk",
-        "safety",
-      ]),
-      draft("action", "押す/引くの選択", "比較後に採用した判断を残す。", [
-        "choose",
+      draft("scenario", "押し引き文脈の読み整理", sourceSummary, [
         "push_fold",
+        "押し引き",
+        "reading_context",
       ]),
+      draft(
+        "metric",
+        "攻撃寄り文脈",
+        "和了率・打点・順位点が読み候補の保持方針にどう効くかを見る。",
+        ["metric", "push_value", "rank_ev", "reading_context"],
+      ),
+      draft(
+        "metric",
+        "守備寄り文脈",
+        "放銃率と放銃時損失を、行動推奨ではなく読みの文脈として分けて見る。",
+        ["metric", "fold_risk", "safety", "reading_context"],
+      ),
+      draft(
+        "evidence",
+        "読み整理メモ",
+        "Phase1では押す/引くを決めず、候補確率・未配分・例外候補への影響だけを残す。",
+        ["review", "push_fold"],
+      ),
     ],
     danger_tile: [
       draft("scenario", "危険牌比較", sourceSummary, [
@@ -434,10 +518,12 @@ function createGenericDraft(
         "safety",
         "danger_tile",
       ]),
-      draft("observation_candidate", "追加で見るべき安全情報", "現物、筋、壁、手出し、鳴き後変化を確認する。", [
+      draft(
         "observation_candidate",
-        "danger_tile",
-      ]),
+        "追加で見るべき安全情報",
+        "現物、筋、壁、手出し、鳴き後変化を確認する。",
+        ["observation_candidate", "danger_tile"],
+      ),
     ],
     reading_utility: [
       draft("metric", "読みの有用度", sourceSummary, [
@@ -445,10 +531,12 @@ function createGenericDraft(
         "utility",
         "teaching",
       ]),
-      draft("evidence", "この読みで何が変わったか", "選択肢比較、枝刈り、曖昧性解消、追加観測への効きを残す。", [
-        "reading_utility",
-        "review",
-      ]),
+      draft(
+        "evidence",
+        "この読みで何が変わったか",
+        "選択肢比較、枝刈り、曖昧性解消、追加観測への効きを残す。",
+        ["reading_utility", "review"],
+      ),
     ],
     rank_condition: [
       draft("condition", "条件戦/順位点補正", sourceSummary, [
@@ -458,15 +546,20 @@ function createGenericDraft(
         "rank_point",
         "score_context",
       ]),
-      draft("metric", "点数状況・行動閾値", "点棒状況と順位点で押し引き閾値がどう変わるかを見る。", [
+      draft(
         "metric",
-        "score_situation_threshold_axis",
-        "action_threshold",
-        "rank_ev",
-        "rank_point",
-        "score_context",
-        "順位期待値",
-      ]),
+        "点数状況・行動閾値",
+        "点棒状況と順位点が読みの重みや確認優先度にどう効くかを見る。",
+        [
+          "metric",
+          "score_situation_threshold_axis",
+          "action_threshold",
+          "rank_ev",
+          "rank_point",
+          "score_context",
+          "順位期待値",
+        ],
+      ),
     ],
   };
 
@@ -474,7 +567,11 @@ function createGenericDraft(
     template_id: templateId,
     source_summary: sourceSummary,
     nodes: genericByTemplate[templateId],
-    edge_candidates: ["観測/仮説 -> 指標", "指標 -> 判断", "曖昧性 -> 追加観測"],
+    edge_candidates: [
+      "観測/仮説 -> 指標",
+      "指標 -> 判断",
+      "曖昧性 -> 追加観測",
+    ],
   };
 }
 
@@ -520,7 +617,9 @@ function draft(
 function summarizeSource(sourceText: string) {
   const normalized = sourceText.trim().replace(/\s+/g, " ");
   if (!normalized) return "貼り付けた考察から作成した下書き。";
-  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+  return normalized.length > 140
+    ? `${normalized.slice(0, 140)}...`
+    : normalized;
 }
 
 function unique(values: string[]) {
