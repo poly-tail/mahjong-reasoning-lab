@@ -16,6 +16,14 @@ import {
   type SourceType,
   type WorkspaceDocument,
 } from "./schema";
+import {
+  buildResidualMassSummary,
+  createExceptionCandidateNode,
+  createResidualBucketNode,
+  normalizeCandidates as normalizeResidualCandidates,
+  type ResidualMassBucket,
+  type ResidualMassPolicy,
+} from "./residualMass";
 
 export type ReadingType =
   | "observation"
@@ -37,6 +45,8 @@ export type AxisImpactDraft = {
 export type ChoiceCandidateDraft = {
   label: string;
   posterior_probability?: number;
+  raw_probability?: number;
+  normalized_probability?: number;
   base_weight?: number;
   dynamic_weight?: number;
   lock_mode?: LockMode;
@@ -56,6 +66,8 @@ export type ReadingImpactDraft = {
     id?: string;
     label: string;
     normalize: boolean;
+    residual_policy?: ResidualMassPolicy;
+    residual_buckets?: ResidualMassBucket[];
     candidates: ChoiceCandidateDraft[];
   };
   axis_impacts: AxisImpactDraft[];
@@ -249,7 +261,21 @@ export function validateReadingImpactDraft(
     });
   }
 
-  if (draft.choice_group) {
+    if (draft.choice_group) {
+    const residualSummary = buildResidualMassSummary(
+      draft.choice_group.candidates,
+      draft.choice_group.residual_policy,
+      draft.choice_group.residual_buckets,
+      { hardPrune: draft.pruning_policy.action === "hard_prune" },
+    );
+    warnings.push(
+      ...residualSummary.warnings.map((warning) => ({
+        code: warning.code,
+        message: warning.message,
+        severity: warning.severity,
+      })),
+    );
+
     const probabilities = draft.choice_group.candidates
       .map((candidate) => candidate.posterior_probability)
       .filter((value): value is number => value !== undefined);
@@ -270,19 +296,15 @@ export function validateReadingImpactDraft(
         severity: "danger",
       });
     }
-    if (
-      probabilities.length > 0 &&
-      !draft.choice_group.normalize &&
-      Math.abs(total - 1) > 0.001
-    ) {
+    if (probabilities.length > 0 && total > 1.0001) {
       warnings.push({
         code: "posterior_total",
         message:
-          "候補確率の合計が100%ではありません。正規化するか、値を見直してください。",
+          "候補確率の合計が100%を超えています。値を見直してください。",
         severity: "warning",
       });
     }
-    if (total > 1.2 && !draft.choice_group.normalize) {
+    if (total > 1.2) {
       warnings.push({
         code: "posterior_large_total",
         message: "候補確率の合計が100%を大きく超えています。",
@@ -337,42 +359,93 @@ export function buildReadingImpactPreview(
 
   if (draft.choice_group) {
     const groupId = draft.choice_group.id?.trim() || createId("choice_group");
+    const residualSummary = buildResidualMassSummary(
+      draft.choice_group.candidates,
+      draft.choice_group.residual_policy,
+      draft.choice_group.residual_buckets,
+      { hardPrune: draft.pruning_policy.action === "hard_prune" },
+    );
+    const shouldNormalizeExisting =
+      draft.choice_group.normalize ||
+      draft.choice_group.residual_policy === "normalize_existing";
     const groupNode = createKnowledgeNode("choice_group", {
       title: draft.choice_group.label || "読み候補群",
-      summary: "読み数値入力で作成した候補群。",
-      description: draft.memo,
-      tags: ["quick_reading", "reading", "probability_tree", "choice_group"],
+      summary: `読み数値入力で作成した候補群。未配分 ${formatPercent(
+        residualSummary.residual_probability,
+      )}。`,
+      description: [
+        draft.memo,
+        `raw_total=${residualSummary.raw_total}`,
+        `residual_probability=${residualSummary.residual_probability}`,
+        `residual_policy=${residualSummary.policy}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      tags: [
+        "quick_reading",
+        "reading",
+        "probability_tree",
+        "choice_group",
+        "residual_mass",
+        residualSummary.policy,
+      ],
       confidence: draft.confidence,
       source_type: draft.source_type,
       probability_role: "control",
+      choice_group_id: groupId,
       distribution_family: "categorical",
       position: nextPosition(nodes.length),
     });
     nodes.push(groupNode);
     createdNodeIds.push(groupNode.id);
 
-    const normalized = normalizeCandidates(
-      draft.choice_group.candidates,
-      draft.choice_group.normalize,
-    );
-    for (const [index, candidate] of normalized.entries()) {
+    const normalized = normalizeResidualCandidates(draft.choice_group.candidates);
+    const candidatesForNodes = shouldNormalizeExisting
+      ? normalized
+      : draft.choice_group.candidates.map((candidate, index) => ({
+          ...candidate,
+          raw_probability: candidate.posterior_probability ?? 0,
+          normalized_probability:
+            normalized[index]?.normalized_probability ??
+            normalized[index]?.posterior_probability ??
+            candidate.posterior_probability ??
+            0,
+        }));
+    for (const [index, candidate] of candidatesForNodes.entries()) {
+      const rawProbability =
+        candidate.raw_probability ?? candidate.posterior_probability ?? 0;
+      const normalizedProbability =
+        candidate.normalized_probability ?? candidate.posterior_probability ?? 0;
+      const storedProbability = shouldNormalizeExisting
+        ? normalizedProbability
+        : rawProbability;
       const node = createKnowledgeNode("hypothesis", {
         title: candidate.label || `候補${index + 1}`,
-        summary: `${draft.choice_group?.label ?? "読み候補群"}の候補。`,
-        description: draft.memo,
+        summary: `${draft.choice_group?.label ?? "読み候補群"}の候補。raw ${formatPercent(
+          rawProbability,
+        )} / normalized ${formatPercent(normalizedProbability)}。`,
+        description: [
+          draft.memo,
+          `raw_probability=${rawProbability}`,
+          `normalized_probability=${normalizedProbability}`,
+          shouldNormalizeExisting ? "計算用正規化を適用" : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
         tags: [
           "quick_reading",
           "reading",
           "probability_tree",
+          shouldNormalizeExisting ? "normalize_existing" : "raw_probability",
           ...(candidate.tags ?? []),
         ],
         confidence: draft.confidence,
         source_type: draft.source_type,
         probability_role: "posterior",
         choice_group_id: groupId,
-        prior_probability: candidate.posterior_probability,
-        posterior_probability: candidate.posterior_probability,
-        base_weight: candidate.base_weight ?? candidate.posterior_probability,
+        prior_probability: rawProbability,
+        posterior_probability: storedProbability,
+        base_weight: candidate.base_weight ?? storedProbability,
         dynamic_weight: candidate.dynamic_weight,
         lock_mode: candidate.lock_mode ?? "none",
         lock_value: candidate.lock_value,
@@ -392,6 +465,37 @@ export function buildReadingImpactPreview(
         conditional_weight: 1,
         propagate_probability: false,
         label: "読み数値入力",
+      });
+      edges.push(edge);
+      createdEdgeIds.push(edge.id);
+    }
+
+    const residualNode =
+      residualSummary.residual_probability > 0 &&
+      residualSummary.policy !== "normalize_existing"
+        ? residualSummary.policy === "add_to_exceptions"
+          ? createExceptionCandidateNode(residualSummary.buckets[0])
+          : createResidualBucketNode(residualSummary)
+        : undefined;
+    if (residualNode) {
+      const positionedResidualNode = {
+        ...residualNode,
+        choice_group_id: groupId,
+        position: nextPosition(nodes.length),
+      };
+      nodes.push(positionedResidualNode);
+      createdNodeIds.push(positionedResidualNode.id);
+      const edge = createKnowledgeEdge({
+        source: readingNode.id,
+        target: positionedResidualNode.id,
+        type: residualSummary.policy === "add_to_exceptions" ? "refines" : "blocks_pruning",
+        relation_layer: "semantic",
+        label:
+          residualSummary.policy === "add_to_exceptions"
+            ? "未配分から例外化"
+            : "未配分バッファ",
+        notes:
+          "未配分確率は候補確率に自動按分せず、読み不足・例外・観測ノイズ・未知として保持する。",
       });
       edges.push(edge);
       createdEdgeIds.push(edge.id);
@@ -511,22 +615,6 @@ function findOrCreateAxisMetric(
   return created;
 }
 
-function normalizeCandidates(
-  candidates: ChoiceCandidateDraft[],
-  normalize: boolean,
-) {
-  if (!normalize) return candidates;
-  const total = candidates.reduce(
-    (sum, candidate) => sum + (candidate.posterior_probability ?? 0),
-    0,
-  );
-  if (total <= 0) return candidates;
-  return candidates.map((candidate) => ({
-    ...candidate,
-    posterior_probability: round((candidate.posterior_probability ?? 0) / total),
-  }));
-}
-
 function pruningHintsForPolicy(draft: ReadingImpactDraft): PruningHint[] {
   if (draft.pruning_policy.action === "keep_top_k") return ["must_keep_top_k"];
   if (draft.pruning_policy.action === "soft_downweight") return ["score_only"];
@@ -613,4 +701,8 @@ function clamp01(value: number) {
 
 function round(value: number) {
   return Math.round(value * 10000) / 10000;
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(value * 1000) / 10}%`;
 }

@@ -64,6 +64,14 @@ describe("workbench components", () => {
     const user = userEvent.setup();
     render(<QuickReadingInputPanel />);
 
+    expect(screen.getByText("候補合計 85%")).toBeVisible();
+    expect(screen.getByText("未配分 15%")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "候補を提案" }));
+    expect(screen.getByText("候補提案")).toBeVisible();
+    await user.click(screen.getAllByRole("button", { name: "候補に追加" })[0]);
+    expect(screen.getByText("未配分 7%")).toBeVisible();
+
     await user.clear(screen.getByLabelText("読みタイトル"));
     await user.type(screen.getByLabelText("読みタイトル"), "染め本線の数値読み");
     await user.click(screen.getAllByRole("button", { name: "プレビュー" })[0]);

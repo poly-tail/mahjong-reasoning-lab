@@ -11,6 +11,7 @@ import {
   isInferenceNode,
   runPropagation,
 } from "./probability";
+import { getResidualMassChoiceGroups } from "./residualMass";
 import type {
   AveragingSafety,
   ConcentrationMetrics,
@@ -569,6 +570,12 @@ function buildImpactSummary(
 
 function inferReadingUtilities(doc: WorkspaceDocument): ReadingUtility[] {
   const inferenceNodes = doc.nodes.filter(isInferenceNode);
+  const residualGroups = getResidualMassChoiceGroups(doc.nodes);
+  const residualByNodeId = new Map<string, (typeof residualGroups)[number]>();
+  for (const group of residualGroups) {
+    for (const nodeId of group.node_ids) residualByNodeId.set(nodeId, group);
+    for (const nodeId of group.residual_node_ids) residualByNodeId.set(nodeId, group);
+  }
   const totalMass = inferenceNodes.reduce(
     (sum, node) =>
       sum + (node.posterior_probability ?? node.prior_probability ?? 0),
@@ -596,6 +603,10 @@ function inferReadingUtilities(doc: WorkspaceDocument): ReadingUtility[] {
         ...outgoing.map((edge) => edge.target),
         ...node.resolves_targets,
       ]);
+      const residualMetrics = summarizeResidualForTargets(
+        [...targetIds, node.id],
+        residualByNodeId,
+      );
       const targetMass = inferenceNodes
         .filter((target) => targetIds.has(target.id) || target.id === node.id)
         .reduce(
@@ -644,6 +655,11 @@ function inferReadingUtilities(doc: WorkspaceDocument): ReadingUtility[] {
         selective_pruning_ratio: round(selectivePruningRatio),
         global_impact_score: round(globalImpact),
         concentration_shift: round(concentrationShift),
+        residual_mass_before: residualMetrics.before,
+        residual_mass_after: residualMetrics.after,
+        residual_reduction: residualMetrics.reduction,
+        exception_candidates_added: residualMetrics.exceptionCandidates,
+        unknown_buffer_remaining: residualMetrics.unknownRemaining,
         projected_margin_gain: round(projectedMarginGain),
         ambiguity_reduction: round(ambiguityReduction),
         resolution_gain: round(resolutionGain),
@@ -651,6 +667,74 @@ function inferReadingUtilities(doc: WorkspaceDocument): ReadingUtility[] {
         utility_score: round(utility),
       };
     });
+}
+
+function summarizeResidualForTargets(
+  targetIds: string[],
+  residualByNodeId: Map<string, ReturnType<typeof getResidualMassChoiceGroups>[number]>,
+) {
+  type ResidualGroup = ReturnType<typeof getResidualMassChoiceGroups>[number];
+  const groups = uniqueBy(
+    targetIds
+      .map((id) => residualByNodeId.get(id))
+      .filter((item): item is ResidualGroup => Boolean(item)),
+    (group) => group.id,
+  );
+  if (groups.length === 0) {
+    return {
+      before: 0,
+      after: 0,
+      reduction: 0,
+      exceptionCandidates: 0,
+      unknownRemaining: 0,
+    };
+  }
+
+  const before = Math.max(
+    ...groups.map((group) => group.summary.residual_probability),
+  );
+  const unknownRemaining = groups.reduce(
+    (sum, group) =>
+      sum +
+      group.summary.buckets
+        .filter((bucket) => bucket.kind === "unknown_buffer")
+        .reduce((bucketSum, bucket) => bucketSum + bucket.probability, 0),
+    0,
+  );
+  const exceptionCandidates = groups.reduce(
+    (sum, group) =>
+      sum +
+      group.summary.buckets.filter((bucket) => bucket.kind === "exception")
+        .length,
+    0,
+  );
+  const resolvedResidual = groups.reduce(
+    (sum, group) =>
+      sum +
+      group.summary.buckets
+        .filter((bucket) => bucket.kind !== "unknown_buffer")
+        .reduce((bucketSum, bucket) => bucketSum + bucket.probability, 0),
+    0,
+  );
+  const after = clamp01(before - resolvedResidual);
+
+  return {
+    before: round(before),
+    after: round(after),
+    reduction: round(before - after),
+    exceptionCandidates,
+    unknownRemaining: round(Math.min(before, unknownRemaining)),
+  };
+}
+
+function uniqueBy<T>(values: T[], getKey: (value: T) => string): T[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = getKey(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function actionFromChainStep(

@@ -29,7 +29,9 @@ import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Field, Input, Select, Textarea } from "../components/form";
 import { Panel } from "../components/panel";
+import { ExceptionLibraryPanel } from "../reading/ExceptionLibraryPanel";
 import { QuickReadingInputPanel } from "../reading/QuickReadingInputPanel";
+import { ResidualMassSummaryPanel } from "./ResidualMassSummaryPanel";
 
 function fromLines(value: string) {
   return value
@@ -71,6 +73,7 @@ export function CaseWorkspace() {
   );
   const [nodeSearch, setNodeSearch] = useState("");
   const [viewMode, setViewMode] = useState<CaseViewMode>("lanes");
+  const [exceptionLibraryVisible, setExceptionLibraryVisible] = useState(false);
 
   const activeCase =
     doc.cases.find((caseItem) => caseItem.id === doc.active_case_id) ??
@@ -397,6 +400,33 @@ export function CaseWorkspace() {
           nodes={attachedNodes}
           edges={doc.edges}
         />
+
+        <ResidualMassSummaryPanel
+          nodes={attachedNodes}
+          onAddCandidate={(groupId) => {
+            setSelection(
+              attachedNodes
+                .filter((node) => node.choice_group_id === groupId)
+                .map((node) => node.id),
+              [],
+            );
+          }}
+          onOpenExceptionLibrary={() => setExceptionLibraryVisible((value) => !value)}
+          onKeepUnknown={(groupId) => {
+            setSelection(
+              attachedNodes
+                .filter(
+                  (node) =>
+                    node.choice_group_id === groupId &&
+                    node.tags.includes("residual_mass"),
+                )
+                .map((node) => node.id),
+              [],
+            );
+          }}
+        />
+
+        {exceptionLibraryVisible ? <ExceptionLibraryPanel /> : null}
 
         <NumericReadingSummaryPanel
           nodes={attachedNodes}
@@ -778,7 +808,7 @@ function MissingElementsPanel({
       ).length > 1,
     ],
     [
-      "posterior合計が100%になっていない",
+      "choice groupに未配分/過剰分がある",
       choiceGroupTotals(nodes).some((total) => Math.abs(total - 1) > 0.001),
     ],
     [

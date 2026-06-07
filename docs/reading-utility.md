@@ -7,6 +7,11 @@
 - `selective_pruning_ratio`
 - `global_impact_score`
 - `concentration_shift`
+- `residual_mass_before`
+- `residual_mass_after`
+- `residual_reduction`
+- `exception_candidates_added`
+- `unknown_buffer_remaining`
 - `projected_margin_gain`
 - `ambiguity_reduction`
 - `resolution_gain`
@@ -20,6 +25,8 @@
 ## どう解釈するか
 
 `utility_score` は単独の正解率ではなく、集中度、分布差分、曖昧性解消、コストの合成指標です。`selective_pruning_ratio` が低く `global_impact_score` も低い場合、狭い読みを過大評価しないようにします。
+
+未配分確率が残る読みでは、候補確率の集中だけではなく、`residual_reduction` と `unknown_buffer_remaining` も確認します。未配分を例外候補や具体候補として減らせた読みは、hard pruneよりも前段の解像度改善として評価できます。
 
 ## 何をやってはいけないか
 

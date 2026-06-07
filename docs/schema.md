@@ -107,11 +107,28 @@ Probability fields:
 - `observation_cost`
 - `timeliness`
 
+Residual mass is represented without a workspace version bump:
+
+- unknown buffer nodes use `type: ambiguity_marker`
+- exception candidates use `type: exception`
+- tags include `residual_mass`, `unknown_buffer`, `exception`, or `reading_drawer`
+- `pruning_hints` can include `must_keep_top_k` to prevent unsafe hard prune
+
 Which nodes hold probability:
 
 - Usually yes: `hypothesis`, `branch`, scenario branches, explicit `observation` inputs, aggregates, and weight/lock control nodes.
 - Usually no: `concept`, `signal`, `evidence`, `question`, general notes, and semantic-only rule design nodes.
 - `choice_group` normally uses `probability_role: control`; the member candidates hold posterior values.
+
+## Reading Utility residual fields
+
+`reading_utilities` includes the original utility metrics plus defaulted residual fields. Old v4 workspace JSON without these fields is still valid because zod supplies defaults.
+
+- `residual_mass_before`
+- `residual_mass_after`
+- `residual_reduction`
+- `exception_candidates_added`
+- `unknown_buffer_remaining`
 
 ## Knowledge Edge
 

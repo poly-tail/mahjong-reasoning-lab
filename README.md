@@ -107,6 +107,9 @@ docs/
   pruning-impact.md
   node-lock.md
   reading-utility.md
+  residual-mass.md
+  reading-drawer.md
+  exception-library.md
   multi-step-reading.md
   educational-mode.md
 tests/
@@ -153,11 +156,15 @@ tests/
 
 - 局、供託、本場、巡目、点数、親/自家、リーチ、副露、捨て牌メモを入力
 - 「読みを数値で反映」で、思いついた読みを4軸影響、候補確率、重み、枝刈り/ロック方針としてactive caseへ即反映
+- choice groupの候補合計が100%未満なら未配分確率を表示し、具体候補、例外集、未知バッファ、計算用正規化、未配分保持から扱いを選ぶ
+- 候補提案パネルで、副露意図、打点、進行度、待ち・形、危険牌、点数状況、卓上動態、相手傾向、例外/ノイズから追加候補を探す
+- 例外集で、未配分から出た例外候補を保存し、active caseへの追加や次回候補化に使う
 - 観測事象、仮説メモを管理
 - 関連知識ノードをattach
 - attachしたノードを「観測 → 仮説 → 条件 → 判断」列へ配置
 - 「判断プロセス」表示で、洗い出し → 重み付け → 加算/合成 → 比較 → 選択 → 反省として同じattached nodesを派生表示
 - 足りない要素パネルで、仮説/metric/choice group/判断メモ/反省メモ/mixed or unknown influenceなどを確認
+- 未配分確率サマリで、active case内のchoice groupごとに合計、未配分、扱い、hard prune警告を確認
 - 相反edgeがあるノードに相反バッジを表示
 - Top-k仮説保持数、判断メモ、反省メモを保存
 
@@ -200,7 +207,8 @@ tests/
 - Educational Explanation Panel: reading utilityとteaching logから、なぜその読みが効く/効かないかを説明
 - PruningとNode Lockの違いを説明カードで明示
 - hard prune / soft downweight / keep top-k / hard lock / soft lock / freeze ratio / freeze concentration bandを操作グループで表示
-- mixed/unknown influence、must_keep_top_k、薄く広い候補、固定中ノードに対する危険な枝刈りをwarning表示
+- mixed/unknown influence、must_keep_top_k、薄く広い候補、固定中ノード、未配分確率が残るchoice groupに対する危険な枝刈りをwarning表示
+- Reading Utilityで `residual_mass_before` / `residual_mass_after` / `residual_reduction` / `exception_candidates_added` / `unknown_buffer_remaining` を表示
 - シミュレーション結果からテンプレートベースのteaching logを作成
 
 ### JSON I/O
@@ -209,6 +217,7 @@ tests/
 - Knowledge Mapで選択したsubgraphを `pruning-ui.subgraph.v4` としてexport
 - exportには selected nodes / edges / node metadata / related rules / pruning hints / weight placeholders に加え、`inference_subgraph`、`choice_groups`、`locks`、`weights`、`distributions`、`propagation_order`、`frozen_nodes`、`top_k_constraints` を含める
 - v4 exportには `reasoning_lab` として concentration metrics、pruning actions、impact summaries、reading utilities、reading chains、averaging safety、teaching logs を含める
+- 未配分確率はschema versionを上げず、既存の `exception` / `ambiguity_marker` ノード、tags、probability fields、pruning hintsで表現する
 
 ## Semantic Graph と Probabilistic Graph
 

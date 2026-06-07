@@ -1,4 +1,8 @@
 import { calculateConcentration } from "./reasoningLab";
+import {
+  getResidualMassChoiceGroups,
+  shouldBlockHardPrune,
+} from "./residualMass";
 import type {
   KnowledgeEdge,
   KnowledgeNode,
@@ -42,12 +46,41 @@ export function getPruningLockWarnings(
   action: PruningAction,
 ) {
   const warnings: string[] = [];
+  const residualGroups = getResidualMassChoiceGroups(doc.nodes);
+  const residualByGroupId = new Map(
+    residualGroups.map((group) => [group.id, group]),
+  );
   const targetNodes = action.target_ids
     .map((id) => doc.nodes.find((node) => node.id === id))
     .filter((node): node is KnowledgeNode => Boolean(node));
 
   if (action.action_type === "hard_prune") {
     for (const node of targetNodes) {
+      const residualGroup = node.choice_group_id
+        ? residualByGroupId.get(node.choice_group_id)
+        : undefined;
+      if (residualGroup && residualGroup.summary.residual_probability > 0) {
+        warnings.push(
+          `${node.title}: 未配分確率が残っています。これは未想起候補・例外・観測ノイズ・未知を含む可能性があります。hard pruneではなくkeep top-k/downweightを検討してください。`,
+        );
+      }
+      if (residualGroup && shouldBlockHardPrune(residualGroup.summary)) {
+        warnings.push(
+          `${node.title}: 未配分確率 ${Math.round(
+            residualGroup.summary.residual_probability * 1000,
+          ) / 10}% のため、このchoice groupでのhard pruneは危険です。`,
+        );
+      }
+
+      if (
+        node.type === "exception" ||
+        node.tags.some((tag) => ["exception", "residual_mass"].includes(tag))
+      ) {
+        warnings.push(
+          `${node.title}: 例外候補または未配分由来ノードです。prune対象にする前に例外集/未知バッファとして残すか確認してください。`,
+        );
+      }
+
       if (node.pruning_hints.includes("must_keep_top_k")) {
         warnings.push(
           `${node.title}: must_keep_top_k があるため、hard prune ではなく keep top-k / downweight を検討してください。`,
@@ -81,6 +114,23 @@ export function getPruningLockWarnings(
       ) {
         warnings.push(
           `${node.title}: ${node.lock_mode} 中のため、再正規化や枝刈り操作が固定意図と衝突する可能性があります。`,
+        );
+      }
+    }
+  }
+
+  if (isLockActionType(action.action_type)) {
+    for (const node of targetNodes) {
+      const residualGroup = node.choice_group_id
+        ? residualByGroupId.get(node.choice_group_id)
+        : undefined;
+      const unknownRemaining =
+        residualGroup?.summary.buckets
+          .filter((bucket) => bucket.kind === "unknown_buffer")
+          .reduce((sum, bucket) => sum + bucket.probability, 0) ?? 0;
+      if (unknownRemaining >= 0.15) {
+        warnings.push(
+          `${node.title}: unknown_bufferが大きい状態でlock/freezeしようとしています。候補追加または未知として保持する根拠を確認してください。`,
         );
       }
     }

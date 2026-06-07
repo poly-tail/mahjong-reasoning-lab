@@ -3,6 +3,13 @@ import { useMemo, useState } from "react";
 import { useAppStore } from "../../app/store";
 import { runPropagation } from "../../domain/probability";
 import {
+  buildResidualMassSummary,
+  formatPercent,
+  residualPolicyLabel,
+  type ResidualMassBucket,
+  type ResidualMassPolicy,
+} from "../../domain/residualMass";
+import {
   buildReadingImpactPreview,
   createDefaultReadingImpactDraft,
   normalizePercentInput,
@@ -17,6 +24,8 @@ import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Field, Input, Select, Textarea } from "../components/form";
 import { Panel } from "../components/panel";
+import { ExceptionLibraryPanel } from "./ExceptionLibraryPanel";
+import { ReadingDrawerSuggestionPanel } from "./ReadingDrawerSuggestionPanel";
 
 const readingTypeOptions = [
   ["observation", "観測"],
@@ -35,6 +44,16 @@ const pruningOptions = [
   ["soft_lock", "soft lock"],
   ["freeze_ratio", "freeze ratio"],
 ] as const;
+
+const residualPolicyOptions: ResidualMassPolicy[] = [
+  "suggest_candidates",
+  "add_to_exceptions",
+  "keep_unknown_buffer",
+  "normalize_existing",
+  "leave_unassigned",
+];
+
+const emptyCandidates: ChoiceCandidateDraft[] = [];
 
 const axisDescriptions: Record<AxisImpactDraft["axis_id"], string> = {
   progress_tenpai_axis: "テンパイ率、先制率、和了到達の近さを動かす読み",
@@ -312,11 +331,26 @@ function ChoiceGroupEditor({
   draft: ReadingImpactDraft;
   onChange: (draft: ReadingImpactDraft) => void;
 }) {
+  const [drawerVisible, setDrawerVisible] = useState(false);
+  const [exceptionLibraryVisible, setExceptionLibraryVisible] = useState(false);
   const enabled = Boolean(draft.choice_group);
-  const candidates = draft.choice_group?.candidates ?? [];
-  const total = candidates.reduce(
-    (sum, candidate) => sum + (candidate.posterior_probability ?? 0),
-    0,
+  const candidates = draft.choice_group?.candidates ?? emptyCandidates;
+  const residualPolicy =
+    draft.choice_group?.residual_policy ?? "keep_unknown_buffer";
+  const residualSummary = useMemo(
+    () =>
+      buildResidualMassSummary(
+        candidates,
+        residualPolicy,
+        draft.choice_group?.residual_buckets,
+        { hardPrune: draft.pruning_policy.action === "hard_prune" },
+      ),
+    [
+      candidates,
+      draft.choice_group?.residual_buckets,
+      draft.pruning_policy.action,
+      residualPolicy,
+    ],
   );
 
   const setChoiceGroup = (
@@ -326,7 +360,9 @@ function ChoiceGroupEditor({
       ...draft,
       choice_group: {
         label: "読み候補群",
-        normalize: true,
+        normalize: false,
+        residual_policy: "keep_unknown_buffer",
+        residual_buckets: [],
         candidates,
         ...draft.choice_group,
         ...patch,
@@ -346,8 +382,10 @@ function ChoiceGroupEditor({
               choice_group: event.target.checked
                 ? {
                     label: "染め読み候補",
-                    normalize: true,
-                    candidates: presetCandidates([0.6, 0.25, 0.15]),
+                    normalize: false,
+                    residual_policy: "keep_unknown_buffer",
+                    residual_buckets: [],
+                    candidates: presetCandidates([0.55, 0.2, 0.1]),
                   }
                 : undefined,
             })
@@ -370,19 +408,50 @@ function ChoiceGroupEditor({
                 type="checkbox"
                 checked={draft.choice_group.normalize}
                 onChange={(event) =>
-                  setChoiceGroup({ normalize: event.target.checked })
+                  setChoiceGroup({
+                    normalize: event.target.checked,
+                    residual_policy: event.target.checked
+                      ? "normalize_existing"
+                      : "keep_unknown_buffer",
+                  })
                 }
               />
-              合計を100%に正規化
+              計算用正規化
             </label>
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Badge tone={Math.abs(total - 1) < 0.001 ? "emerald" : "amber"}>
-              合計 {Math.round(total * 1000) / 10}%
+            <Badge
+              tone={
+                residualSummary.overallocated_probability > 0
+                  ? "rose"
+                  : residualSummary.residual_probability > 0
+                    ? "amber"
+                    : "emerald"
+              }
+            >
+              候補合計 {formatPercent(residualSummary.raw_total)}
+            </Badge>
+            <Badge
+              tone={
+                residualSummary.residual_probability >= 0.25
+                  ? "rose"
+                  : residualSummary.residual_probability >= 0.15
+                    ? "amber"
+                    : "cyan"
+              }
+            >
+              未配分 {formatPercent(residualSummary.residual_probability)}
+            </Badge>
+            <Badge
+              tone={
+                residualSummary.overallocated_probability > 0 ? "rose" : "stone"
+              }
+            >
+              過剰分 {formatPercent(residualSummary.overallocated_probability)}
             </Badge>
             <PresetButton values={[0.6, 0.25, 0.15]} onApply={setChoiceGroup} />
-            <PresetButton values={[0.5, 0.3, 0.2]} onApply={setChoiceGroup} />
+            <PresetButton values={[0.55, 0.2, 0.1]} onApply={setChoiceGroup} />
             <PresetButton values={[0.4, 0.35, 0.25]} onApply={setChoiceGroup} />
             <Button
               size="sm"
@@ -400,6 +469,94 @@ function ChoiceGroupEditor({
               均等
             </Button>
           </div>
+
+          <section className="grid gap-2 rounded-md border border-stone-200 bg-stone-50 p-2">
+            <div className="text-sm font-semibold text-stone-950">
+              未配分の扱い
+            </div>
+            <div className="grid gap-1 md:grid-cols-2 xl:grid-cols-5">
+              {residualPolicyOptions.map((policy) => (
+                <label
+                  key={policy}
+                  className="flex items-start gap-2 rounded-md border border-stone-200 bg-white p-2 text-xs leading-5 text-stone-700"
+                >
+                  <input
+                    className="mt-1"
+                    type="radio"
+                    name="residual-policy"
+                    checked={residualPolicy === policy}
+                    onChange={() =>
+                      setChoiceGroup({
+                        residual_policy: policy,
+                        normalize: policy === "normalize_existing",
+                      })
+                    }
+                  />
+                  <span>{residualPolicyLabel(policy)}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                onClick={() => {
+                  setChoiceGroup({
+                    residual_policy: "suggest_candidates",
+                    normalize: false,
+                  });
+                  setDrawerVisible(true);
+                }}
+                disabled={residualSummary.residual_probability <= 0}
+              >
+                候補を提案
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setChoiceGroup({
+                    residual_policy: "add_to_exceptions",
+                    normalize: false,
+                    residual_buckets: [
+                      createResidualBucket(
+                        "未配分からの例外候補",
+                        "exception",
+                        residualSummary.residual_probability,
+                      ),
+                    ],
+                  });
+                  setExceptionLibraryVisible(true);
+                }}
+                disabled={residualSummary.residual_probability <= 0}
+              >
+                例外集に入れる
+              </Button>
+              <Button
+                size="sm"
+                onClick={() =>
+                  setChoiceGroup({
+                    residual_policy: "keep_unknown_buffer",
+                    normalize: false,
+                    residual_buckets: [],
+                  })
+                }
+                disabled={residualSummary.residual_probability <= 0}
+              >
+                未知バッファとして保持
+              </Button>
+              <Button
+                size="sm"
+                onClick={() =>
+                  setChoiceGroup({
+                    residual_policy: "normalize_existing",
+                    normalize: true,
+                  })
+                }
+                disabled={residualSummary.raw_total <= 0}
+              >
+                既存候補に按分
+              </Button>
+            </div>
+          </section>
 
           <div className="grid gap-1.5">
             {candidates.map((candidate, index) => (
@@ -435,6 +592,110 @@ function ChoiceGroupEditor({
             <Plus className="h-4 w-4" aria-hidden="true" />
             候補を追加
           </Button>
+
+          {residualSummary.warnings.length > 0 ? (
+            <div className="grid gap-1.5">
+              {residualSummary.warnings.map((warning) => (
+                <div
+                  key={`${warning.code}_${warning.message}`}
+                  className={
+                    warning.severity === "danger"
+                      ? "rounded border border-rose-200 bg-rose-50 p-2 text-xs leading-5 text-rose-700"
+                      : "rounded border border-amber-200 bg-amber-50 p-2 text-xs leading-5 text-amber-800"
+                  }
+                >
+                  {warning.message}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {residualPolicy === "normalize_existing" ? (
+            <section className="rounded-md border border-cyan-200 bg-white p-2">
+              <div className="mb-2 text-sm font-semibold text-stone-950">
+                計算用正規化
+              </div>
+              <div className="grid gap-1 text-xs text-stone-700">
+                {residualSummary.normalized_candidates.map((candidate) => (
+                  <div
+                    key={candidate.label}
+                    className="grid grid-cols-[1fr_80px_80px] gap-2"
+                  >
+                    <span className="truncate">{candidate.label}</span>
+                    <span>raw {formatPercent(candidate.raw_probability ?? 0)}</span>
+                    <span>
+                      norm {formatPercent(candidate.normalized_probability ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-stone-500">
+                未配分は読み不足/例外/未知として保持し、ここでは候補比較用にだけ正規化しています。
+              </p>
+            </section>
+          ) : null}
+
+          {drawerVisible ? (
+            <ReadingDrawerSuggestionPanel
+              residualProbability={residualSummary.residual_probability}
+              onAddCandidate={(candidate) => {
+                const assigned = Math.min(
+                  residualSummary.residual_probability,
+                  candidate.posterior_probability ?? 0,
+                );
+                setChoiceGroup({
+                  residual_policy: "suggest_candidates",
+                  normalize: false,
+                  candidates: [
+                    ...candidates,
+                    {
+                      ...candidate,
+                      posterior_probability: assigned,
+                      base_weight: assigned,
+                    },
+                  ],
+                });
+              }}
+              onAddException={(bucket) => {
+                setChoiceGroup({
+                  residual_policy: "add_to_exceptions",
+                  normalize: false,
+                  residual_buckets: [bucket],
+                });
+                setExceptionLibraryVisible(true);
+              }}
+              onKeepUnknown={() =>
+                setChoiceGroup({
+                  residual_policy: "keep_unknown_buffer",
+                  normalize: false,
+                  residual_buckets: [],
+                })
+              }
+            />
+          ) : null}
+
+          {exceptionLibraryVisible ? (
+            <ExceptionLibraryPanel
+              onUseAsCandidate={(candidate) => {
+                const assigned = Math.min(
+                  residualSummary.residual_probability || 0.05,
+                  candidate.posterior_probability ?? 0.05,
+                );
+                setChoiceGroup({
+                  residual_policy: "suggest_candidates",
+                  normalize: false,
+                  candidates: [
+                    ...candidates,
+                    {
+                      ...candidate,
+                      posterior_probability: assigned,
+                      base_weight: assigned,
+                    },
+                  ],
+                });
+              }}
+            />
+          ) : null}
         </div>
       ) : null}
     </section>
@@ -516,6 +777,21 @@ function CandidateRow({
       </Button>
     </div>
   );
+}
+
+function createResidualBucket(
+  label: string,
+  kind: ResidualMassBucket["kind"],
+  probability: number,
+): ResidualMassBucket {
+  return {
+    id: `residual_bucket_${kind}_${Date.now()}`,
+    label,
+    kind,
+    probability,
+    note: "Quick Readingの未配分UIから作成。",
+    tags: ["residual_mass", kind],
+  };
 }
 
 function PruningPolicyEditor({
@@ -755,7 +1031,7 @@ function PresetButton({
 }
 
 function presetCandidates(values: number[]) {
-  const labels = ["染め本線", "染め薄い", "速度副露", "役牌バック"];
+  const labels = ["染め本線", "速度副露", "役牌バック", "染め薄い"];
   return values.map((value, index) => ({
     label: labels[index] ?? `候補${index + 1}`,
     posterior_probability: value,
@@ -787,8 +1063,10 @@ function createExampleDraft() {
     }),
     choice_group: {
       label: "染め読み候補",
-      normalize: true,
-      candidates: presetCandidates([0.55, 0.25, 0.2]),
+      normalize: false,
+      residual_policy: "keep_unknown_buffer",
+      residual_buckets: [],
+      candidates: presetCandidates([0.55, 0.2, 0.1]),
     },
     pruning_policy: {
       action: "keep_top_k",

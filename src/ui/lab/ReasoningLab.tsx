@@ -114,6 +114,11 @@ const readingUtilityLabels = {
   selective_pruning_ratio: "狙った枝だけを削れた度",
   global_impact_score: "全体への影響",
   concentration_shift: "候補集中度の変化",
+  residual_mass_before: "未配分 before",
+  residual_mass_after: "未配分 after",
+  residual_reduction: "未配分低減",
+  exception_candidates_added: "例外候補",
+  unknown_buffer_remaining: "未知残り",
   ambiguity_reduction: "曖昧性の減少",
   projected_margin_gain: "判断余裕の改善",
   cost_estimate: "観測/思考コスト",
@@ -939,8 +944,10 @@ function EducationTab({
                 <div className="truncate text-xs text-stone-500">
                   {readingUtilityLabels.selective_pruning_ratio}{" "}
                   {format(utility.selective_pruning_ratio)} /{" "}
-                  {readingUtilityLabels.cost_estimate}{" "}
-                  {format(utility.cost_estimate)}
+                  {readingUtilityLabels.residual_reduction}{" "}
+                  {format(utility.residual_reduction)} /{" "}
+                  {readingUtilityLabels.unknown_buffer_remaining}{" "}
+                  {format(utility.unknown_buffer_remaining)}
                 </div>
               </div>
               <MetricBox
@@ -956,8 +963,8 @@ function EducationTab({
                 value={utility.ambiguity_reduction}
               />
               <MetricBox
-                label={readingUtilityLabels.projected_margin_gain}
-                value={utility.projected_margin_gain}
+                label={readingUtilityLabels.residual_mass_after}
+                value={utility.residual_mass_after}
               />
             </div>
           ))}
