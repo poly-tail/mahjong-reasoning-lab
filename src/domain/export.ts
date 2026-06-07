@@ -2,6 +2,7 @@ import {
   PRUNING_EXPORT_SCHEMA_VERSION,
   WORKSPACE_SCHEMA_VERSION,
   normalizeWorkspaceDocument,
+  normalizeWorkspaceScopes,
   pruningExportSchema,
   workspaceDocumentSchema,
   type KnowledgeEdge,
@@ -23,7 +24,11 @@ export function parseWorkspaceJson(rawJson: string): WorkspaceDocument {
 }
 
 export function serializeWorkspace(workspace: WorkspaceDocument): string {
-  return JSON.stringify(workspaceDocumentSchema.parse(workspace), null, 2);
+  return JSON.stringify(
+    normalizeWorkspaceScopes(workspaceDocumentSchema.parse(workspace)),
+    null,
+    2,
+  );
 }
 
 export function createPruningSubgraphExport(

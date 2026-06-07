@@ -296,3 +296,21 @@ Phase1では、押し引きの最終判断、牌選択の推奨、局収支EV、
 6. JSONでバックアップする。
 
 慣れてきたら、確率、枝刈り、ロック、読みの有用性、教材化を足していくと、判断の再現性が上がります。
+
+## Project と Sheet を使う
+
+Projectは研究テーマや用途の箱です。SheetはそのProject内の作業面です。たとえば「副露読み研究」というProjectを作り、その中に「染め副露」「親リーチ対応」「枚数読み」などのSheetを分けられます。
+
+画面上部のProject SelectorでProjectを選び、Sheet Selectorで作業するSheetを選びます。新しいProjectを作るときは「Projectを作成」を押します。新しいSheetを作るときは「Sheetを作成」を押します。
+
+作成ダイアログでは、初期テンプレートを選べます。テンプレートは `牌理`、`枚数`、`手役`、`抽象的な読み` の4種類です。通常はすべてONです。空のProjectやSheetにしたい場合は、空作成を選ぶとテンプレートを配置しません。
+
+Global Settingsでは、Project作成時とSheet作成時にどのテンプレートを最初からONにするかを変更できます。空作成を既定にすることもできます。
+
+表示スコープは Sheet / Project / Workspace から選びます。Sheetはactive Sheetだけ、Projectはactive Project内の全Sheet、Workspaceは全体を表示します。Knowledge Mapやsubgraph exportはこのスコープに合わせて対象を変えられます。
+
+Case Workspaceでは、active Sheetに属するcaseが先に表示されます。新規caseやQuick Reading Inputで作ったノード、エッジ、choice group、例外候補はactive Sheetへ紐付きます。Reading DrawerとException Libraryには Sheet / Project / Global のbadgeが出るため、候補や例外がどの範囲のものか確認できます。
+
+既存workspaceを読み込んだ場合は、Default Project と Default Sheet が自動で作られ、既存データはDefault Sheetに入ります。JSON export/importでもProject、Sheet、Global Settingsは保持されます。
+
+影響ウェイトと軸確信度は0〜100スコアで、確率ではありません。候補確率と未配分確率だけが%です。4軸の合計を100にする必要はありません。

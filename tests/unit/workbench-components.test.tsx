@@ -25,6 +25,7 @@ describe("workbench components", () => {
       search: "",
       tagFilter: [],
       nodeTypeFilter: [],
+      scopeMode: "sheet",
     });
   });
 

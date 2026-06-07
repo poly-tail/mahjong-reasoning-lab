@@ -313,3 +313,19 @@ npm start
 `Ctrl+Z` と `Ctrl+Y` は、作業内容を戻したりやり直したりするための編集履歴です。保存済みデータそのものを過去バージョンに戻す履歴管理ではありません。
 
 ノード配置は重なりを避けるように調整されますが、非常に密なマップでは意図した位置からずれる場合があります。その場合は、周囲のノードを少し広げてから再配置してください。
+
+## Project / Sheet ユーザー向け仕様
+
+Workspaceには複数のProjectを作れます。Projectは研究テーマや用途の箱です。各Projectの中に複数のSheetを作れます。Sheetは局面群、読みカテゴリ、検証テーマなどをまとめる作業面です。
+
+新規Projectまたは新規Sheetを作るとき、初期テンプレートを選べます。テンプレートは `牌理`、`枚数`、`手役`、`抽象的な読み` です。通常はすべてONです。空で作成したい場合はテンプレートを外せます。Global Settingsでは、Project作成時とSheet作成時の既定テンプレートON/OFFを変更できます。
+
+テンプレートは読み候補や初期ノードを置くための材料です。押し引き、牌選択、EV、最終行動は提案しません。Phase1は Reading Probability Core であり、読み候補、候補確率、未配分確率、4軸影響、例外、drawer候補を整理します。
+
+上部のProject SelectorとSheet Selectorでactive Project / Sheetを切り替えます。表示スコープは Sheet / Project / Workspace から選びます。Sheetではactive Sheetの内容だけ、ProjectではProject配下のSheetをまとめて、Workspaceでは全体を表示します。
+
+Case Workspaceではactive Sheetのcaseが優先されます。新規caseやQuick Reading Inputで作ったノード、エッジ、choice group、例外候補はactive Sheetへ紐付きます。Reading DrawerとException Libraryには Sheet / Project / Global のbadgeが表示されます。
+
+JSON export/importはProject、Sheet、Global Settingsを含みます。subgraph exportは選択中ノード、active Sheet、active Project、Workspace全体から対象を選べます。既存workspaceはDefault Project / Default Sheetへ自動移行されます。
+
+影響ウェイトと軸確信度は0〜100スコアです。候補確率と未配分確率だけが%です。4軸の合計を100にする必要はありません。

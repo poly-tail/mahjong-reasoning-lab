@@ -5,7 +5,11 @@ import {
   createRule,
   createWorkspaceDocument,
 } from "./factory";
-import { workspaceDocumentSchema, type WorkspaceDocument } from "./schema";
+import {
+  normalizeWorkspaceScopes,
+  workspaceDocumentSchema,
+  type WorkspaceDocument,
+} from "./schema";
 
 const seededAt = "2026-05-05T00:00:00.000Z";
 
@@ -38,7 +42,7 @@ const commonSemantic = {
   propagation_policy: "none" as const,
 };
 
-export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
+const rawSeedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
   createWorkspaceDocument({
     updated_at: seededAt,
     nodes: [
@@ -2441,3 +2445,6 @@ export const seedWorkspace: WorkspaceDocument = workspaceDocumentSchema.parse(
     active_case_id: "case_seed_push_pull",
   }),
 );
+
+export const seedWorkspace: WorkspaceDocument =
+  normalizeWorkspaceScopes(rawSeedWorkspace);

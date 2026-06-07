@@ -225,3 +225,35 @@ Phase2以降で扱う可能性があるもの:
 - pruning-ui 本体
 
 これらは Reading Probability Core の出力を入力として使う別レイヤーであり、Phase1に混ぜません。
+
+## Project / Sheet 詳細仕様
+
+### Data Model
+
+`WorkspaceDocument` は既存top-level配列を維持したまま、`projects`、`sheets`、`active_project_id`、`active_sheet_id`、`global_settings` を持ちます。Projectは研究テーマや用途の単位で、SheetはProject内の作業面です。Sheetは `node_ids`、`edge_ids`、`case_ids`、`rule_ids`、`saved_view_ids`、`reading_drawer_item_ids`、`exception_node_ids`、`residual_group_ids` を持ちます。
+
+既存workspace v4をnormalizeする場合、Project/SheetがなければDefault ProjectとDefault Sheetを作ります。既存のノード、エッジ、case、rule、saved viewはDefault Sheetへ所属させます。active project / active sheet が不正な場合は、存在するProject/Sheetへ補正します。
+
+### Global Settings
+
+Global Settings は `project_creation_defaults` と `sheet_creation_defaults` を持ちます。各値は `tile_efficiency`、`tile_count`、`yaku`、`abstract_reading` のbooleanです。初期値はすべてtrueです。`create_empty_project_by_default` と `create_empty_sheet_by_default` がtrueの場合、作成ダイアログでは空作成を既定にします。
+
+### Template Catalog
+
+TemplateCatalog は `牌理`、`枚数`、`手役`、`抽象的な読み` を提供します。テンプレートは初期ノード、初期influence edge、Reading Drawer候補、Exception Library候補、Residual Mass候補を作ります。生成物にはtemplate keyを追跡できるtagまたはmetadataを付けます。テンプレートは Reading Probability Core の初期素材であり、押し引き判断、牌選択AI、EV計算、Action Recommendationではありません。
+
+同じSheetへ同じテンプレートを適用する処理はidempotentです。`template_source.enabled_template_keys` に適用済みのkeyを保存し、明示的な再適用を除いて重複配置を避けます。
+
+### UI Flow
+
+App shellにはProject Selector、Sheet Selector、Project作成、Sheet作成、Global Settings、表示スコープ切替を置きます。Project作成ダイアログはProject名、説明、タグ、初期Sheet作成、初期Sheet名、テンプレート選択、空作成を扱います。Sheet作成ダイアログは所属Project、Sheet名、説明、タグ、テンプレート選択、空作成を扱います。
+
+表示スコープは Sheet / Project / Workspace です。Knowledge Mapはscopeに応じてノードとエッジを絞ります。Case Workspaceはactive Sheetに属するcaseを優先し、候補ノードはactive Sheet、active Project、Workspaceの順に優先します。Reading DrawerとException Libraryはscope badgeを表示します。Residual Massは未配分候補の送信先をactive Sheet / Project / Global / unknown bufferとして分類します。
+
+### Export / Import
+
+workspace JSON export/importはProject/Sheet/Global Settingsを含みます。subgraph exportは選択中ノードだけでなく、active Sheet、active Project、Workspace全体から対象を選べます。import時はzod schemaで検証し、normalizeでDefault Project/Sheet migrationを行います。
+
+### Score Semantics
+
+4軸は排他的候補ではありません。影響ウェイトは各軸独立の0〜100スコアで、候補確率ではありません。4軸の合計を100にする必要はありません。軸確信度も0〜100スコアです。候補確率と未配分確率だけを%表示します。内部保存では `magnitude` と `confidence` を0〜1として維持します。

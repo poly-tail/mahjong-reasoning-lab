@@ -7,18 +7,22 @@ import {
   serializePruningExport,
   serializeWorkspace,
 } from "../../domain/export";
+import { getScopedIds } from "../../domain/projectSheets";
 import {
   PRUNING_EXPORT_SCHEMA_VERSION,
   WORKSPACE_SCHEMA_VERSION,
+  type WorkspaceScopeMode,
 } from "../../domain/schema";
 import { downloadJson, readFileAsText } from "../../infrastructure/files";
 import { Button } from "../components/button";
-import { Field, Textarea } from "../components/form";
+import { Field, Select, Textarea } from "../components/form";
 import { Panel } from "../components/panel";
 
 function stamp() {
   return new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
 }
+
+type SubgraphExportScope = WorkspaceScopeMode | "selection";
 
 export function ImportExportPanel() {
   const doc = useAppStore((state) => state.doc);
@@ -28,14 +32,35 @@ export function ImportExportPanel() {
   const resetToSeed = useAppStore((state) => state.resetToSeed);
   const [importText, setImportText] = useState("");
   const [message, setMessage] = useState("");
+  const [subgraphScope, setSubgraphScope] =
+    useState<SubgraphExportScope>("selection");
 
   const workspaceJson = useMemo(() => serializeWorkspace(doc), [doc]);
+  const subgraphSelection = useMemo(() => {
+    if (subgraphScope === "selection") {
+      return { nodeIds: selectedNodeIds, edgeIds: selectedEdgeIds };
+    }
+    const ids = getScopedIds(doc, subgraphScope);
+    return {
+      nodeIds: Array.from(ids.nodeIds),
+      edgeIds: Array.from(ids.edgeIds),
+    };
+  }, [doc, selectedEdgeIds, selectedNodeIds, subgraphScope]);
   const pruningJson = useMemo(() => {
-    if (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0) return "";
+    if (
+      subgraphSelection.nodeIds.length === 0 &&
+      subgraphSelection.edgeIds.length === 0
+    ) {
+      return "";
+    }
     return serializePruningExport(
-      createPruningSubgraphExport(doc, selectedNodeIds, selectedEdgeIds),
+      createPruningSubgraphExport(
+        doc,
+        subgraphSelection.nodeIds,
+        subgraphSelection.edgeIds,
+      ),
     );
-  }, [doc, selectedEdgeIds, selectedNodeIds]);
+  }, [doc, subgraphSelection]);
 
   const importFromText = () => {
     try {
@@ -76,9 +101,22 @@ export function ImportExportPanel() {
         <Panel title="枝刈り画面向けサブグラフ出力">
           <div className="flex items-center justify-between border-b border-stone-200 px-3 py-2 text-sm text-stone-600">
             <span>
-              {PRUNING_EXPORT_SCHEMA_VERSION} / {selectedNodeIds.length}
-              件のノード、{selectedEdgeIds.length}件のエッジを選択中
+              {PRUNING_EXPORT_SCHEMA_VERSION} /{" "}
+              {subgraphSelection.nodeIds.length}
+              件のノード、{subgraphSelection.edgeIds.length}件のエッジ
             </span>
+            <Select
+              className="ml-2 w-40"
+              value={subgraphScope}
+              onChange={(event) =>
+                setSubgraphScope(event.target.value as SubgraphExportScope)
+              }
+            >
+              <option value="selection">選択範囲</option>
+              <option value="sheet">active Sheet</option>
+              <option value="project">active Project</option>
+              <option value="workspace">Workspace</option>
+            </Select>
             <Button
               disabled={!pruningJson}
               onClick={() =>

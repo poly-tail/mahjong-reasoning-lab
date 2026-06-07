@@ -1,5 +1,6 @@
 import { Library, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useAppStore } from "../../app/store";
 import {
   createChoiceCandidateFromDrawerItem,
   createResidualBucketFromDrawerItem,
@@ -8,7 +9,11 @@ import {
   type ReadingDrawerCategory,
   type ReadingDrawerItem,
 } from "../../domain/readingDrawer";
-import { formatPercent, type ResidualMassBucket } from "../../domain/residualMass";
+import { classifyReadingDrawerItemScope } from "../../domain/projectSheets";
+import {
+  formatPercent,
+  type ResidualMassBucket,
+} from "../../domain/residualMass";
 import type { ChoiceCandidateDraft } from "../../domain/readingNumerics";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
@@ -25,7 +30,10 @@ export function ReadingDrawerSuggestionPanel({
   onAddException: (bucket: ResidualMassBucket) => void;
   onKeepUnknown: () => void;
 }) {
-  const [category, setCategory] = useState<ReadingDrawerCategory | "all">("all");
+  const doc = useAppStore((state) => state.doc);
+  const [category, setCategory] = useState<ReadingDrawerCategory | "all">(
+    "all",
+  );
   const [query, setQuery] = useState("");
   const items = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -54,7 +62,8 @@ export function ReadingDrawerSuggestionPanel({
         <div>
           <h3 className="text-sm font-semibold text-stone-950">候補提案</h3>
           <p className="mt-1 text-xs leading-5 text-stone-600">
-            未配分 {formatPercent(residualProbability)} を読みの引き出しから候補化します。
+            未配分 {formatPercent(residualProbability)}{" "}
+            を読みの引き出しから候補化します。
           </p>
         </div>
         <Button size="sm" onClick={onKeepUnknown}>
@@ -97,6 +106,7 @@ export function ReadingDrawerSuggestionPanel({
       <div className="grid max-h-80 gap-2 overflow-auto">
         {items.slice(0, 16).map((item) => {
           const probability = allocateProbability(item);
+          const scope = classifyReadingDrawerItemScope(doc, item.id);
           return (
             <article
               key={item.id}
@@ -108,8 +118,13 @@ export function ReadingDrawerSuggestionPanel({
                     <h4 className="text-sm font-semibold text-stone-950">
                       {item.label}
                     </h4>
-                    <Badge tone="cyan">
-                      {formatPercent(probability)}
+                    <Badge tone="cyan">{formatPercent(probability)}</Badge>
+                    <Badge>
+                      {scope === "sheet"
+                        ? "Sheet候補"
+                        : scope === "project"
+                          ? "Project候補"
+                          : "Global候補"}
                     </Badge>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-stone-600">
@@ -124,7 +139,9 @@ export function ReadingDrawerSuggestionPanel({
                     {formatScore(impact.magnitude)}
                   </Badge>
                 ))}
-                {item.caution ? <Badge tone="amber">{item.caution}</Badge> : null}
+                {item.caution ? (
+                  <Badge tone="amber">{item.caution}</Badge>
+                ) : null}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button

@@ -4,7 +4,9 @@ import {
   createId,
   createKnowledgeEdge,
   createKnowledgeNode,
+  createProject as createProjectRecord,
   createRule,
+  createSheet as createSheetRecord,
   inferLaneFromNodeType,
   nowIso,
 } from "../domain/factory";
@@ -16,13 +18,23 @@ import {
 import { edgeTypeLabels, nodeTypeLabels } from "../domain/labels";
 import type { MappingDraftNode } from "../domain/mappingTemplates";
 import { seedWorkspace } from "../domain/seed";
+import { applyTemplatesToSheet } from "../domain/templateCatalog";
+import {
+  addIdsToActiveSheet,
+  getActiveSheet,
+  removeIdsFromSheets,
+} from "../domain/projectSheets";
 import {
   caseLanes,
+  defaultGlobalSettings,
+  mergeTemplateSelectionOptions,
   normalizeWorkspaceDocument,
+  normalizeWorkspaceScopes,
   workspaceDocumentSchema,
   type CaseData,
   type CaseLane,
   type EdgeType,
+  type GlobalSettings,
   type KnowledgeEdge,
   type KnowledgeNode,
   type NodeType,
@@ -31,7 +43,9 @@ import {
   type RuleDefinition,
   type SavedView,
   type TeachingLog,
+  type TemplateSelectionOptions,
   type WorkspaceDocument,
+  type WorkspaceScopeMode,
 } from "../domain/schema";
 
 export type Screen =
@@ -44,6 +58,23 @@ export type Screen =
 export type SaveStatus = "loading" | "idle" | "saving" | "saved" | "error";
 
 type WorkspaceMutation = (doc: WorkspaceDocument) => WorkspaceDocument;
+
+export type CreateProjectInput = {
+  title: string;
+  description?: string;
+  tags?: string[];
+  createInitialSheet: boolean;
+  initialSheetTitle?: string;
+  templateOptions: TemplateSelectionOptions;
+};
+
+export type CreateSheetInput = {
+  projectId: string;
+  title: string;
+  description?: string;
+  tags?: string[];
+  templateOptions: TemplateSelectionOptions;
+};
 
 export const defaultAutoSaveIntervalMinutes = 5;
 const minAutoSaveIntervalMinutes = 1;
@@ -59,6 +90,7 @@ type AppState = {
   search: string;
   tagFilter: string[];
   nodeTypeFilter: NodeType[];
+  scopeMode: WorkspaceScopeMode;
   activeSavedViewId?: string;
   undoStack: WorkspaceDocument[];
   redoStack: WorkspaceDocument[];
@@ -73,6 +105,13 @@ type AppState = {
   setSaveStatus: (status: SaveStatus, message?: string) => void;
   markSaved: () => void;
   setAutoSaveIntervalMinutes: (minutes: number) => void;
+  setScopeMode: (mode: WorkspaceScopeMode) => void;
+  setActiveProject: (projectId: string) => void;
+  setActiveSheet: (sheetId: string) => void;
+  createProject: (input: CreateProjectInput) => void;
+  createSheet: (input: CreateSheetInput) => void;
+  updateGlobalSettings: (patch: Partial<GlobalSettings>) => void;
+  resetGlobalSettings: () => void;
   setSelection: (nodeIds: string[], edgeIds: string[]) => void;
   setSearch: (search: string) => void;
   toggleTagFilter: (tag: string) => void;
@@ -179,7 +218,9 @@ function commit(
   trackHistory = true,
 ) {
   const previous = get().doc;
-  const next = workspaceDocumentSchema.parse(touch(mutation(previous)));
+  const next = normalizeWorkspaceScopes(
+    workspaceDocumentSchema.parse(touch(mutation(previous))),
+  );
   const history = trackHistory
     ? [previous, ...get().undoStack].slice(0, historyLimit)
     : get().undoStack;
@@ -201,10 +242,38 @@ function removeIds(values: string[], idsToRemove: Set<string>): string[] {
 }
 
 function findActiveCase(doc: WorkspaceDocument): CaseData | undefined {
+  const activeSheet = getActiveSheet(doc);
+  if (activeSheet) {
+    const activeCaseInSheet = doc.cases.find(
+      (caseItem) =>
+        caseItem.id === doc.active_case_id &&
+        activeSheet.case_ids.includes(caseItem.id),
+    );
+    if (activeCaseInSheet) return activeCaseInSheet;
+    const firstSheetCase = doc.cases.find((caseItem) =>
+      activeSheet.case_ids.includes(caseItem.id),
+    );
+    if (firstSheetCase) return firstSheetCase;
+  }
   return (
     doc.cases.find((caseItem) => caseItem.id === doc.active_case_id) ??
     doc.cases[0]
   );
+}
+
+function firstCaseIdForSheet(
+  doc: WorkspaceDocument,
+  sheetId?: string,
+): string | undefined {
+  const sheet = doc.sheets.find((item) => item.id === sheetId);
+  return (
+    doc.cases.find((caseItem) => sheet?.case_ids.includes(caseItem.id))?.id ??
+    doc.cases[0]?.id
+  );
+}
+
+function tagsFromInput(tags?: string[]): string[] {
+  return unique((tags ?? []).map((tag) => tag.trim()));
 }
 
 function averagePosition(nodes: KnowledgeNode[]) {
@@ -323,6 +392,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   search: "",
   tagFilter: [],
   nodeTypeFilter: [],
+  scopeMode: "sheet",
   undoStack: [],
   redoStack: [],
   saveStatus: "loading",
@@ -357,6 +427,156 @@ export const useAppStore = create<AppState>((set, get) => ({
     const normalized = normalizeAutoSaveIntervalMinutes(minutes);
     writeAutoSaveIntervalMinutes(normalized);
     set({ autoSaveIntervalMinutes: normalized });
+  },
+  setScopeMode: (mode) => set({ scopeMode: mode }),
+  setActiveProject: (projectId) => {
+    commit(
+      set,
+      get,
+      (doc) => {
+        const project = doc.projects.find((item) => item.id === projectId);
+        if (!project) return doc;
+        const sheet =
+          doc.sheets.find(
+            (item) =>
+              item.project_id === project.id &&
+              (project.sheet_ids.length === 0 ||
+                project.sheet_ids.includes(item.id)),
+          ) ?? doc.sheets.find((item) => item.project_id === project.id);
+        return {
+          ...doc,
+          active_project_id: project.id,
+          active_sheet_id: sheet?.id,
+          active_case_id: firstCaseIdForSheet(doc, sheet?.id),
+        };
+      },
+      false,
+    );
+    set({ selectedNodeIds: [], selectedEdgeIds: [] });
+  },
+  setActiveSheet: (sheetId) => {
+    commit(
+      set,
+      get,
+      (doc) => {
+        const sheet = doc.sheets.find((item) => item.id === sheetId);
+        if (!sheet) return doc;
+        return {
+          ...doc,
+          active_project_id: sheet.project_id,
+          active_sheet_id: sheet.id,
+          active_case_id: firstCaseIdForSheet(doc, sheet.id),
+        };
+      },
+      false,
+    );
+    set({ selectedNodeIds: [], selectedEdgeIds: [] });
+  },
+  createProject: (input) => {
+    const title = input.title.trim();
+    if (!title) return;
+    const now = nowIso();
+    const projectId = createId("project");
+    const sheetId = input.createInitialSheet ? createId("sheet") : undefined;
+    const templateOptions = mergeTemplateSelectionOptions(
+      input.templateOptions,
+    );
+    commit(set, get, (doc) => {
+      const project = createProjectRecord({
+        id: projectId,
+        title,
+        description: input.description?.trim() ?? "",
+        tags: tagsFromInput(input.tags),
+        default_sheet_template_options: templateOptions,
+        sheet_ids: sheetId ? [sheetId] : [],
+        created_at: now,
+        updated_at: now,
+      });
+      const sheet = sheetId
+        ? createSheetRecord({
+            id: sheetId,
+            project_id: project.id,
+            title: input.initialSheetTitle?.trim() || `${title} Sheet`,
+            description: input.description?.trim() ?? "",
+            tags: tagsFromInput(input.tags),
+            created_at: now,
+            updated_at: now,
+          })
+        : undefined;
+      const baseDoc = {
+        ...doc,
+        projects: [...doc.projects, project],
+        sheets: sheet ? [...doc.sheets, sheet] : doc.sheets,
+        active_project_id: project.id,
+        active_sheet_id: sheet?.id,
+        active_case_id: undefined,
+      };
+      return sheet
+        ? applyTemplatesToSheet(baseDoc, sheet.id, templateOptions).doc
+        : baseDoc;
+    });
+    set({ selectedNodeIds: [], selectedEdgeIds: [], scopeMode: "sheet" });
+  },
+  createSheet: (input) => {
+    const title = input.title.trim();
+    if (!title) return;
+    const project = get().doc.projects.find(
+      (item) => item.id === input.projectId,
+    );
+    if (!project) return;
+    const now = nowIso();
+    const sheet = createSheetRecord({
+      project_id: project.id,
+      title,
+      description: input.description?.trim() ?? "",
+      tags: tagsFromInput(input.tags),
+      created_at: now,
+      updated_at: now,
+    });
+    const templateOptions = mergeTemplateSelectionOptions(
+      input.templateOptions,
+    );
+    commit(set, get, (doc) => {
+      const baseDoc = {
+        ...doc,
+        projects: doc.projects.map((item) =>
+          item.id === project.id
+            ? {
+                ...item,
+                sheet_ids: unique([...item.sheet_ids, sheet.id]),
+                updated_at: now,
+              }
+            : item,
+        ),
+        sheets: [...doc.sheets, sheet],
+        active_project_id: project.id,
+        active_sheet_id: sheet.id,
+        active_case_id: undefined,
+      };
+      return applyTemplatesToSheet(baseDoc, sheet.id, templateOptions).doc;
+    });
+    set({ selectedNodeIds: [], selectedEdgeIds: [], scopeMode: "sheet" });
+  },
+  updateGlobalSettings: (patch) => {
+    commit(set, get, (doc) => ({
+      ...doc,
+      global_settings: {
+        ...doc.global_settings,
+        ...patch,
+        project_creation_defaults: patch.project_creation_defaults
+          ? mergeTemplateSelectionOptions(patch.project_creation_defaults)
+          : doc.global_settings.project_creation_defaults,
+        sheet_creation_defaults: patch.sheet_creation_defaults
+          ? mergeTemplateSelectionOptions(patch.sheet_creation_defaults)
+          : doc.global_settings.sheet_creation_defaults,
+      },
+    }));
+  },
+  resetGlobalSettings: () => {
+    commit(set, get, (doc) => ({
+      ...doc,
+      global_settings: defaultGlobalSettings,
+    }));
   },
   setSelection: (nodeIds, edgeIds) => {
     const nextNodeIds = unique(nodeIds);
@@ -403,10 +623,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       node_type_filter: get().nodeTypeFilter,
       created_at: now,
     };
-    commit(set, get, (doc) => ({
-      ...doc,
-      saved_views: [...doc.saved_views, view],
-    }));
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        {
+          ...doc,
+          saved_views: [...doc.saved_views, view],
+        },
+        { savedViewIds: [view.id] },
+      ),
+    );
     set({ activeSavedViewId: view.id });
   },
   applySavedView: (id) => {
@@ -420,10 +645,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
   deleteSavedView: (id) => {
-    commit(set, get, (doc) => ({
-      ...doc,
-      saved_views: doc.saved_views.filter((view) => view.id !== id),
-    }));
+    commit(set, get, (doc) =>
+      removeIdsFromSheets(
+        {
+          ...doc,
+          saved_views: doc.saved_views.filter((view) => view.id !== id),
+        },
+        { savedViewIds: new Set([id]) },
+      ),
+    );
     if (get().activeSavedViewId === id) set({ activeSavedViewId: undefined });
   },
   addNode: (type) => {
@@ -438,7 +668,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       created.position,
       get().doc.nodes,
     );
-    commit(set, get, (doc) => ({ ...doc, nodes: [...doc.nodes, created] }));
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        { ...doc, nodes: [...doc.nodes, created] },
+        { nodeIds: [created.id] },
+      ),
+    );
     set({ selectedNodeIds: [created.id], selectedEdgeIds: [] });
   },
   createKnowledgeNodesFromDrafts: (drafts, attachToActiveCase = false) => {
@@ -487,35 +722,40 @@ export const useAppStore = create<AppState>((set, get) => ({
       created.push(nodeItem);
     }
 
-    const activeCaseId = get().doc.active_case_id ?? get().doc.cases[0]?.id;
-    commit(set, get, (doc) => ({
-      ...doc,
-      nodes: [...doc.nodes, ...created],
-      cases:
-        attachToActiveCase && activeCaseId
-          ? doc.cases.map((caseItem) =>
-              caseItem.id === activeCaseId
-                ? {
-                    ...caseItem,
-                    attached_node_ids: unique([
-                      ...caseItem.attached_node_ids,
-                      ...created.map((node) => node.id),
-                    ]),
-                    lane_assignments: {
-                      ...caseItem.lane_assignments,
-                      ...Object.fromEntries(
-                        created.map((node) => [
-                          node.id,
-                          inferLaneFromNodeType(node.type),
+    const activeCaseId = findActiveCase(get().doc)?.id;
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        {
+          ...doc,
+          nodes: [...doc.nodes, ...created],
+          cases:
+            attachToActiveCase && activeCaseId
+              ? doc.cases.map((caseItem) =>
+                  caseItem.id === activeCaseId
+                    ? {
+                        ...caseItem,
+                        attached_node_ids: unique([
+                          ...caseItem.attached_node_ids,
+                          ...created.map((node) => node.id),
                         ]),
-                      ),
-                    },
-                    updated_at: nowIso(),
-                  }
-                : caseItem,
-            )
-          : doc.cases,
-    }));
+                        lane_assignments: {
+                          ...caseItem.lane_assignments,
+                          ...Object.fromEntries(
+                            created.map((node) => [
+                              node.id,
+                              inferLaneFromNodeType(node.type),
+                            ]),
+                          ),
+                        },
+                        updated_at: nowIso(),
+                      }
+                    : caseItem,
+                )
+              : doc.cases,
+        },
+        { nodeIds: created.map((node) => node.id) },
+      ),
+    );
     set({
       selectedNodeIds: created.map((node) => node.id),
       selectedEdgeIds: [],
@@ -525,13 +765,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     let createdNodeIds: string[] = [];
     const effectiveDraft = {
       ...draft,
-      attach_to_active_case:
-        attachToActiveCase ?? draft.attach_to_active_case,
+      attach_to_active_case: attachToActiveCase ?? draft.attach_to_active_case,
     };
     commit(set, get, (doc) => {
       const preview = buildReadingImpactPreview(doc, effectiveDraft);
       createdNodeIds = preview.createdNodeIds;
-      return preview.nextDoc;
+      return addIdsToActiveSheet(preview.nextDoc, {
+        nodeIds: preview.createdNodeIds,
+        edgeIds: preview.createdEdgeIds,
+      });
     });
     set({
       selectedNodeIds: createdNodeIds,
@@ -562,7 +804,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       );
       copies.push(copy);
     }
-    commit(set, get, (doc) => ({ ...doc, nodes: [...doc.nodes, ...copies] }));
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        { ...doc, nodes: [...doc.nodes, ...copies] },
+        { nodeIds: copies.map((node) => node.id) },
+      ),
+    );
     set({
       selectedNodeIds: copies.map((node) => node.id),
       selectedEdgeIds: [],
@@ -578,33 +825,38 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (nodeIds.has(edgeItem.source) || nodeIds.has(edgeItem.target))
           edgesToRemove.add(edgeItem.id);
       }
-      return {
-        ...doc,
-        nodes: doc.nodes
-          .filter((node) => !nodeIds.has(node.id))
-          .map((node) => ({
-            ...node,
-            group_id:
-              node.group_id && nodeIds.has(node.group_id)
-                ? undefined
-                : node.group_id,
-          })),
-        edges: doc.edges.filter((edgeItem) => !edgesToRemove.has(edgeItem.id)),
-        cases: doc.cases.map((caseItem) => ({
-          ...caseItem,
-          attached_node_ids: removeIds(caseItem.attached_node_ids, nodeIds),
-          selected_rule_ids: caseItem.selected_rule_ids,
-          lane_assignments: Object.fromEntries(
-            Object.entries(caseItem.lane_assignments).filter(
-              ([nodeId]) => !nodeIds.has(nodeId),
-            ),
+      return removeIdsFromSheets(
+        {
+          ...doc,
+          nodes: doc.nodes
+            .filter((node) => !nodeIds.has(node.id))
+            .map((node) => ({
+              ...node,
+              group_id:
+                node.group_id && nodeIds.has(node.group_id)
+                  ? undefined
+                  : node.group_id,
+            })),
+          edges: doc.edges.filter(
+            (edgeItem) => !edgesToRemove.has(edgeItem.id),
           ),
-        })),
-        rules: doc.rules.map((ruleItem) => ({
-          ...ruleItem,
-          target_node_ids: removeIds(ruleItem.target_node_ids, nodeIds),
-        })),
-      };
+          cases: doc.cases.map((caseItem) => ({
+            ...caseItem,
+            attached_node_ids: removeIds(caseItem.attached_node_ids, nodeIds),
+            selected_rule_ids: caseItem.selected_rule_ids,
+            lane_assignments: Object.fromEntries(
+              Object.entries(caseItem.lane_assignments).filter(
+                ([nodeId]) => !nodeIds.has(nodeId),
+              ),
+            ),
+          })),
+          rules: doc.rules.map((ruleItem) => ({
+            ...ruleItem,
+            target_node_ids: removeIds(ruleItem.target_node_ids, nodeIds),
+          })),
+        },
+        { nodeIds, edgeIds: edgesToRemove },
+      );
     });
     set({ selectedNodeIds: [], selectedEdgeIds: [] });
   },
@@ -626,17 +878,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().doc.nodes,
     );
     const selectedIds = new Set(selected.map((node) => node.id));
-    commit(set, get, (doc) => ({
-      ...doc,
-      nodes: [
-        ...doc.nodes.map((node) =>
-          selectedIds.has(node.id)
-            ? { ...node, group_id: group.id, updated_at: nowIso() }
-            : node,
-        ),
-        group,
-      ],
-    }));
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        {
+          ...doc,
+          nodes: [
+            ...doc.nodes.map((node) =>
+              selectedIds.has(node.id)
+                ? { ...node, group_id: group.id, updated_at: nowIso() }
+                : node,
+            ),
+            group,
+          ],
+        },
+        { nodeIds: [group.id] },
+      ),
+    );
     set({ selectedNodeIds: [group.id], selectedEdgeIds: [] });
   },
   toggleGroupCollapsed: (id) => {
@@ -697,7 +954,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       type,
       label: edgeTypeLabels[type],
     });
-    commit(set, get, (doc) => ({ ...doc, edges: [...doc.edges, edgeItem] }));
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        { ...doc, edges: [...doc.edges, edgeItem] },
+        { edgeIds: [edgeItem.id] },
+      ),
+    );
     set({ selectedNodeIds: [], selectedEdgeIds: [edgeItem.id] });
   },
   updateEdge: (id, patch) => {
@@ -711,21 +973,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
   deleteEdge: (id) => {
-    commit(set, get, (doc) => ({
-      ...doc,
-      edges: doc.edges.filter((edgeItem) => edgeItem.id !== id),
-    }));
+    commit(set, get, (doc) =>
+      removeIdsFromSheets(
+        {
+          ...doc,
+          edges: doc.edges.filter((edgeItem) => edgeItem.id !== id),
+        },
+        { edgeIds: new Set([id]) },
+      ),
+    );
     set({
       selectedEdgeIds: get().selectedEdgeIds.filter((edgeId) => edgeId !== id),
     });
   },
   addCase: () => {
     const created = createCase({ title: "新しいケース" });
-    commit(set, get, (doc) => ({
-      ...doc,
-      cases: [...doc.cases, created],
-      active_case_id: created.id,
-    }));
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        {
+          ...doc,
+          cases: [...doc.cases, created],
+          active_case_id: created.id,
+        },
+        { caseIds: [created.id] },
+      ),
+    );
   },
   setActiveCase: (id) => {
     commit(
@@ -809,7 +1081,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   addRule: () => {
     const created = createRule({ name: "新しいルール", category: "mixed" });
-    commit(set, get, (doc) => ({ ...doc, rules: [...doc.rules, created] }));
+    commit(set, get, (doc) =>
+      addIdsToActiveSheet(
+        { ...doc, rules: [...doc.rules, created] },
+        { ruleIds: [created.id] },
+      ),
+    );
   },
   updateRule: (id, patch) => {
     commit(set, get, (doc) => ({
@@ -836,18 +1113,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   deleteRule: (id) => {
     const idSet = new Set([id]);
-    commit(set, get, (doc) => ({
-      ...doc,
-      rules: doc.rules.filter((ruleItem) => ruleItem.id !== id),
-      nodes: doc.nodes.map((node) => ({
-        ...node,
-        related_rule_ids: removeIds(node.related_rule_ids, idSet),
-      })),
-      cases: doc.cases.map((caseItem) => ({
-        ...caseItem,
-        selected_rule_ids: removeIds(caseItem.selected_rule_ids, idSet),
-      })),
-    }));
+    commit(set, get, (doc) =>
+      removeIdsFromSheets(
+        {
+          ...doc,
+          rules: doc.rules.filter((ruleItem) => ruleItem.id !== id),
+          nodes: doc.nodes.map((node) => ({
+            ...node,
+            related_rule_ids: removeIds(node.related_rule_ids, idSet),
+          })),
+          cases: doc.cases.map((caseItem) => ({
+            ...caseItem,
+            selected_rule_ids: removeIds(caseItem.selected_rule_ids, idSet),
+          })),
+        },
+        { ruleIds: idSet },
+      ),
+    );
   },
   createChoiceGroupFromSelection: () => {
     const selected = get().doc.nodes.filter((node) =>

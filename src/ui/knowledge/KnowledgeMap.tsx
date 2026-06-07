@@ -30,11 +30,7 @@ import {
   resolveNonOverlappingNodePosition,
   useAppStore,
 } from "../../app/store";
-import {
-  edgeTypeLabels,
-  labelTag,
-  nodeTypeLabels,
-} from "../../domain/labels";
+import { edgeTypeLabels, labelTag, nodeTypeLabels } from "../../domain/labels";
 import {
   createDomainLensSelection,
   domainLensDefinitions,
@@ -45,6 +41,7 @@ import {
   type EdgeType,
   type KnowledgeNode,
 } from "../../domain/schema";
+import { getScopedWorkspace } from "../../domain/projectSheets";
 import { cn } from "../../shared/cn";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
@@ -172,6 +169,7 @@ export function KnowledgeMap() {
 
 function KnowledgeMapInner() {
   const doc = useAppStore((state) => state.doc);
+  const scopeMode = useAppStore((state) => state.scopeMode);
   const search = useAppStore((state) => state.search);
   const tagFilter = useAppStore((state) => state.tagFilter);
   const nodeTypeFilter = useAppStore((state) => state.nodeTypeFilter);
@@ -207,22 +205,26 @@ function KnowledgeMapInner() {
   const [activeLens, setActiveLens] = useState<DomainLensId>("all");
   const [legendCollapsed, setLegendCollapsed] = useState(false);
   const [guideCollapsed, setGuideCollapsed] = useState(true);
+  const scopedDoc = useMemo(
+    () => getScopedWorkspace(doc, scopeMode),
+    [doc, scopeMode],
+  );
 
   const allTags = useMemo(
     () =>
-      Array.from(new Set(doc.nodes.flatMap((node) => node.tags))).sort((a, b) =>
-        a.localeCompare(b),
+      Array.from(new Set(scopedDoc.nodes.flatMap((node) => node.tags))).sort(
+        (a, b) => a.localeCompare(b),
       ),
-    [doc.nodes],
+    [scopedDoc.nodes],
   );
 
   const visible = useMemo(() => {
     const collapsedGroupIds = new Set(
-      doc.nodes
+      scopedDoc.nodes
         .filter((node) => node.is_group && node.collapsed)
         .map((node) => node.id),
     );
-    const lensSelection = createDomainLensSelection(activeLens, doc);
+    const lensSelection = createDomainLensSelection(activeLens, scopedDoc);
     const text = search.trim().toLowerCase();
     const matches = (node: KnowledgeNode) => {
       if (node.group_id && collapsedGroupIds.has(node.group_id)) return false;
@@ -246,16 +248,16 @@ function KnowledgeMapInner() {
         .toLowerCase()
         .includes(text);
     };
-    const nodes = doc.nodes.filter(matches);
+    const nodes = scopedDoc.nodes.filter(matches);
     const nodeIds = new Set(nodes.map((node) => node.id));
-    const edges = doc.edges.filter(
+    const edges = scopedDoc.edges.filter(
       (edge) =>
         lensSelection.edgeIds.has(edge.id) &&
         nodeIds.has(edge.source) &&
         nodeIds.has(edge.target),
     );
     return { nodes, edges };
-  }, [activeLens, doc, nodeTypeFilter, search, tagFilter]);
+  }, [activeLens, nodeTypeFilter, scopedDoc, search, tagFilter]);
 
   const flowNodes = useMemo<KnowledgeMapNodeType[]>(() => {
     const nodes: KnowledgeMapNodeType[] = visible.nodes.map((node) => ({

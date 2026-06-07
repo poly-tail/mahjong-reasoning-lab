@@ -19,6 +19,11 @@ import {
 } from "../../domain/labels";
 import { decisionPipelineSteps } from "../../domain/mahjongTaxonomy";
 import {
+  classifyNodeScope,
+  getActiveSheet,
+  getProjectNodeIds,
+} from "../../domain/projectSheets";
+import {
   caseLanes,
   type CaseData,
   type CaseLane,
@@ -74,10 +79,27 @@ export function CaseWorkspace() {
   const [nodeSearch, setNodeSearch] = useState("");
   const [viewMode, setViewMode] = useState<CaseViewMode>("lanes");
   const [exceptionLibraryVisible, setExceptionLibraryVisible] = useState(false);
+  const activeSheet = getActiveSheet(doc);
+  const activeSheetCaseIds = useMemo(
+    () => new Set(activeSheet?.case_ids ?? []),
+    [activeSheet],
+  );
+  const orderedCases = useMemo(() => {
+    const sheetCases = doc.cases.filter((caseItem) =>
+      activeSheetCaseIds.has(caseItem.id),
+    );
+    const otherCases = doc.cases.filter(
+      (caseItem) => !activeSheetCaseIds.has(caseItem.id),
+    );
+    return [...sheetCases, ...otherCases];
+  }, [activeSheetCaseIds, doc.cases]);
 
   const activeCase =
-    doc.cases.find((caseItem) => caseItem.id === doc.active_case_id) ??
-    doc.cases[0];
+    orderedCases.find(
+      (caseItem) =>
+        caseItem.id === doc.active_case_id &&
+        (activeSheetCaseIds.size === 0 || activeSheetCaseIds.has(caseItem.id)),
+    ) ?? orderedCases[0];
 
   const attachedNodes = useMemo(() => {
     if (!activeCase) return [];
@@ -101,6 +123,8 @@ export function CaseWorkspace() {
       .toLowerCase();
     const searchText = nodeSearch.trim().toLowerCase();
     const attachedNeighborIds = new Set<string>();
+    const activeSheetNodeIds = new Set(activeSheet?.node_ids ?? []);
+    const projectNodeIds = getProjectNodeIds(doc);
     for (const edge of doc.edges) {
       if (attachedIds.has(edge.source)) attachedNeighborIds.add(edge.target);
       if (attachedIds.has(edge.target)) attachedNeighborIds.add(edge.source);
@@ -110,6 +134,8 @@ export function CaseWorkspace() {
       .filter((node) => !attachedIds.has(node.id))
       .map((node) => {
         let score = 0;
+        if (activeSheetNodeIds.has(node.id)) score += 4;
+        else if (projectNodeIds.has(node.id)) score += 2;
         if (attachedNeighborIds.has(node.id)) score += 2;
         if (caseText.includes(node.title.toLowerCase())) score += 2;
         for (const tag of node.tags) {
@@ -127,14 +153,14 @@ export function CaseWorkspace() {
           if (!haystack.includes(searchText)) score -= 10;
           else score += 3;
         }
-        return { node, score };
+        return { node, score, scope: classifyNodeScope(doc, node.id) };
       })
       .filter((item) => item.score > -1)
       .sort(
         (a, b) => b.score - a.score || a.node.title.localeCompare(b.node.title),
       )
       .slice(0, 12);
-  }, [activeCase, doc.edges, doc.nodes, nodeSearch]);
+  }, [activeCase, activeSheet, doc, nodeSearch]);
 
   if (!activeCase) {
     return (
@@ -158,7 +184,7 @@ export function CaseWorkspace() {
   };
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(0,1fr)_320px] gap-3 p-3">
+    <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(0,1fr)_320px] gap-3 overflow-hidden p-3">
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
         <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
           <h2 className="text-sm font-semibold text-stone-950">局面作業場</h2>
@@ -173,7 +199,7 @@ export function CaseWorkspace() {
               value={activeCase.id}
               onChange={(event) => setActiveCase(event.target.value)}
             >
-              {doc.cases.map((caseItem) => (
+              {orderedCases.map((caseItem) => (
                 <option key={caseItem.id} value={caseItem.id}>
                   {caseItem.title}
                 </option>
@@ -312,7 +338,7 @@ export function CaseWorkspace() {
         </div>
       </aside>
 
-      <main className="flex min-h-0 flex-col gap-3">
+      <main className="flex min-h-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1">
         <QuickReadingInputPanel />
 
         <section className="rounded-lg border border-stone-200 bg-white">
@@ -371,8 +397,8 @@ export function CaseWorkspace() {
                   activeCase={activeCase}
                   nodes={attachedNodes.filter(
                     (node) =>
-                      (activeCase.lane_assignments[node.id] ??
-                        "hypothesis") === lane,
+                      (activeCase.lane_assignments[node.id] ?? "hypothesis") ===
+                      lane,
                   )}
                   allAttachedNodes={attachedNodes}
                   edges={doc.edges}
@@ -411,7 +437,9 @@ export function CaseWorkspace() {
               [],
             );
           }}
-          onOpenExceptionLibrary={() => setExceptionLibraryVisible((value) => !value)}
+          onOpenExceptionLibrary={() =>
+            setExceptionLibraryVisible((value) => !value)
+          }
           onKeepUnknown={(groupId) => {
             setSelection(
               attachedNodes
@@ -479,7 +507,7 @@ export function CaseWorkspace() {
           </div>
         </div>
         <div className="grid gap-2 p-2">
-          {candidates.map(({ node, score }) => (
+          {candidates.map(({ node, score, scope }) => (
             <div
               key={node.id}
               className="rounded-lg border border-stone-200 p-2"
@@ -491,6 +519,13 @@ export function CaseWorkspace() {
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1">
                     <Badge tone="cyan">{nodeTypeLabels[node.type]}</Badge>
+                    <Badge>
+                      {scope === "sheet"
+                        ? "Sheet"
+                        : scope === "project"
+                          ? "Project"
+                          : "Global"}
+                    </Badge>
                     <Badge>{score}</Badge>
                   </div>
                 </div>
@@ -639,7 +674,9 @@ function DecisionPipelineBoard({
 }) {
   const grouped = decisionPipelineSteps.map((step) => ({
     ...step,
-    nodes: nodes.filter((node) => nodeMatchesPipelineStep(node, step.id, edges, activeCase)),
+    nodes: nodes.filter((node) =>
+      nodeMatchesPipelineStep(node, step.id, edges, activeCase),
+    ),
   }));
 
   return (
@@ -777,7 +814,9 @@ function MissingElementsPanel({
     ],
     [
       "hard prune されそうだが ambiguity が高い",
-      nodes.some((node) => node.pruning_hints.includes("hard_gate_candidate")) &&
+      nodes.some((node) =>
+        node.pruning_hints.includes("hard_gate_candidate"),
+      ) &&
         caseInfluenceEdges.some(
           (edge) => edge.sign === "mixed" || edge.sign === "unknown",
         ),
@@ -890,11 +929,14 @@ function NumericReadingSummaryPanel({
                     <div className="mt-1 flex flex-wrap gap-1">
                       <Badge>{Math.round(node.confidence * 100)}%</Badge>
                       {node.prior_probability !== undefined ? (
-                        <Badge>prior {formatProbability(node.prior_probability)}</Badge>
+                        <Badge>
+                          prior {formatProbability(node.prior_probability)}
+                        </Badge>
                       ) : null}
                       {node.posterior_probability !== undefined ? (
                         <Badge>
-                          posterior {formatProbability(node.posterior_probability)}
+                          posterior{" "}
+                          {formatProbability(node.posterior_probability)}
                         </Badge>
                       ) : null}
                       {node.base_weight !== undefined ? (
@@ -904,12 +946,17 @@ function NumericReadingSummaryPanel({
                         <Badge>dyn {node.dynamic_weight}</Badge>
                       ) : null}
                       {node.lock_mode !== "none" ? (
-                        <Badge tone="amber">{lockModeLabels[node.lock_mode]}</Badge>
+                        <Badge tone="amber">
+                          {lockModeLabels[node.lock_mode]}
+                        </Badge>
                       ) : null}
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-1">
-                    <Button size="sm" onClick={() => onOpenProbability(node.id)}>
+                    <Button
+                      size="sm"
+                      onClick={() => onOpenProbability(node.id)}
+                    >
                       確率画面で調整
                     </Button>
                     <Button
@@ -977,8 +1024,9 @@ function nodeMatchesPipelineStep(
   }
   if (stepId === "compare") {
     return (
-      ["choice_group", "branch", "hypothesis", "scenario"].includes(node.type) ||
-      hasTag(["compare", "choice-group"])
+      ["choice_group", "branch", "hypothesis", "scenario"].includes(
+        node.type,
+      ) || hasTag(["compare", "choice-group"])
     );
   }
   if (stepId === "choose") {

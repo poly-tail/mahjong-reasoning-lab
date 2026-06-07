@@ -6,13 +6,16 @@ import {
   useState,
   type ChangeEvent,
   type ComponentType,
+  type FormEvent,
   type ReactNode,
 } from "react";
 import {
   Braces,
   ClipboardList,
   Database,
+  FilePlus,
   FlaskConical,
+  FolderPlus,
   GitFork,
   GraduationCap,
   Map,
@@ -20,11 +23,29 @@ import {
   Save,
   Settings2,
   Undo2,
+  X,
 } from "lucide-react";
-import { useAppStore, type Screen } from "./store";
+import {
+  useAppStore,
+  type CreateProjectInput,
+  type CreateSheetInput,
+  type Screen,
+} from "./store";
 import { loadWorkspace, saveWorkspace } from "../infrastructure/db";
+import { getActiveProject, getActiveSheet } from "../domain/projectSheets";
+import { getTemplateCatalog } from "../domain/templateCatalog";
+import {
+  defaultGlobalSettings,
+  emptyTemplateSelectionOptions,
+  mergeTemplateSelectionOptions,
+  type GlobalSettings,
+  type TemplateSelectionOptions,
+  type WorkspaceDocument,
+  type WorkspaceScopeMode,
+} from "../domain/schema";
 import { cn } from "../shared/cn";
 import { Button } from "../ui/components/button";
+import { Field, Input, Select, Textarea } from "../ui/components/form";
 import { CaseWorkspace } from "../ui/case/CaseWorkspace";
 import { ImportExportPanel } from "../ui/io/ImportExportPanel";
 import { InfluenceWorkbench } from "../ui/influence/InfluenceWorkbench";
@@ -66,6 +87,7 @@ type TheoryWorkspaceTab = "inbox" | "map" | "hand" | "rescue" | "rules";
 type PruningWorkspaceTab = "probability" | "influence" | "lab";
 
 const autoSaveIntervalOptions = [1, 5, 10, 15, 30, 60];
+const templateCatalog = getTemplateCatalog();
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -100,6 +122,16 @@ export function AppShell() {
   );
   const undo = useAppStore((state) => state.undo);
   const redo = useAppStore((state) => state.redo);
+  const scopeMode = useAppStore((state) => state.scopeMode);
+  const setScopeMode = useAppStore((state) => state.setScopeMode);
+  const setActiveProject = useAppStore((state) => state.setActiveProject);
+  const setActiveSheet = useAppStore((state) => state.setActiveSheet);
+  const createProject = useAppStore((state) => state.createProject);
+  const createSheet = useAppStore((state) => state.createSheet);
+  const updateGlobalSettings = useAppStore(
+    (state) => state.updateGlobalSettings,
+  );
+  const resetGlobalSettings = useAppStore((state) => state.resetGlobalSettings);
   const loaded = useRef(false);
   const saving = useRef(false);
   const docRef = useRef(doc);
@@ -107,6 +139,9 @@ export function AppShell() {
   const [theoryTab, setTheoryTab] = useState<TheoryWorkspaceTab>("inbox");
   const [pruningTab, setPruningTab] =
     useState<PruningWorkspaceTab>("probability");
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [sheetDialogOpen, setSheetDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
 
   useEffect(() => {
     docRef.current = doc;
@@ -224,6 +259,8 @@ export function AppShell() {
 
   const activeNavItem =
     navItems.find((item) => item.screen === activeScreen) ?? navItems[0];
+  const activeProject = getActiveProject(doc);
+  const activeSheet = getActiveSheet(doc);
 
   const renderActiveScreen = () => {
     if (activeScreen === "case") {
@@ -266,7 +303,7 @@ export function AppShell() {
   };
 
   return (
-    <div className="flex h-screen min-h-[720px] flex-col bg-stone-100 text-stone-900">
+    <div className="flex h-screen min-h-[720px] flex-col overflow-hidden bg-stone-100 text-stone-900">
       <header className="flex min-h-14 items-center justify-between gap-3 border-b border-stone-300 bg-white px-3">
         <div className="flex shrink-0 items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-700 bg-cyan-700 text-white">
@@ -361,12 +398,64 @@ export function AppShell() {
         </div>
       ) : null}
 
+      <WorkspaceScopeBar
+        doc={doc}
+        activeProjectId={activeProject?.id}
+        activeSheetId={activeSheet?.id}
+        scopeMode={scopeMode}
+        onProjectChange={setActiveProject}
+        onSheetChange={setActiveSheet}
+        onScopeChange={setScopeMode}
+        onCreateProject={() => setProjectDialogOpen(true)}
+        onCreateSheet={() => setSheetDialogOpen(true)}
+        onOpenSettings={() => setSettingsDialogOpen(true)}
+      />
+
       <PurposeFrame
         title={activeNavItem.label}
         description={purposeDescriptions[activeNavItem.screen]}
       >
         {renderActiveScreen()}
       </PurposeFrame>
+
+      {projectDialogOpen ? (
+        <ProjectDialog
+          defaults={doc.global_settings}
+          onClose={() => setProjectDialogOpen(false)}
+          onCreate={(input) => {
+            createProject(input);
+            setProjectDialogOpen(false);
+          }}
+        />
+      ) : null}
+
+      {sheetDialogOpen ? (
+        <SheetDialog
+          doc={doc}
+          defaults={doc.global_settings}
+          activeProjectId={activeProject?.id}
+          onClose={() => setSheetDialogOpen(false)}
+          onCreate={(input) => {
+            createSheet(input);
+            setSheetDialogOpen(false);
+          }}
+        />
+      ) : null}
+
+      {settingsDialogOpen ? (
+        <GlobalSettingsDialog
+          settings={doc.global_settings}
+          onClose={() => setSettingsDialogOpen(false)}
+          onSave={(settings) => {
+            updateGlobalSettings(settings);
+            setSettingsDialogOpen(false);
+          }}
+          onReset={() => {
+            resetGlobalSettings();
+            setSettingsDialogOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -381,8 +470,8 @@ function PurposeFrame({
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <section className="border-b border-stone-200 bg-white px-4 py-3">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <section className="shrink-0 border-b border-stone-200 bg-white px-4 py-3">
         <p className="text-xs font-semibold text-cyan-700">
           この画面でできること
         </p>
@@ -395,9 +484,494 @@ function PurposeFrame({
           </p>
         </div>
       </section>
-      {children}
+      <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
     </div>
   );
+}
+
+function WorkspaceScopeBar({
+  doc,
+  activeProjectId,
+  activeSheetId,
+  scopeMode,
+  onProjectChange,
+  onSheetChange,
+  onScopeChange,
+  onCreateProject,
+  onCreateSheet,
+  onOpenSettings,
+}: {
+  doc: WorkspaceDocument;
+  activeProjectId?: string;
+  activeSheetId?: string;
+  scopeMode: WorkspaceScopeMode;
+  onProjectChange: (projectId: string) => void;
+  onSheetChange: (sheetId: string) => void;
+  onScopeChange: (mode: WorkspaceScopeMode) => void;
+  onCreateProject: () => void;
+  onCreateSheet: () => void;
+  onOpenSettings: () => void;
+}) {
+  const projectSheets = doc.sheets.filter(
+    (sheet) => sheet.project_id === activeProjectId,
+  );
+  return (
+    <section className="flex min-h-12 flex-wrap items-center gap-2 border-b border-stone-200 bg-stone-50 px-3 py-2 text-sm">
+      <label className="flex min-w-48 items-center gap-2">
+        <span className="text-xs font-semibold text-stone-500">Project</span>
+        <Select
+          className="min-w-40"
+          value={activeProjectId ?? ""}
+          onChange={(event) => onProjectChange(event.target.value)}
+        >
+          {doc.projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.title}
+            </option>
+          ))}
+        </Select>
+      </label>
+      <label className="flex min-w-48 items-center gap-2">
+        <span className="text-xs font-semibold text-stone-500">Sheet</span>
+        <Select
+          className="min-w-40"
+          value={activeSheetId ?? ""}
+          onChange={(event) => onSheetChange(event.target.value)}
+          disabled={projectSheets.length === 0}
+        >
+          {projectSheets.length === 0 ? (
+            <option value="">Sheetなし</option>
+          ) : null}
+          {projectSheets.map((sheet) => (
+            <option key={sheet.id} value={sheet.id}>
+              {sheet.title}
+            </option>
+          ))}
+        </Select>
+      </label>
+      <div className="flex items-center gap-1">
+        <Button size="sm" onClick={onCreateProject}>
+          <FolderPlus className="h-4 w-4" aria-hidden="true" />
+          Project
+        </Button>
+        <Button size="sm" onClick={onCreateSheet} disabled={!activeProjectId}>
+          <FilePlus className="h-4 w-4" aria-hidden="true" />
+          Sheet
+        </Button>
+      </div>
+      <div className="ml-auto flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-xs font-semibold text-stone-500">
+          表示スコープ
+        </span>
+        {(
+          [
+            ["sheet", "Sheet"],
+            ["project", "Project"],
+            ["workspace", "Workspace"],
+          ] as const
+        ).map(([mode, label]) => (
+          <Button
+            key={mode}
+            size="sm"
+            variant={scopeMode === mode ? "primary" : "secondary"}
+            onClick={() => onScopeChange(mode)}
+            aria-pressed={scopeMode === mode}
+          >
+            {label}
+          </Button>
+        ))}
+        <Button size="icon" variant="ghost" onClick={onOpenSettings}>
+          <Settings2 className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function WorkspaceModal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-stone-950/30 px-4 py-8">
+      <section className="max-h-[calc(100vh-4rem)] w-full max-w-2xl overflow-hidden rounded-lg border border-stone-200 bg-white shadow-xl">
+        <div className="flex h-11 items-center justify-between border-b border-stone-200 px-4">
+          <h2 className="text-sm font-semibold text-stone-950">{title}</h2>
+          <Button size="icon" variant="ghost" onClick={onClose}>
+            <X className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </div>
+        <div className="max-h-[calc(100vh-7rem)] overflow-y-auto overflow-x-hidden p-4">
+          {children}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ProjectDialog({
+  defaults,
+  onCreate,
+  onClose,
+}: {
+  defaults: GlobalSettings;
+  onCreate: (input: CreateProjectInput) => void;
+  onClose: () => void;
+}) {
+  const initialEmpty = defaults.create_empty_project_by_default;
+  const [title, setTitle] = useState("新規Project");
+  const [description, setDescription] = useState("");
+  const [tags, setTags] = useState("");
+  const [createInitialSheet, setCreateInitialSheet] = useState(true);
+  const [sheetTitle, setSheetTitle] = useState("Main Sheet");
+  const [empty, setEmpty] = useState(initialEmpty);
+  const [templateOptions, setTemplateOptions] = useState(
+    initialEmpty
+      ? emptyTemplateSelectionOptions()
+      : mergeTemplateSelectionOptions(defaults.project_creation_defaults),
+  );
+
+  const handleEmptyChange = (checked: boolean) => {
+    setEmpty(checked);
+    setTemplateOptions(
+      checked
+        ? emptyTemplateSelectionOptions()
+        : mergeTemplateSelectionOptions(defaults.project_creation_defaults),
+    );
+  };
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    onCreate({
+      title,
+      description,
+      tags: splitTags(tags),
+      createInitialSheet,
+      initialSheetTitle: sheetTitle,
+      templateOptions,
+    });
+  };
+
+  return (
+    <WorkspaceModal title="Projectを作成" onClose={onClose}>
+      <form className="grid gap-3" onSubmit={handleSubmit}>
+        <Field label="Project名">
+          <Input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+        </Field>
+        <Field label="説明">
+          <Textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </Field>
+        <Field label="タグ" hint="カンマ区切り">
+          <Input
+            value={tags}
+            onChange={(event) => setTags(event.target.value)}
+          />
+        </Field>
+        <label className="flex items-center gap-2 text-sm text-stone-700">
+          <input
+            type="checkbox"
+            checked={createInitialSheet}
+            onChange={(event) => setCreateInitialSheet(event.target.checked)}
+          />
+          初期Sheetを作成
+        </label>
+        {createInitialSheet ? (
+          <Field label="初期Sheet名">
+            <Input
+              value={sheetTitle}
+              onChange={(event) => setSheetTitle(event.target.value)}
+            />
+          </Field>
+        ) : null}
+        <TemplateOptionsEditor
+          title="初期テンプレート"
+          empty={empty}
+          options={templateOptions}
+          onEmptyChange={handleEmptyChange}
+          onOptionsChange={setTemplateOptions}
+        />
+        <DialogActions onClose={onClose} submitLabel="作成" />
+      </form>
+    </WorkspaceModal>
+  );
+}
+
+function SheetDialog({
+  doc,
+  defaults,
+  activeProjectId,
+  onCreate,
+  onClose,
+}: {
+  doc: WorkspaceDocument;
+  defaults: GlobalSettings;
+  activeProjectId?: string;
+  onCreate: (input: CreateSheetInput) => void;
+  onClose: () => void;
+}) {
+  const initialEmpty = defaults.create_empty_sheet_by_default;
+  const [projectId, setProjectId] = useState(
+    activeProjectId ?? doc.projects[0]?.id ?? "",
+  );
+  const [title, setTitle] = useState("新規Sheet");
+  const [description, setDescription] = useState("");
+  const [tags, setTags] = useState("");
+  const [empty, setEmpty] = useState(initialEmpty);
+  const [templateOptions, setTemplateOptions] = useState(
+    initialEmpty
+      ? emptyTemplateSelectionOptions()
+      : mergeTemplateSelectionOptions(defaults.sheet_creation_defaults),
+  );
+
+  const handleEmptyChange = (checked: boolean) => {
+    setEmpty(checked);
+    setTemplateOptions(
+      checked
+        ? emptyTemplateSelectionOptions()
+        : mergeTemplateSelectionOptions(defaults.sheet_creation_defaults),
+    );
+  };
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!projectId) return;
+    onCreate({
+      projectId,
+      title,
+      description,
+      tags: splitTags(tags),
+      templateOptions,
+    });
+  };
+
+  return (
+    <WorkspaceModal title="Sheetを作成" onClose={onClose}>
+      <form className="grid gap-3" onSubmit={handleSubmit}>
+        <Field label="Project">
+          <Select
+            value={projectId}
+            onChange={(event) => setProjectId(event.target.value)}
+          >
+            {doc.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.title}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Sheet名">
+          <Input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+        </Field>
+        <Field label="説明">
+          <Textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </Field>
+        <Field label="タグ" hint="カンマ区切り">
+          <Input
+            value={tags}
+            onChange={(event) => setTags(event.target.value)}
+          />
+        </Field>
+        <TemplateOptionsEditor
+          title="初期テンプレート"
+          empty={empty}
+          options={templateOptions}
+          onEmptyChange={handleEmptyChange}
+          onOptionsChange={setTemplateOptions}
+        />
+        <DialogActions
+          onClose={onClose}
+          submitLabel="作成"
+          disabled={!projectId}
+        />
+      </form>
+    </WorkspaceModal>
+  );
+}
+
+function GlobalSettingsDialog({
+  settings,
+  onSave,
+  onReset,
+  onClose,
+}: {
+  settings: GlobalSettings;
+  onSave: (settings: GlobalSettings) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState<GlobalSettings>(settings);
+  const updateDraft = (patch: Partial<GlobalSettings>) =>
+    setDraft((current) => ({ ...current, ...patch }));
+
+  return (
+    <WorkspaceModal title="Global Settings" onClose={onClose}>
+      <form
+        className="grid gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSave(draft);
+        }}
+      >
+        <TemplateOptionsEditor
+          title="新規Projectの既定テンプレート"
+          empty={draft.create_empty_project_by_default}
+          options={draft.project_creation_defaults}
+          onEmptyChange={(checked) =>
+            updateDraft({
+              create_empty_project_by_default: checked,
+              project_creation_defaults: checked
+                ? emptyTemplateSelectionOptions()
+                : mergeTemplateSelectionOptions(
+                    defaultGlobalSettings.project_creation_defaults,
+                  ),
+            })
+          }
+          onOptionsChange={(options) =>
+            updateDraft({ project_creation_defaults: options })
+          }
+        />
+        <TemplateOptionsEditor
+          title="新規Sheetの既定テンプレート"
+          empty={draft.create_empty_sheet_by_default}
+          options={draft.sheet_creation_defaults}
+          onEmptyChange={(checked) =>
+            updateDraft({
+              create_empty_sheet_by_default: checked,
+              sheet_creation_defaults: checked
+                ? emptyTemplateSelectionOptions()
+                : mergeTemplateSelectionOptions(
+                    defaultGlobalSettings.sheet_creation_defaults,
+                  ),
+            })
+          }
+          onOptionsChange={(options) =>
+            updateDraft({ sheet_creation_defaults: options })
+          }
+        />
+        <div className="flex flex-wrap justify-between gap-2 border-t border-stone-200 pt-3">
+          <Button type="button" variant="ghost" onClick={onReset}>
+            既定値に戻す
+          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              キャンセル
+            </Button>
+            <Button type="submit" variant="primary">
+              保存
+            </Button>
+          </div>
+        </div>
+      </form>
+    </WorkspaceModal>
+  );
+}
+
+function TemplateOptionsEditor({
+  title,
+  empty,
+  options,
+  onEmptyChange,
+  onOptionsChange,
+}: {
+  title: string;
+  empty: boolean;
+  options: TemplateSelectionOptions;
+  onEmptyChange: (checked: boolean) => void;
+  onOptionsChange: (options: TemplateSelectionOptions) => void;
+}) {
+  const updateOption = (
+    key: keyof TemplateSelectionOptions,
+    checked: boolean,
+  ) => {
+    onOptionsChange({ ...options, [key]: checked });
+  };
+
+  return (
+    <section className="grid gap-2 rounded-md border border-stone-200 bg-stone-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-stone-950">{title}</div>
+        <label className="flex items-center gap-2 text-sm text-stone-700">
+          <input
+            type="checkbox"
+            checked={empty}
+            onChange={(event) => onEmptyChange(event.target.checked)}
+          />
+          空で作成
+        </label>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {templateCatalog.map((template) => (
+          <label
+            key={template.key}
+            className="flex items-start gap-2 rounded-md border border-stone-200 bg-white p-2 text-sm text-stone-700"
+          >
+            <input
+              className="mt-1"
+              type="checkbox"
+              checked={options[template.key]}
+              disabled={empty}
+              onChange={(event) =>
+                updateOption(template.key, event.target.checked)
+              }
+            />
+            <span>
+              <span className="block font-semibold text-stone-900">
+                {template.label}
+              </span>
+              <span className="text-xs leading-5 text-stone-500">
+                {template.description}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DialogActions({
+  onClose,
+  submitLabel,
+  disabled,
+}: {
+  onClose: () => void;
+  submitLabel: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex justify-end gap-2 border-t border-stone-200 pt-3">
+      <Button type="button" variant="ghost" onClick={onClose}>
+        キャンセル
+      </Button>
+      <Button type="submit" variant="primary" disabled={disabled}>
+        {submitLabel}
+      </Button>
+    </div>
+  );
+}
+
+function splitTags(value: string): string[] {
+  return value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
 }
 
 function SubNavigation<T extends string>({
@@ -448,7 +1022,7 @@ function TheoryWorkspace({
           { id: "inbox", label: "Mapping Inbox" },
           { id: "map", label: "知識マップ" },
           { id: "hand", label: "手牌価値" },
-          { id: "rescue", label: "卓上動態" },
+          { id: "rescue", label: "脇救済率" },
           { id: "rules", label: "ルール作成" },
         ]}
       />

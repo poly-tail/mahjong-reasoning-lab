@@ -141,3 +141,25 @@ Phase2以降で検討できるもの:
 - pruning-ui 本体との双方向連携
 
 これらは Phase1 の Reading Probability Core とは別レイヤーとして設計します。
+
+## Project / Sheet 管理要件
+
+- Workspace は複数の Project を保持できる。
+- Project は複数の Sheet を保持できる。
+- Sheet は nodes / edges / cases / rules / saved views / Reading Drawer候補 / Exception Library候補 / Residual Mass候補の所属IDを持つ。
+- 既存top-levelの nodes / edges / cases / rules / saved_views は維持し、zod schema互換性とworkspace v4互換性を壊さない。
+- 既存workspaceを読み込む場合、Default Project と Default Sheet を作成し、既存データをDefault Sheetへ所属させる。
+- `projects`、`sheets`、`active_project_id`、`active_sheet_id`、`global_settings` はIndexedDB保存、JSON export/import、workspace normalizeの対象にする。
+- 新規Project / Sheet作成時に `牌理`、`枚数`、`手役`、`抽象的な読み` の初期テンプレートを選択できる。
+- デフォルトでは全テンプレートをONにする。Global SettingsでProject作成時・Sheet作成時の既定ON/OFFを変更できる。
+- 空のProject / Sheetとして作成する場合、テンプレートを配置しない。
+- TemplateCatalogは Reading Probability Core の初期素材を作る。押し引き判断、牌選択AI、EV計算、Action Recommendationは作らない。
+- 同じSheetへの同じテンプレート適用はidempotentに扱い、明示的な再適用時以外は重複配置しない。
+- 表示スコープは Sheet / Project / Workspace を切り替えられる。
+- Knowledge Mapは表示スコープに応じてノードとエッジを絞り込む。
+- Case Workspaceはactive Sheetのcaseを優先表示し、新規caseとQuick Reading Inputで作成した要素をactive Sheetへ紐付ける。
+- Reading DrawerとException Libraryは Sheet / Project / Global のscope badgeを表示する。
+- Residual Massは未配分候補の送信先として active Sheet / Project / Global / unknown buffer を選べる。
+- subgraph exportは選択中ノード、active Sheet、active Project、Workspace全体の対象を選べる。
+- 影響ウェイトと軸確信度は0〜100スコアであり、候補確率や未配分確率ではない。候補確率と未配分確率だけを%表示する。
+- 4軸の合計を100にする必要はありません。同じ読みが複数軸を同時に強く動かしてよい。

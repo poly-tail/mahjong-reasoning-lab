@@ -1,12 +1,16 @@
 import {
   WORKSPACE_SCHEMA_VERSION,
+  defaultGlobalSettings,
   type CaseData,
   type CaseLane,
+  type GlobalSettings,
   type KnowledgeEdge,
   type KnowledgeNode,
   type NodeType,
+  type Project,
   type RuleCategory,
   type RuleDefinition,
+  type Sheet,
   type WorkspaceDocument,
 } from "./schema";
 import { edgeTypeLabels } from "./labels";
@@ -165,6 +169,11 @@ export function createWorkspaceDocument(
 ): WorkspaceDocument {
   return {
     schema_version: WORKSPACE_SCHEMA_VERSION,
+    projects: overrides.projects ?? [],
+    sheets: overrides.sheets ?? [],
+    active_project_id: overrides.active_project_id,
+    active_sheet_id: overrides.active_sheet_id,
+    global_settings: overrides.global_settings ?? defaultGlobalSettings,
     nodes: overrides.nodes ?? [],
     edges: overrides.edges ?? [],
     cases: overrides.cases ?? [],
@@ -178,6 +187,69 @@ export function createWorkspaceDocument(
     teaching_logs: overrides.teaching_logs ?? [],
     active_case_id: overrides.active_case_id,
     updated_at: overrides.updated_at ?? nowIso(),
+  };
+}
+
+export function createProject(
+  overrides: Partial<Project> & Pick<Project, "title">,
+): Project {
+  const now = nowIso();
+  return {
+    id: overrides.id ?? createId("project"),
+    title: overrides.title,
+    description: overrides.description ?? "",
+    tags: overrides.tags ?? [],
+    created_at: overrides.created_at ?? now,
+    updated_at: overrides.updated_at ?? now,
+    default_sheet_template_options:
+      overrides.default_sheet_template_options ??
+      defaultGlobalSettings.sheet_creation_defaults,
+    sheet_ids: overrides.sheet_ids ?? [],
+    archived: overrides.archived ?? false,
+  };
+}
+
+export function createSheet(
+  overrides: Partial<Sheet> & Pick<Sheet, "project_id" | "title">,
+): Sheet {
+  const now = nowIso();
+  return {
+    id: overrides.id ?? createId("sheet"),
+    project_id: overrides.project_id,
+    title: overrides.title,
+    description: overrides.description ?? "",
+    tags: overrides.tags ?? [],
+    created_at: overrides.created_at ?? now,
+    updated_at: overrides.updated_at ?? now,
+    node_ids: overrides.node_ids ?? [],
+    edge_ids: overrides.edge_ids ?? [],
+    case_ids: overrides.case_ids ?? [],
+    rule_ids: overrides.rule_ids ?? [],
+    saved_view_ids: overrides.saved_view_ids ?? [],
+    reading_drawer_item_ids: overrides.reading_drawer_item_ids ?? [],
+    exception_node_ids: overrides.exception_node_ids ?? [],
+    residual_group_ids: overrides.residual_group_ids ?? [],
+    template_source: overrides.template_source,
+    archived: overrides.archived ?? false,
+  };
+}
+
+export function createGlobalSettings(
+  overrides: Partial<GlobalSettings> = {},
+): GlobalSettings {
+  return {
+    project_creation_defaults:
+      overrides.project_creation_defaults ??
+      defaultGlobalSettings.project_creation_defaults,
+    sheet_creation_defaults:
+      overrides.sheet_creation_defaults ??
+      defaultGlobalSettings.sheet_creation_defaults,
+    create_empty_project_by_default:
+      overrides.create_empty_project_by_default ??
+      defaultGlobalSettings.create_empty_project_by_default,
+    create_empty_sheet_by_default:
+      overrides.create_empty_sheet_by_default ??
+      defaultGlobalSettings.create_empty_sheet_by_default,
   };
 }
 

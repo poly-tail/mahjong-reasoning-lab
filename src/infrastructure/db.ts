@@ -2,6 +2,7 @@ import Dexie, { type Table } from "dexie";
 import { seedWorkspace } from "../domain/seed";
 import {
   normalizeWorkspaceDocument,
+  normalizeWorkspaceScopes,
   workspaceDocumentSchema,
   type WorkspaceDocument,
 } from "../domain/schema";
@@ -34,7 +35,7 @@ export async function loadWorkspace(): Promise<WorkspaceDocument> {
 }
 
 export async function saveWorkspace(doc: WorkspaceDocument): Promise<void> {
-  const parsed = workspaceDocumentSchema.parse(doc);
+  const parsed = normalizeWorkspaceScopes(workspaceDocumentSchema.parse(doc));
   await workspaceDb.workspaces.put({
     id: DOC_KEY,
     doc: parsed,
@@ -57,7 +58,7 @@ function mergeMissingSeed(doc: WorkspaceDocument): WorkspaceDocument {
     doc.teaching_logs.map((log) => `${log.case_id}:${log.action_id}`),
   );
 
-  return workspaceDocumentSchema.parse({
+  const merged = workspaceDocumentSchema.parse({
     ...doc,
     nodes: [
       ...doc.nodes,
@@ -123,4 +124,6 @@ function mergeMissingSeed(doc: WorkspaceDocument): WorkspaceDocument {
       ),
     ],
   });
+
+  return normalizeWorkspaceScopes(merged);
 }

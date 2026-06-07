@@ -76,6 +76,15 @@ export function RescueRateLens() {
         <Panel title="卓上動態 / 他家介入読み">
           <div className="grid grid-cols-[340px_1fr] gap-3 p-3">
             <div className="grid content-start gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-stone-950">
+                  脇救済率
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-stone-600">
+                  旧称の脇救済率を、Phase1では卓上動態 /
+                  他家介入読みとして扱います。
+                </p>
+              </div>
               <Field label="時間窓">
                 <Select
                   value={timeWindow}

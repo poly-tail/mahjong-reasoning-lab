@@ -1,6 +1,7 @@
 import { Ban, Link, Plus } from "lucide-react";
 import { useMemo } from "react";
 import { useAppStore } from "../../app/store";
+import { classifyExceptionScope } from "../../domain/projectSheets";
 import { formatPercent } from "../../domain/residualMass";
 import type { ChoiceCandidateDraft } from "../../domain/readingNumerics";
 import type { KnowledgeNode } from "../../domain/schema";
@@ -29,8 +30,13 @@ export function ExceptionLibraryPanel({
               )) &&
             !node.tags.includes("disabled_exception"),
         )
-        .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
-    [doc.nodes],
+        .sort((a, b) => {
+          const scopeDiff =
+            scopeRank(classifyExceptionScope(doc, a.id)) -
+            scopeRank(classifyExceptionScope(doc, b.id));
+          return scopeDiff || b.updated_at.localeCompare(a.updated_at);
+        }),
+    [doc],
   );
 
   return (
@@ -52,8 +58,11 @@ export function ExceptionLibraryPanel({
           <ExceptionCard
             key={node.id}
             node={node}
+            scope={classifyExceptionScope(doc, node.id)}
             caseCount={countCases(doc.cases, node.id)}
-            isAttached={Boolean(activeCase?.attached_node_ids.includes(node.id))}
+            isAttached={Boolean(
+              activeCase?.attached_node_ids.includes(node.id),
+            )}
             onAttach={() => {
               if (activeCase) attachNodeToCase(activeCase.id, node.id);
             }}
@@ -69,16 +78,15 @@ export function ExceptionLibraryPanel({
             }
             onDisable={() =>
               updateNode(node.id, {
-                tags: Array.from(
-                  new Set([...node.tags, "disabled_exception"]),
-                ),
+                tags: Array.from(new Set([...node.tags, "disabled_exception"])),
               })
             }
           />
         ))}
         {exceptions.length === 0 ? (
           <div className="rounded-md border border-dashed border-stone-300 p-3 text-sm leading-6 text-stone-500">
-            例外候補はまだありません。Quick Readingの未配分UIから「例外集に入れる」を選ぶと、反映時に例外ノードとして保存されます。
+            例外候補はまだありません。Quick
+            Readingの未配分UIから「例外集に入れる」を選ぶと、反映時に例外ノードとして保存されます。
           </div>
         ) : null}
       </div>
@@ -88,6 +96,7 @@ export function ExceptionLibraryPanel({
 
 function ExceptionCard({
   node,
+  scope,
   caseCount,
   isAttached,
   onAttach,
@@ -95,6 +104,7 @@ function ExceptionCard({
   onDisable,
 }: {
   node: KnowledgeNode;
+  scope: "sheet" | "project" | "workspace";
   caseCount: number;
   isAttached: boolean;
   onAttach: () => void;
@@ -128,6 +138,13 @@ function ExceptionCard({
       </div>
       <div className="flex flex-wrap gap-1">
         <Badge tone="cyan">{node.type}</Badge>
+        <Badge>
+          {scope === "sheet"
+            ? "Sheet例外"
+            : scope === "project"
+              ? "Project例外"
+              : "Global例外"}
+        </Badge>
         <Badge>出現ケース {caseCount}</Badge>
         <Badge>最終利用 {node.updated_at.slice(0, 10)}</Badge>
         {axes.map((axis) => (
@@ -163,4 +180,10 @@ function countCases(
 ): number {
   return cases.filter((caseItem) => caseItem.attached_node_ids.includes(nodeId))
     .length;
+}
+
+function scopeRank(scope: "sheet" | "project" | "workspace"): number {
+  if (scope === "sheet") return 0;
+  if (scope === "project") return 1;
+  return 2;
 }

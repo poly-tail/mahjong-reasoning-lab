@@ -1,4 +1,5 @@
 import { AlertTriangle, Library, Plus, ShieldQuestion } from "lucide-react";
+import { useState } from "react";
 import {
   formatPercent,
   getResidualMassChoiceGroups,
@@ -10,6 +11,15 @@ import type { KnowledgeNode } from "../../domain/schema";
 import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Panel } from "../components/panel";
+
+type ResidualScopeTarget = "active_sheet" | "project" | "global" | "unknown";
+
+const residualScopeOptions: { id: ResidualScopeTarget; label: string }[] = [
+  { id: "active_sheet", label: "active sheet" },
+  { id: "project", label: "Project" },
+  { id: "global", label: "Global" },
+  { id: "unknown", label: "unknown" },
+];
 
 export function ResidualMassSummaryPanel({
   nodes,
@@ -23,6 +33,9 @@ export function ResidualMassSummaryPanel({
   onKeepUnknown: (groupId: string) => void;
 }) {
   const groups = getResidualMassChoiceGroups(nodes);
+  const [scopeTargets, setScopeTargets] = useState<
+    Record<string, ResidualScopeTarget>
+  >({});
 
   return (
     <Panel title="未配分確率サマリ">
@@ -99,12 +112,45 @@ export function ResidualMassSummaryPanel({
                   ))}
                 </div>
 
+                <div className="grid gap-1 rounded-md border border-stone-200 bg-stone-50 p-2 text-xs text-stone-700">
+                  <div className="font-semibold text-stone-900">
+                    未配分候補の送信先
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {residualScopeOptions.map((option) => {
+                      const active =
+                        (scopeTargets[group.id] ?? "active_sheet") ===
+                        option.id;
+                      return (
+                        <Button
+                          key={option.id}
+                          size="sm"
+                          variant={active ? "primary" : "secondary"}
+                          onClick={() =>
+                            setScopeTargets((current) => ({
+                              ...current,
+                              [group.id]: option.id,
+                            }))
+                          }
+                          aria-pressed={active}
+                        >
+                          {option.label}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" onClick={() => onAddCandidate(group.id)}>
                     <Plus className="h-4 w-4" aria-hidden="true" />
                     候補を追加
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={onOpenExceptionLibrary}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={onOpenExceptionLibrary}
+                  >
                     <Library className="h-4 w-4" aria-hidden="true" />
                     例外集を開く
                   </Button>

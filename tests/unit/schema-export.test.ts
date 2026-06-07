@@ -18,6 +18,8 @@ describe("workspace schema and pruning export", () => {
       "rule_push_pull_gate",
     );
     expect(parsed.active_case_id).toBe("case_seed_push_pull");
+    expect(parsed.projects[0]?.title).toBe("Default Project");
+    expect(parsed.sheets[0]?.node_ids).toContain("node_hard_gate");
   });
 
   it("exports selected subgraphs with related rules and weight placeholders", () => {

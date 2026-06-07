@@ -154,6 +154,15 @@ export const readingChainStepTypes = [
 
 export const averagingSafetyLabels = ["safe", "caution", "unsafe"] as const;
 
+export const templateKeys = [
+  "tile_efficiency",
+  "tile_count",
+  "yaku",
+  "abstract_reading",
+] as const;
+
+export const workspaceScopeModes = ["sheet", "project", "workspace"] as const;
+
 export const nodeTypeSchema = z.enum(nodeTypes);
 export const edgeTypeSchema = z.enum(edgeTypes);
 export const sourceTypeSchema = z.enum(sourceTypes);
@@ -170,6 +179,46 @@ export const combinationModeSchema = z.enum(combinationModes);
 export const pruningActionTypeSchema = z.enum(pruningActionTypes);
 export const readingChainStepTypeSchema = z.enum(readingChainStepTypes);
 export const averagingSafetyLabelSchema = z.enum(averagingSafetyLabels);
+export const templateKeySchema = z.enum(templateKeys);
+export const workspaceScopeModeSchema = z.enum(workspaceScopeModes);
+
+export const templateSelectionOptionsSchema = z.object({
+  tile_efficiency: z.boolean().default(true),
+  tile_count: z.boolean().default(true),
+  yaku: z.boolean().default(true),
+  abstract_reading: z.boolean().default(true),
+});
+
+export const globalSettingsSchema = z.object({
+  project_creation_defaults: templateSelectionOptionsSchema.default({
+    tile_efficiency: true,
+    tile_count: true,
+    yaku: true,
+    abstract_reading: true,
+  }),
+  sheet_creation_defaults: templateSelectionOptionsSchema.default({
+    tile_efficiency: true,
+    tile_count: true,
+    yaku: true,
+    abstract_reading: true,
+  }),
+  create_empty_project_by_default: z.boolean().default(false),
+  create_empty_sheet_by_default: z.boolean().default(false),
+});
+
+export const defaultTemplateSelectionOptions = {
+  tile_efficiency: true,
+  tile_count: true,
+  yaku: true,
+  abstract_reading: true,
+} satisfies TemplateSelectionOptions;
+
+export const defaultGlobalSettings = {
+  project_creation_defaults: defaultTemplateSelectionOptions,
+  sheet_creation_defaults: defaultTemplateSelectionOptions,
+  create_empty_project_by_default: false,
+  create_empty_sheet_by_default: false,
+} satisfies GlobalSettings;
 
 export const xyPositionSchema = z.object({
   x: z.number(),
@@ -318,6 +367,45 @@ export const savedViewSchema = z.object({
   created_at: z.string().datetime(),
 });
 
+export const projectSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().default(""),
+  tags: z.array(z.string()).default([]),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+  default_sheet_template_options: templateSelectionOptionsSchema.default(
+    defaultTemplateSelectionOptions,
+  ),
+  sheet_ids: z.array(z.string()).default([]),
+  archived: z.boolean().default(false),
+});
+
+export const sheetSchema = z.object({
+  id: z.string().min(1),
+  project_id: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().default(""),
+  tags: z.array(z.string()).default([]),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+  node_ids: z.array(z.string()).default([]),
+  edge_ids: z.array(z.string()).default([]),
+  case_ids: z.array(z.string()).default([]),
+  rule_ids: z.array(z.string()).default([]),
+  saved_view_ids: z.array(z.string()).default([]),
+  reading_drawer_item_ids: z.array(z.string()).default([]),
+  exception_node_ids: z.array(z.string()).default([]),
+  residual_group_ids: z.array(z.string()).default([]),
+  template_source: z
+    .object({
+      created_from_template: z.boolean().default(false),
+      enabled_template_keys: z.array(templateKeySchema).default([]),
+    })
+    .optional(),
+  archived: z.boolean().default(false),
+});
+
 export const concentrationMetricsSchema = z.object({
   entropy: z.number(),
   top_k_mass: z.number(),
@@ -402,6 +490,11 @@ export const teachingLogSchema = z.object({
 
 export const workspaceDocumentSchema = z.object({
   schema_version: z.literal(WORKSPACE_SCHEMA_VERSION),
+  projects: z.array(projectSchema).default([]),
+  sheets: z.array(sheetSchema).default([]),
+  active_project_id: z.string().optional(),
+  active_sheet_id: z.string().optional(),
+  global_settings: globalSettingsSchema.default(defaultGlobalSettings),
   nodes: z.array(knowledgeNodeSchema),
   edges: z.array(knowledgeEdgeSchema),
   cases: z.array(caseSchema),
@@ -538,11 +631,19 @@ export type CombinationMode = (typeof combinationModes)[number];
 export type PruningActionType = (typeof pruningActionTypes)[number];
 export type ReadingChainStepType = (typeof readingChainStepTypes)[number];
 export type AveragingSafetyLabel = (typeof averagingSafetyLabels)[number];
+export type TemplateKey = (typeof templateKeys)[number];
+export type WorkspaceScopeMode = (typeof workspaceScopeModes)[number];
+export type TemplateSelectionOptions = z.infer<
+  typeof templateSelectionOptionsSchema
+>;
+export type GlobalSettings = z.infer<typeof globalSettingsSchema>;
 export type KnowledgeNode = z.infer<typeof knowledgeNodeSchema>;
 export type KnowledgeEdge = z.infer<typeof knowledgeEdgeSchema>;
 export type RuleDefinition = z.infer<typeof ruleSchema>;
 export type CaseData = z.infer<typeof caseSchema>;
 export type SavedView = z.infer<typeof savedViewSchema>;
+export type Project = z.infer<typeof projectSchema>;
+export type Sheet = z.infer<typeof sheetSchema>;
 export type ConcentrationMetrics = z.infer<typeof concentrationMetricsSchema>;
 export type PruningAction = z.infer<typeof pruningActionSchema>;
 export type ImpactSummary = z.infer<typeof impactSummarySchema>;
@@ -555,18 +656,227 @@ export type WorkspaceDocument = z.infer<typeof workspaceDocumentSchema>;
 export type PruningExport = z.infer<typeof pruningExportSchema>;
 
 export function normalizeWorkspaceDocument(input: unknown): WorkspaceDocument {
-  if (
+  const raw =
     input &&
     typeof input === "object" &&
     "schema_version" in input &&
     LEGACY_WORKSPACE_SCHEMA_VERSIONS.includes(
       (input as { schema_version?: string }).schema_version as never,
     )
+      ? {
+          ...(input as Record<string, unknown>),
+          schema_version: WORKSPACE_SCHEMA_VERSION,
+        }
+      : input;
+  return normalizeWorkspaceScopes(workspaceDocumentSchema.parse(raw));
+}
+
+export function normalizeWorkspaceScopes(
+  doc: WorkspaceDocument,
+): WorkspaceDocument {
+  const now = new Date().toISOString();
+  const hasProjects = doc.projects.length > 0;
+  const hasSheets = doc.sheets.length > 0;
+  const defaultProjectId = doc.active_project_id ?? "project_default";
+  const defaultSheetId = doc.active_sheet_id ?? "sheet_default";
+  const projects = hasProjects
+    ? doc.projects
+    : [
+        projectSchema.parse({
+          id: defaultProjectId,
+          title: "Default Project",
+          description:
+            "既存workspaceを後方互換のために移行したデフォルトProject。",
+          tags: ["default_project", "migration"],
+          created_at: doc.updated_at ?? now,
+          updated_at: doc.updated_at ?? now,
+          default_sheet_template_options:
+            doc.global_settings.sheet_creation_defaults,
+          sheet_ids: [defaultSheetId],
+        }),
+      ];
+  const sheets = hasSheets
+    ? doc.sheets
+    : [
+        sheetSchema.parse({
+          id: defaultSheetId,
+          project_id: projects[0]?.id ?? defaultProjectId,
+          title: "Default Sheet",
+          description:
+            "既存nodes / edges / cases / rules / saved viewsを移行したデフォルトSheet。",
+          tags: ["default_sheet", "migration"],
+          created_at: doc.updated_at ?? now,
+          updated_at: doc.updated_at ?? now,
+          node_ids: doc.nodes.map((node) => node.id),
+          edge_ids: doc.edges.map((edge) => edge.id),
+          case_ids: doc.cases.map((caseItem) => caseItem.id),
+          rule_ids: doc.rules.map((rule) => rule.id),
+          saved_view_ids: doc.saved_views.map((view) => view.id),
+          exception_node_ids: doc.nodes
+            .filter(
+              (node) =>
+                node.type === "exception" || node.tags.includes("exception"),
+            )
+            .map((node) => node.id),
+          residual_group_ids: Array.from(
+            new Set(
+              doc.nodes
+                .map((node) => node.choice_group_id)
+                .filter((id): id is string => Boolean(id)),
+            ),
+          ),
+          template_source: {
+            created_from_template: false,
+            enabled_template_keys: [],
+          },
+        }),
+      ];
+
+  const projectIds = new Set(projects.map((project) => project.id));
+  const activeProjectId =
+    doc.active_project_id && projectIds.has(doc.active_project_id)
+      ? doc.active_project_id
+      : projects[0]?.id;
+  const sheetsWithValidProject = sheets.map((sheet) => ({
+    ...sheet,
+    project_id: projectIds.has(sheet.project_id)
+      ? sheet.project_id
+      : (activeProjectId ?? projects[0]?.id ?? defaultProjectId),
+  }));
+  const sheetIds = new Set(sheetsWithValidProject.map((sheet) => sheet.id));
+  const activeSheetId =
+    doc.active_sheet_id && sheetIds.has(doc.active_sheet_id)
+      ? doc.active_sheet_id
+      : activeProjectId
+        ? sheetsWithValidProject.find(
+            (sheet) => sheet.project_id === activeProjectId,
+          )?.id
+        : sheetsWithValidProject[0]?.id;
+  const normalizedSheets =
+    sheetsWithValidProject.length > 0
+      ? assignOrphansToSheet(doc, sheetsWithValidProject, activeSheetId)
+      : sheetsWithValidProject;
+  const normalizedProjects = projects.map((project) => ({
+    ...project,
+    sheet_ids: unique([
+      ...project.sheet_ids.filter((id) => sheetIds.has(id)),
+      ...normalizedSheets
+        .filter((sheet) => sheet.project_id === project.id)
+        .map((sheet) => sheet.id),
+    ]),
+  }));
+
+  return workspaceDocumentSchema.parse({
+    ...doc,
+    projects: normalizedProjects,
+    sheets: normalizedSheets,
+    active_project_id: activeProjectId,
+    active_sheet_id: activeSheetId,
+    global_settings: globalSettingsSchema.parse(doc.global_settings),
+  });
+}
+
+function assignOrphansToSheet(
+  doc: WorkspaceDocument,
+  sheets: Sheet[],
+  targetSheetId?: string,
+): Sheet[] {
+  if (!targetSheetId) return sheets;
+  const sheet = sheets.find((item) => item.id === targetSheetId) ?? sheets[0];
+  if (!sheet) return sheets;
+  const assignedNodeIds = new Set(sheets.flatMap((item) => item.node_ids));
+  const assignedEdgeIds = new Set(sheets.flatMap((item) => item.edge_ids));
+  const assignedCaseIds = new Set(sheets.flatMap((item) => item.case_ids));
+  const assignedRuleIds = new Set(sheets.flatMap((item) => item.rule_ids));
+  const assignedViewIds = new Set(
+    sheets.flatMap((item) => item.saved_view_ids),
+  );
+  const orphanNodeIds = doc.nodes
+    .map((node) => node.id)
+    .filter((id) => !assignedNodeIds.has(id));
+  const orphanEdgeIds = doc.edges
+    .map((edge) => edge.id)
+    .filter((id) => !assignedEdgeIds.has(id));
+  const orphanCaseIds = doc.cases
+    .map((caseItem) => caseItem.id)
+    .filter((id) => !assignedCaseIds.has(id));
+  const orphanRuleIds = doc.rules
+    .map((rule) => rule.id)
+    .filter((id) => !assignedRuleIds.has(id));
+  const orphanViewIds = doc.saved_views
+    .map((view) => view.id)
+    .filter((id) => !assignedViewIds.has(id));
+
+  if (
+    orphanNodeIds.length +
+      orphanEdgeIds.length +
+      orphanCaseIds.length +
+      orphanRuleIds.length +
+      orphanViewIds.length ===
+    0
   ) {
-    return workspaceDocumentSchema.parse({
-      ...(input as Record<string, unknown>),
-      schema_version: WORKSPACE_SCHEMA_VERSION,
-    });
+    return sheets;
   }
-  return workspaceDocumentSchema.parse(input);
+
+  return sheets.map((item) =>
+    item.id === sheet.id
+      ? {
+          ...item,
+          node_ids: unique([...item.node_ids, ...orphanNodeIds]),
+          edge_ids: unique([...item.edge_ids, ...orphanEdgeIds]),
+          case_ids: unique([...item.case_ids, ...orphanCaseIds]),
+          rule_ids: unique([...item.rule_ids, ...orphanRuleIds]),
+          saved_view_ids: unique([...item.saved_view_ids, ...orphanViewIds]),
+        }
+      : item,
+  );
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+export function selectedTemplateKeys(
+  options: TemplateSelectionOptions,
+): TemplateKey[] {
+  return templateKeys.filter((key) => options[key]);
+}
+
+export function templateOptionsFromKeys(
+  keys: readonly TemplateKey[],
+): TemplateSelectionOptions {
+  const keySet = new Set(keys);
+  return {
+    tile_efficiency: keySet.has("tile_efficiency"),
+    tile_count: keySet.has("tile_count"),
+    yaku: keySet.has("yaku"),
+    abstract_reading: keySet.has("abstract_reading"),
+  };
+}
+
+export function emptyTemplateSelectionOptions(): TemplateSelectionOptions {
+  return {
+    tile_efficiency: false,
+    tile_count: false,
+    yaku: false,
+    abstract_reading: false,
+  };
+}
+
+export function allTemplateSelectionOptions(): TemplateSelectionOptions {
+  return {
+    tile_efficiency: true,
+    tile_count: true,
+    yaku: true,
+    abstract_reading: true,
+  };
+}
+
+export function mergeTemplateSelectionOptions(
+  options?: Partial<TemplateSelectionOptions>,
+): TemplateSelectionOptions {
+  return templateSelectionOptionsSchema.parse({
+    ...defaultTemplateSelectionOptions,
+    ...options,
+  });
 }

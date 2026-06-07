@@ -1,5 +1,21 @@
 # Mahjong Reasoning Lab
 
+## Project / Sheet 管理
+
+Workspace は複数の Project を持ち、Project は複数の Sheet を持ちます。既存の nodes / edges / cases / rules / saved views はtop-level配列として維持し、Sheet 側に `node_ids` / `edge_ids` / `case_ids` / `rule_ids` / `saved_view_ids` を持たせて所属を管理します。
+
+既存workspace v4を読み込む場合は、Default Project と Default Sheet を自動作成し、既存データをDefault Sheetへ所属させます。schema互換性を壊さず、IndexedDB保存とJSON export/importでも `projects`、`sheets`、`active_project_id`、`active_sheet_id`、`global_settings` を保持します。
+
+新規Project / Sheet作成時には、初期テンプレートをチェックボックスで選択できます。テンプレートは `牌理`、`枚数`、`手役`、`抽象的な読み` の4種類です。デフォルトは全テンプレートONですが、Global SettingsでProject作成時・Sheet作成時の既定値を変更できます。空のProject / Sheetを作る場合はテンプレートを配置しません。
+
+TemplateCatalog は Reading Probability Core の初期素材です。読み候補、初期ノード、influence edge、Reading Drawer候補、Exception Library候補、Residual Mass候補を作成しますが、押し引き判断、牌選択AI、EV計算、Action Recommendationは生成しません。同じSheetへのテンプレート適用はidempotentで、明示的な再適用時以外は重複配置しません。
+
+画面上部のProject Selector / Sheet Selectorでactive Project / Sheetを切り替えられます。表示スコープは Sheet / Project / Workspace から選べます。Knowledge Mapは選択スコープに応じてノードとエッジを絞り込み、Case Workspaceはactive Sheetのcaseを優先し、新規caseやQuick Reading Inputで作成した要素をactive Sheetへ紐付けます。
+
+Reading DrawerとException Libraryには Sheet / Project / Global のscope badgeを表示します。Residual Massでは未配分候補の送信先をactive Sheet / Project / Global / unknown bufferとして分類できます。subgraph exportは選択中ノードだけでなく、active Sheet、active Project、Workspace全体を対象にできます。
+
+Project / Sheet機能は、4軸の影響ウェイトを0〜100スコアとして扱う既存方針を維持します。候補確率と未配分確率だけを%表示し、影響ウェイトと軸確信度は確率ではありません。4軸の合計を100にする必要はありません。
+
 麻雀の「読み」「候補確率」「未配分確率」「4軸影響」「例外候補」を、local-firstで整理するための知識マップGUIです。
 
 Phase1の正式名称は **Reading Probability Core** です。完全自動推論器ではなく、読み候補・確率・影響ウェイト・軸確信度・未配分・例外集を構造化するMVPです。

@@ -384,6 +384,26 @@ export function createRescueRateDraft(
     template_id: "rescue_rate",
     source_summary: sourceSummary,
     nodes: [
+      draft(
+        "probability_aggregate",
+        "脇救済イベント束",
+        "他家和了、放銃、鳴き、安全牌供給、流局接近を束として扱う。",
+        [
+          "rescue_rate",
+          "table_dynamics",
+          "side_intervention",
+          "probability_tree",
+          "side_win",
+          "side_deal_in",
+          "side_call",
+          "safe_tile_supply",
+          "exhaustive_draw_approach",
+        ],
+        {
+          probability_role: "control",
+          distribution_family: "categorical",
+        },
+      ),
       draft("concept", "卓上動態 / 他家介入読み", sourceSummary, [
         "rescue_rate",
         "table_dynamics",
