@@ -67,7 +67,7 @@ test("runs the judgment workbench smoke flow", async ({ page }) => {
   await expect(page.getByText("この局面で足りない要素")).toBeVisible();
 
   await page.getByRole("button", { name: "確率と枝刈り" }).click();
-  await expect(page.getByRole("heading", { name: "選択候補群" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "候補木ビュー" })).toBeVisible();
   await expect(page.getByText("E2E 同色副露の数値読み")).toBeVisible();
   const validationToolbar = page.getByRole("toolbar", { name: "検証モード" });
   await validationToolbar.getByRole("button", { name: "枝刈りラボ" }).click();

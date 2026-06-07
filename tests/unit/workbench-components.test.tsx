@@ -8,9 +8,12 @@ import { CaseWorkspace } from "../../src/ui/case/CaseWorkspace";
 import { Inspector } from "../../src/ui/knowledge/Inspector";
 import { LegendPanel } from "../../src/ui/knowledge/LegendPanel";
 import { MappingInbox } from "../../src/ui/mapping/MappingInbox";
+import { CandidateTreeView } from "../../src/ui/probability/CandidateTreeView";
+import { candidateTreeOperations } from "../../src/ui/probability/candidateTreeOperations";
 import { QuickReadingInputPanel } from "../../src/ui/reading/QuickReadingInputPanel";
 import { HandValueRangeLens } from "../../src/ui/theory/HandValueRangeLens";
 import { RescueRateLens } from "../../src/ui/theory/RescueRateLens";
+import { applyTemplatesToSheet } from "../../src/domain/templateCatalog";
 
 const edgeColors = Object.fromEntries(
   edgeTypes.map((type) => [type, "#0e7490"]),
@@ -205,5 +208,89 @@ describe("workbench components", () => {
       .doc.edges.find((item) => item.id === "edge_hand_value_speed");
     expect(edge?.sign).toBe("+");
     expect(edge?.magnitude).toBe(0.7);
+  });
+
+  it("renders candidate groups as branch-oriented candidate tree", () => {
+    const docWithResidual = {
+      ...seedWorkspace,
+      nodes: seedWorkspace.nodes.map((node) =>
+        node.id === "node_flush_denied"
+          ? { ...node, posterior_probability: 0.07, prior_probability: 0.07 }
+          : node,
+      ),
+    };
+    useAppStore.setState({ doc: docWithResidual });
+
+    render(<CandidateTreeView />);
+
+    expect(screen.getByText("候補木ビュー")).toBeVisible();
+    expect(screen.getByText("候補木")).toBeVisible();
+    expect(screen.getByText("選択した枝")).toBeVisible();
+    expect(screen.getAllByText("候補確率").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("影響スコア").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("軸確信度").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("未展開の枝").length).toBeGreaterThan(0);
+    expect(screen.getByText("例外の枝置き場")).toBeVisible();
+    expect(screen.queryByText(/hard prune/i)).not.toBeInTheDocument();
+  });
+
+  it("maps branch operation labels to internal pruning actions", () => {
+    expect(
+      candidateTreeOperations.find((item) => item.label === "枝を切る")
+        ?.action_type,
+    ).toBe("hard_prune");
+    expect(
+      candidateTreeOperations.find((item) => item.label === "枝を弱める")
+        ?.action_type,
+    ).toBe("soft_downweight");
+    expect(
+      candidateTreeOperations.find((item) => item.label === "有力枝を残す")
+        ?.action_type,
+    ).toBe("keep_top_k");
+  });
+
+  it("warns before cutting mixed or unknown branches", async () => {
+    const user = userEvent.setup();
+    const sheetId = seedWorkspace.active_sheet_id!;
+    const { doc } = applyTemplatesToSheet(seedWorkspace, sheetId, {
+      tile_efficiency: true,
+      tile_count: true,
+      yaku: true,
+      abstract_reading: true,
+    });
+    useAppStore.setState({ doc });
+    render(<CandidateTreeView />);
+
+    await user.click(screen.getByRole("button", { name: /抽象的な読みの枝/ }));
+    await user.click(screen.getByRole("button", { name: /枝を切る/ }));
+
+    expect(
+      screen.getByText(
+        "mixed/unknownが残る軸があります。枝を切るのではなく、枝を弱める / 有力枝を残すを検討してください。",
+      ),
+    ).toBeVisible();
+  });
+
+  it("switches candidate tree scope and shows template-created initial branches", async () => {
+    const user = userEvent.setup();
+    const sheetId = seedWorkspace.active_sheet_id!;
+    const { doc } = applyTemplatesToSheet(seedWorkspace, sheetId, {
+      tile_efficiency: true,
+      tile_count: true,
+      yaku: true,
+      abstract_reading: true,
+    });
+    useAppStore.setState({ doc, scopeMode: "sheet" });
+    render(<CandidateTreeView />);
+
+    expect(screen.getAllByText("牌理の枝").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("枚数の枝").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("手役の枝").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("抽象的な読みの枝").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "現在のプロジェクト" }));
+    expect(useAppStore.getState().scopeMode).toBe("project");
+    await user.click(screen.getByRole("button", { name: "ワークスペース全体" }));
+    expect(useAppStore.getState().scopeMode).toBe("workspace");
   });
 });

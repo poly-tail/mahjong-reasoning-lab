@@ -17,8 +17,12 @@ describe("documentation scope", () => {
     expect(requirements).toContain("Reading Probability Core");
     expect(requirements).toContain("Phase1非スコープ");
     expect(requirements).toContain("4軸の合計を100にする必要はありません");
+    expect(requirements).toContain("候補木ビュー");
+    expect(requirements).toContain("未展開の枝");
     expect(specification).toContain("4軸は読みの影響射影先");
     expect(specification).toContain("卓上動態 / 他家介入読み");
+    expect(specification).toContain("候補木ビュー");
+    expect(specification).toContain("例外の枝置き場");
   });
 
   it("keeps README PDF commands aligned with scripts", () => {

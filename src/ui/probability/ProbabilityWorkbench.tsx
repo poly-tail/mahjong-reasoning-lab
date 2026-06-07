@@ -38,6 +38,7 @@ import { Badge } from "../components/badge";
 import { Button } from "../components/button";
 import { Field, Input, Select, Textarea } from "../components/form";
 import { Panel } from "../components/panel";
+import { CandidateTreeView } from "./CandidateTreeView";
 
 function numberValue(value: string, fallback?: number) {
   if (value.trim() === "") return undefined;
@@ -84,6 +85,7 @@ export function ProbabilityWorkbench() {
     (state) => state.clearPropagationPreview,
   );
   const preview = useAppStore((state) => state.lastPropagationPreview);
+  const [viewMode, setViewMode] = useState<"tree" | "editor">("tree");
 
   const subgraph = useMemo(() => getInferenceSubgraph(doc), [doc]);
   const choiceGroups = useMemo(
@@ -101,7 +103,33 @@ export function ProbabilityWorkbench() {
   const affected = new Set(preview?.affected_node_ids ?? []);
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)_380px] gap-3 p-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-stone-200 bg-stone-50 px-3 py-2">
+        <span className="text-xs font-semibold text-stone-500">
+          表示モード
+        </span>
+        <Button
+          size="sm"
+          variant={viewMode === "tree" ? "primary" : "secondary"}
+          onClick={() => setViewMode("tree")}
+          aria-pressed={viewMode === "tree"}
+        >
+          候補木ビュー
+        </Button>
+        <Button
+          size="sm"
+          variant={viewMode === "editor" ? "primary" : "secondary"}
+          onClick={() => setViewMode("editor")}
+          aria-pressed={viewMode === "editor"}
+        >
+          詳細編集
+        </Button>
+      </div>
+
+      {viewMode === "tree" ? (
+        <CandidateTreeView />
+      ) : (
+        <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)_380px] gap-3 p-3">
       <aside className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
         <div className="sticky top-0 z-10 flex min-h-10 items-center justify-between border-b border-stone-200 bg-white px-3">
           <div className="flex items-center gap-2">
@@ -251,6 +279,8 @@ export function ProbabilityWorkbench() {
           </div>
         )}
       </aside>
+        </div>
+      )}
     </div>
   );
 }
