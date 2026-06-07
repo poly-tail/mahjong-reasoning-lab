@@ -64,6 +64,7 @@ from ui.tile_images import (
     PLAYER_ROTATIONS,
     TileImageTable,
     build_tile_photoimage,
+    build_tile_photoimage_from_base_overlay,
     initialize_image,
     logical_tile_id_to_asset_tile_id,
     resolve_tiles_dir as _resolve_tiles_dir,
@@ -673,18 +674,46 @@ def _discard_render_cache(canvas: tkinter.Canvas) -> dict[tuple[int, int], objec
     return cache
 
 
+def _canvas_has_image_item_with_tag(canvas: tkinter.Canvas, tag: str) -> bool:
+    """Return whether a Canvas tag still has a live image item."""
+
+    find_withtag = getattr(canvas, "find_withtag", None)
+    if not callable(find_withtag):
+        # Test doubles and unusual widgets may not expose tag lookup. Keep old behavior there.
+        return True
+    try:
+        item_ids = tuple(find_withtag(str(tag)))
+    except (tkinter.TclError, TypeError, ValueError):
+        return False
+    if not item_ids:
+        return False
+    item_type = getattr(canvas, "type", None)
+    if not callable(item_type):
+        return True
+    for item_id in item_ids:
+        try:
+            if str(item_type(item_id)) == "image":
+                return True
+        except (tkinter.TclError, TypeError, ValueError):
+            continue
+    return False
+
+
 def _reset_discard_render_cache(canvas: tkinter.Canvas) -> None:
     """Forget per-discard signatures after a full tagged discard delete."""
 
     # A full redraw has already removed the Canvas items.  Keeping signatures after that would make
     # the next incremental pass think missing tiles are still visible.
     canvas.discard_render_cache_by_key = {}
+    canvas.discard_tile_image_refs = {}
     canvas.last_discard_render_stats = {
         "active": 0,
         "drawn": 0,
         "skipped": 0,
         "stale_deleted": 0,
         "changed": 0,
+        "missing_image_refs": 0,
+        "missing_image_items": 0,
     }
 
 
@@ -755,6 +784,8 @@ PLAYER_PANEL_PUBLIC_HONOR_DIM_OVERLAY_BANDS = (
 )
 # 自家字牌ショートリストは河の中央より少しだけ下へ寄せ、副露帯と往復で見比べやすくする。
 PLAYER_PANEL_PUBLIC_HONOR_SELF_MELD_BIAS_RATIO = 0.18
+PLAYER_PANEL_PUBLIC_HONOR_IMAGES_ENABLED = True
+PLAYER_PANEL_TILE_RANK_IMAGES_ENABLED = False
 PLAYER_PANEL_TILE_RANK_TILE_SCALE = 0.24
 PLAYER_PANEL_TILE_RANK_TILE_GAP = 1
 PLAYER_PANEL_TILE_RANK_HORIZONTAL_ROW_GAP = 0
@@ -3413,7 +3444,9 @@ def create_canvas(
     board_canvas.scaled_image_table_cache = {1.0: img_table}
     board_canvas.thinking_tile_image_cache = {}
     board_canvas.discard_base_tile_image_cache = {}
+    board_canvas.discard_tinted_tile_image_cache = {}
     board_canvas.discard_render_cache_by_key = {}
+    board_canvas.discard_tile_image_refs = {}
     board_canvas.hand_danger_tile_image_cache = {}
     board_canvas.hand_response_tile_image_cache = {}
     board_canvas.detail_visible_tile_image_cache = {}
@@ -3656,6 +3689,7 @@ def create_canvas(
         if getattr(board_canvas, "current_ui_scale", 1.0) != ui_scale:
             board_canvas.thinking_tile_image_cache = {}
             board_canvas.discard_base_tile_image_cache = {}
+            board_canvas.discard_tinted_tile_image_cache = {}
             _reset_discard_render_cache(board_canvas)
             board_canvas.hand_danger_tile_image_cache = {}
             board_canvas.hand_response_tile_image_cache = {}
@@ -12948,6 +12982,8 @@ def _log_slow_discard_redraw(
             f" skipped={int(stats.get('skipped', 0))}"
             f" changed={int(stats.get('changed', 0))}"
             f" stale_deleted={int(stats.get('stale_deleted', 0))}"
+            f" missing_image_refs={int(stats.get('missing_image_refs', 0))}"
+            f" missing_image_items={int(stats.get('missing_image_items', 0))}"
         )
     message = (
         "UI discards slow: "
@@ -13719,6 +13755,9 @@ def _player_panel_tile_rank_row_pitch(
 ) -> float:
     """Tile-rank rows reserve one tile height plus any extra gap from LAYOUT."""
 
+    if not PLAYER_PANEL_TILE_RANK_IMAGES_ENABLED:
+        rank_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_TINY_FONT)
+        return max(8.0, float(rank_font.metrics("linespace"))) + max(0.0, float(configured_gap))
     tile_image = _player_panel_tile_rank_image(canvas, 1)
     tile_height = float(tile_image.height()) if tile_image is not None else 0.0
     return tile_height + max(0.0, float(configured_gap))
@@ -13741,6 +13780,23 @@ def _draw_tile_rank_row(
     max_text_width: float,
 ) -> None:
     """Draw one player-panel tile-rank row as `rank + small tile images + percent`."""
+
+    if not PLAYER_PANEL_TILE_RANK_IMAGES_ENABLED:
+        fitted_text = _fit_text_to_width(
+            canvas,
+            tile_rank_label,
+            PLAYER_PANEL_SUMMARY_TINY_FONT,
+            max_text_width,
+        )
+        canvas.create_text(
+            left,
+            top,
+            text=fitted_text,
+            anchor=tkinter.NW,
+            fill=text_muted,
+            font=PLAYER_PANEL_SUMMARY_TINY_FONT,
+        )
+        return
 
     parsed = _parse_tile_rank_label(tile_rank_label)
     if parsed is None:
@@ -13864,6 +13920,15 @@ def _public_honor_shortlist_section_height(
     """Return the reserved height for the compact public-honor shortlist block."""
 
     heading_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_COMPACT_FONT)
+    if not PLAYER_PANEL_PUBLIC_HONOR_IMAGES_ENABLED:
+        body_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_TINY_FONT)
+        resolved_rows = max(1, int(max_rows))
+        return (
+            float(heading_font.metrics("linespace"))
+            + PLAYER_PANEL_PUBLIC_HONOR_SECTION_GAP
+            + resolved_rows * max(8.0, float(body_font.metrics("linespace")))
+            + max(0, resolved_rows - 1) * PLAYER_PANEL_PUBLIC_HONOR_ROW_GAP
+        )
     tile_image = _player_panel_tile_rank_image(canvas, 28)
     tile_height = float(tile_image.height()) if tile_image is not None else 10.0
     resolved_rows = max(1, int(max_rows))
@@ -13923,6 +13988,36 @@ def _draw_public_honor_shortlist(
         _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_COMPACT_FONT).metrics("linespace")
     ) + PLAYER_PANEL_PUBLIC_HONOR_SECTION_GAP
     dim_tile_id_set = {int(tile_id) for tile_id in dim_tile_ids}
+    if not PLAYER_PANEL_PUBLIC_HONOR_IMAGES_ENABLED:
+        visible_tile_ids = tuple(int(tile_id) for tile_id in tile_ids)
+        resolved_rows = max(1, int(max_rows))
+        row_capacity = max(1, int((max_text_width + 1.0) // 14.0))
+        body_font = _font_for_canvas(canvas, PLAYER_PANEL_SUMMARY_TINY_FONT)
+        row_pitch = max(8.0, float(body_font.metrics("linespace"))) + PLAYER_PANEL_PUBLIC_HONOR_ROW_GAP
+        for row_index in range(resolved_rows):
+            row_tiles = visible_tile_ids[
+                row_index * row_capacity : (row_index + 1) * row_capacity
+            ]
+            if not row_tiles:
+                break
+            row_text = " ".join(
+                f"{_tile37_to_compact_label(tile_id)}{'*' if tile_id in dim_tile_id_set else ''}"
+                for tile_id in row_tiles
+            )
+            canvas.create_text(
+                left,
+                tile_top + row_index * row_pitch,
+                text=_fit_text_to_width(
+                    canvas,
+                    row_text,
+                    PLAYER_PANEL_SUMMARY_TINY_FONT,
+                    max_text_width,
+                ),
+                anchor=tkinter.NW,
+                fill=text_muted,
+                font=PLAYER_PANEL_SUMMARY_TINY_FONT,
+            )
+        return
     sample_tile = _player_panel_tile_rank_image(canvas, int(tile_ids[0]))
     tile_width = float(sample_tile.width()) if sample_tile is not None else 12.0
     tile_height = float(sample_tile.height()) if sample_tile is not None else 16.0
@@ -18262,8 +18357,6 @@ def _should_draw_push_discard_marker(
         normalized_local_index = int(local_index)
     except (TypeError, ValueError):
         return False
-    if normalized_local_index < DISCARD_ROW_TILE_COUNT:
-        return False
     global_index = _discard_global_index(discard, normalized_local_index)
     return global_index in marker_indices
 
@@ -18906,6 +18999,30 @@ def _discard_tint_base_overlay_bands(
     )
 
 
+def _discard_thinking_time_overlay_bands(
+    lower_band_tint_step: int,
+    upper_band_tint_step: int,
+) -> tuple[tuple[float, float, tuple[int, int, int], tuple[int, int, int], float], ...]:
+    """Return image-composited thinking-time overlays for one discard tile."""
+
+    return tuple(
+        band
+        for band in (
+            _thinking_time_overlay_band(
+                lower_band_tint_step,
+                band_start_ratio=THINKING_TIME_LOWER_BAND_START_RATIO,
+                band_end_ratio=THINKING_TIME_LOWER_BAND_END_RATIO,
+            ),
+            _thinking_time_overlay_band(
+                upper_band_tint_step,
+                band_start_ratio=THINKING_TIME_UPPER_BAND_START_RATIO,
+                band_end_ratio=THINKING_TIME_UPPER_BAND_END_RATIO,
+            ),
+        )
+        if band is not None
+    )
+
+
 def _discard_tile_image(
     canvas: tkinter.Canvas,
     img_table: TileImageTable,
@@ -18913,21 +19030,69 @@ def _discard_tile_image(
     discard: Discard,
     *,
     tint_kind: str = "none",
+    lower_band_tint_step: int = 0,
+    upper_band_tint_step: int = 0,
 ) -> ImageTk.PhotoImage:
-    """Return the base discard image; semantic tints are drawn as Canvas overlays."""
+    """Return one discard image with any semantic/time tint already alpha-composited."""
 
-    # Keep this function intentionally boring.  Earlier versions combined tint and thinking bands
-    # into per-tile PhotoImages, which made river redraws expensive when many danger colors changed.
-    del tint_kind
     tuning = _current_layout_tuning(canvas)
     current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
     discard_tile_scale = current_ui_scale * float(tuning.discard_tile_scale)
-    if abs(discard_tile_scale - current_ui_scale) < 0.001:
+    base_overlay_bands = _discard_tint_base_overlay_bands(tint_kind)
+    thinking_overlay_bands = _discard_thinking_time_overlay_bands(
+        int(lower_band_tint_step),
+        int(upper_band_tint_step),
+    )
+    if (
+        not base_overlay_bands
+        and not thinking_overlay_bands
+        and abs(discard_tile_scale - current_ui_scale) < 0.001
+    ):
         # The normal image table is already scaled for the current UI scale.
         return img_table[player][discard.draw_type][discard.tile_id]
 
-    # Only the base tile scale is cached here.  Color and thinking-time state must not enter this
-    # key, otherwise `P`/remain/tint churn recreates images instead of cheap Canvas overlays.
+    if base_overlay_bands or thinking_overlay_bands:
+        cache_key = (
+            player,
+            discard.draw_type,
+            discard.tile_id,
+            round(discard_tile_scale, 3),
+            base_overlay_bands,
+            thinking_overlay_bands,
+        )
+        cache: dict[
+            tuple[
+                Player,
+                DrawType,
+                int,
+                float,
+                tuple[tuple[float, float, tuple[int, int, int], tuple[int, int, int], float], ...],
+                tuple[tuple[float, float, tuple[int, int, int], tuple[int, int, int], float], ...],
+            ],
+            ImageTk.PhotoImage,
+        ] = getattr(
+            canvas,
+            "discard_tinted_tile_image_cache",
+            {},
+        )
+        tinted_image = cache.get(cache_key)
+        if tinted_image is not None:
+            return tinted_image
+
+        tinted_image = build_tile_photoimage_from_base_overlay(
+            canvas,
+            discard.tile_id,
+            player,
+            discard.draw_type,
+            base_overlay_bands=base_overlay_bands,
+            overlay_bands=thinking_overlay_bands,
+            tile_scale=discard_tile_scale,
+        )
+        cache[cache_key] = tinted_image
+        canvas.discard_tinted_tile_image_cache = cache
+        return tinted_image
+
+    # Only the scaled no-tint base tile image is cached here.
     cache_key = (
         player,
         discard.draw_type,
@@ -18955,120 +19120,6 @@ def _discard_tile_image(
     return scaled_image
 
 
-def _rgb_to_canvas_color(color: tuple[int, int, int]) -> str:
-    """Convert an RGB tuple into a Tk color string."""
-
-    return "#{:02x}{:02x}{:02x}".format(
-        max(0, min(255, int(color[0]))),
-        max(0, min(255, int(color[1]))),
-        max(0, min(255, int(color[2]))),
-    )
-
-
-def _overlay_stipple_for_strength(overlay_strength: float) -> str | None:
-    """Return a reusable Tk stipple pattern that approximates alpha blending."""
-
-    strength = max(0.0, min(float(overlay_strength), 1.0))
-    if strength >= 0.85:
-        return None
-    if strength >= 0.45:
-        return "gray50"
-    if strength >= 0.22:
-        return "gray25"
-    return "gray12"
-
-
-def _discard_overlay_band_rect(
-    player: Player,
-    left: float,
-    top: float,
-    right: float,
-    bottom: float,
-    *,
-    band_start_ratio: float,
-    band_end_ratio: float,
-) -> tuple[float, float, float, float] | None:
-    """Map an unrotated vertical overlay band to one rotated discard image rectangle."""
-
-    # The image asset is rotated by seat, but thinking-time bands are defined in the unrotated tile
-    # coordinate system.  This mapper keeps the visual meaning stable for all four rivers.
-    start_ratio = max(0.0, min(float(band_start_ratio), 1.0))
-    end_ratio = max(0.0, min(float(band_end_ratio), 1.0))
-    if end_ratio <= start_ratio:
-        return None
-    width = max(0.0, float(right) - float(left))
-    height = max(0.0, float(bottom) - float(top))
-    if width <= 0.0 or height <= 0.0:
-        return None
-    if player == Player.JICHA:
-        return (
-            float(left),
-            float(top) + height * start_ratio,
-            float(right),
-            float(top) + height * end_ratio,
-        )
-    if player == Player.TOIMEN:
-        return (
-            float(left),
-            float(top) + height * (1.0 - end_ratio),
-            float(right),
-            float(top) + height * (1.0 - start_ratio),
-        )
-    if player == Player.SHIMOCHA:
-        return (
-            float(left) + width * start_ratio,
-            float(top),
-            float(left) + width * end_ratio,
-            float(bottom),
-        )
-    return (
-        float(left) + width * (1.0 - end_ratio),
-        float(top),
-        float(left) + width * (1.0 - start_ratio),
-        float(bottom),
-    )
-
-
-def _draw_discard_overlay_band(
-    canvas: tkinter.Canvas,
-    player: Player,
-    left: float,
-    top: float,
-    right: float,
-    bottom: float,
-    band: tuple[float, float, tuple[int, int, int], tuple[int, int, int], float],
-) -> None:
-    """Draw one discard overlay band as a tagged Canvas rectangle."""
-
-    band_start_ratio, band_end_ratio, top_color, bottom_color, overlay_strength = band
-    rect = _discard_overlay_band_rect(
-        player,
-        left,
-        top,
-        right,
-        bottom,
-        band_start_ratio=band_start_ratio,
-        band_end_ratio=band_end_ratio,
-    )
-    if rect is None or overlay_strength <= 0.0:
-        return
-    fill_color = _rgb_to_canvas_color(
-        tuple(
-            int(round((int(top_color[index]) + int(bottom_color[index])) / 2.0))
-            for index in range(3)
-        )
-    )
-    kwargs: dict[str, object] = {
-        "fill": fill_color,
-        "outline": "",
-        "width": 0,
-    }
-    stipple = _overlay_stipple_for_strength(overlay_strength)
-    if stipple is not None:
-        kwargs["stipple"] = stipple
-    canvas.create_rectangle(*rect, **kwargs)
-
-
 def _discard_thinking_time_tint_steps(discard: Discard) -> tuple[int, int]:
     """Return post-REACH and pre-REACH thinking-time tint steps for one discard."""
 
@@ -19078,40 +19129,6 @@ def _discard_thinking_time_tint_steps(discard: Discard) -> tuple[int, int]:
         _thinking_time_tint_step(discard.thinking_time_ms),
         _thinking_time_tint_step(discard.thinking_time_before_reach_ms),
     )
-
-
-def _draw_discard_tile_overlays(
-    canvas: tkinter.Canvas,
-    player: Player,
-    left: float,
-    top: float,
-    right: float,
-    bottom: float,
-    *,
-    tint_kind: str,
-    lower_band_tint_step: int,
-    upper_band_tint_step: int,
-) -> None:
-    """Draw semantic discard tints without allocating per-color PhotoImages."""
-
-    # The base brighten band is still applied before semantic color bands, matching the old visual
-    # priority while avoiding image composition for every discard/tint combination.
-    for band in (
-        *_discard_tint_base_overlay_bands(tint_kind),
-        _thinking_time_overlay_band(
-            lower_band_tint_step,
-            band_start_ratio=THINKING_TIME_LOWER_BAND_START_RATIO,
-            band_end_ratio=THINKING_TIME_LOWER_BAND_END_RATIO,
-        ),
-        _thinking_time_overlay_band(
-            upper_band_tint_step,
-            band_start_ratio=THINKING_TIME_UPPER_BAND_START_RATIO,
-            band_end_ratio=THINKING_TIME_UPPER_BAND_END_RATIO,
-        ),
-    ):
-        if band is None:
-            continue
-        _draw_discard_overlay_band(canvas, player, left, top, right, bottom, band)
 
 
 def _meld_tile_image(
@@ -19810,6 +19827,13 @@ def _draw_discards(
 
     render_cache = _discard_render_cache(canvas)
     previous_cache_keys = set(render_cache)
+    image_refs: dict[tuple[int, int], ImageTk.PhotoImage] = getattr(
+        canvas,
+        "discard_tile_image_refs",
+        {},
+    )
+    if not isinstance(image_refs, dict):
+        image_refs = {}
     active_cache_keys: set[tuple[int, int]] = set()
     # These counters are deliberately stored on the Canvas so slow logs can report whether a
     # redraw was actually expensive or merely walked the unchanged river state.
@@ -19817,6 +19841,8 @@ def _draw_discards(
     skipped_count = 0
     changed_count = 0
     stale_deleted_count = 0
+    missing_image_ref_count = 0
+    missing_image_item_count = 0
 
     # 各座席について、最大18枚までの捨て牌を 6x3 ベースで配置する。
     for player, layout in layouts.items():
@@ -19848,6 +19874,8 @@ def _draw_discards(
                 player,
                 discard,
                 tint_kind=discard_tint_kind,
+                lower_band_tint_step=lower_band_tint_step,
+                upper_band_tint_step=upper_band_tint_step,
             )
             _add_discard_phase_total("tile_image", tile_phase_started_at)
             tile_phase_started_at = time.perf_counter()
@@ -19911,6 +19939,8 @@ def _draw_discards(
             _add_discard_phase_total("marker_decision", tile_phase_started_at)
             cache_key = (int(player), int(idx))
             active_cache_keys.add(cache_key)
+            had_image_ref = cache_key in image_refs
+            image_refs[cache_key] = tile_image
             item_tag = _discard_item_canvas_tag(player, idx)
             # The signature contains only display-affecting facts.  It is longer than the draw call
             # itself because false cache hits are worse than a cheap redraw: they leave stale markers
@@ -19951,23 +19981,30 @@ def _draw_discards(
                 bool(should_draw_same_jun_match_marker),
                 bool(should_draw_peak_thinking_time_marker),
             )
-            if render_cache.get(cache_key) == tile_signature:
-                skipped_count += 1
-                # Transient hit areas are rebuilt on every redraw.  When Canvas items are reused,
-                # the visible lag badge remains on screen but its click target still has to be
-                # re-registered.
-                if should_draw_lag_marker:
-                    _append_cached_lag_marker_reference_button_spec(
-                        canvas,
-                        player,
-                        left,
-                        top,
-                        right,
-                        bottom,
-                        entry_key=lag_marker_entry_key,
-                        base_kind=lag_marker_base_kind,
-                    )
-                continue
+            cached_signature = render_cache.get(cache_key)
+            if cached_signature == tile_signature:
+                has_image_item = _canvas_has_image_item_with_tag(canvas, item_tag)
+                if had_image_ref and has_image_item:
+                    skipped_count += 1
+                    # Transient hit areas are rebuilt on every redraw.  When Canvas items are reused,
+                    # the visible lag badge remains on screen but its click target still has to be
+                    # re-registered.
+                    if should_draw_lag_marker:
+                        _append_cached_lag_marker_reference_button_spec(
+                            canvas,
+                            player,
+                            left,
+                            top,
+                            right,
+                            bottom,
+                            entry_key=lag_marker_entry_key,
+                            base_kind=lag_marker_base_kind,
+                        )
+                    continue
+                if not had_image_ref:
+                    missing_image_ref_count += 1
+                elif not has_image_item:
+                    missing_image_item_count += 1
 
             if cache_key in render_cache:
                 changed_count += 1
@@ -19980,17 +20017,6 @@ def _draw_discards(
                 y,
                 image=tile_image,
                 anchor=layout["anchor"],
-            )
-            _draw_discard_tile_overlays(
-                tile_canvas,
-                player,
-                left,
-                top,
-                right,
-                bottom,
-                tint_kind=discard_tint_kind,
-                lower_band_tint_step=lower_band_tint_step,
-                upper_band_tint_step=upper_band_tint_step,
             )
             drawn_count += 1
             _add_discard_phase_total("create_image", tile_phase_started_at)
@@ -20085,16 +20111,32 @@ def _draw_discards(
         # Stale keys happen when the river is shortened by REINIT/bootstrap correction or when a
         # new round clears previous discards before the surrounding full redraw path runs.
         render_cache.pop(stale_key, None)
+        image_refs.pop(stale_key, None)
         stale_deleted_count += 1
     _add_discard_phase_total("stale_delete", stale_started_at)
+    for stale_image_key in set(image_refs) - active_cache_keys:
+        image_refs.pop(stale_image_key, None)
     canvas.discard_render_cache_by_key = render_cache
+    canvas.discard_tile_image_refs = image_refs
     canvas.last_discard_render_stats = {
         "active": len(active_cache_keys),
         "drawn": drawn_count,
         "skipped": skipped_count,
         "stale_deleted": stale_deleted_count,
         "changed": changed_count,
+        "missing_image_refs": missing_image_ref_count,
+        "missing_image_items": missing_image_item_count,
     }
+    if missing_image_ref_count or missing_image_item_count:
+        message = (
+            "UI discards cache repair: "
+            f"missing_image_refs={missing_image_ref_count} "
+            f"missing_image_items={missing_image_item_count} "
+            f"active={len(active_cache_keys)} drawn={drawn_count} skipped={skipped_count} "
+            f"changed={changed_count} refresh_token={getattr(canvas, 'current_refresh_token', None)}"
+        )
+        print(message)
+        _append_ui_diagnostic_log(message)
     if phase_timings is not None:
         for label, elapsed_ms in sorted(
             discard_phase_totals.items(),

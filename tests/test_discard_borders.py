@@ -10,6 +10,8 @@ from ui.table_renderer import (
     BRIDGE_NAKI_DISABLED_TOGGLE_CONTROL_ID,
     DISCARD_TINT_BRIGHTEN_BLEND,
     DISCARD_TINT_BRIGHTEN_COLOR,
+    DISCARD_RED_TINT_BLEND,
+    DISCARD_RED_TINT_COLOR,
     LayoutTuningSettings,
     LAG_DISCARD_MARKER,
     MULTI_PLAYER_LAG_DISCARD_MARKER,
@@ -26,6 +28,7 @@ from ui.table_renderer import (
     _discard_tint_brighten_overlay_band,
     _discard_item_canvas_tag,
     _discard_tile_image,
+    _discard_tint_base_overlay_bands,
     _discard_tile_tint_kind,
     _discard_border_kind,
     _collect_multi_player_lag_tiles_34,
@@ -116,7 +119,7 @@ class DiscardBorderKindTest(unittest.TestCase):
             (THINKING_TIME_PURPLE_COLOR, THINKING_TIME_OVERLAY_MAX_BLEND),
         )
 
-    def test_discard_tile_image_ignores_tint_when_base_scale_matches(self) -> None:
+    def test_discard_tile_image_uses_base_table_when_unmodified_scale_matches(self) -> None:
         discard = Discard(
             tile_id=5,
             draw_type=DrawType.TEDASHI,
@@ -142,12 +145,12 @@ class DiscardBorderKindTest(unittest.TestCase):
                 img_table,
                 Player.JICHA,
                 discard,
-                tint_kind="red",
+                tint_kind="none",
             )
 
         self.assertEqual(image, "base-image")
 
-    def test_discard_tile_image_caches_scaled_base_without_tint_composition(self) -> None:
+    def test_discard_tile_image_caches_scaled_base_without_tint(self) -> None:
         discard = Discard(
             tile_id=5,
             draw_type=DrawType.TEDASHI,
@@ -173,14 +176,14 @@ class DiscardBorderKindTest(unittest.TestCase):
                 img_table,
                 Player.JICHA,
                 discard,
-                tint_kind="red",
+                tint_kind="none",
             )
             second = _discard_tile_image(
                 canvas,
                 img_table,
                 Player.JICHA,
                 discard,
-                tint_kind="four_visible",
+                tint_kind="none",
             )
 
         self.assertEqual(first, "scaled-base-image")
@@ -191,6 +194,54 @@ class DiscardBorderKindTest(unittest.TestCase):
             Player.JICHA,
             DrawType.TEDASHI,
             tile_scale=0.8,
+        )
+
+    def test_discard_tile_image_caches_composited_tint_image(self) -> None:
+        discard = Discard(
+            tile_id=5,
+            draw_type=DrawType.TEDASHI,
+        )
+        canvas = SimpleNamespace(
+            current_ui_scale=1.0,
+            layout_tuning_settings=None,
+            discard_tinted_tile_image_cache={},
+        )
+        img_table = {
+            Player.JICHA: {
+                DrawType.TEDASHI: {5: "base-image"},
+                DrawType.TSUMOGIRI: {5: "base-tsumogiri-image"},
+            }
+        }
+
+        with patch(
+            "ui.table_renderer.build_tile_photoimage_from_base_overlay",
+            return_value="red-tinted-image",
+        ) as build_tinted:
+            first = _discard_tile_image(
+                canvas,
+                img_table,
+                Player.JICHA,
+                discard,
+                tint_kind="red",
+            )
+            second = _discard_tile_image(
+                canvas,
+                img_table,
+                Player.JICHA,
+                discard,
+                tint_kind="red",
+            )
+
+        self.assertEqual(first, "red-tinted-image")
+        self.assertEqual(second, "red-tinted-image")
+        build_tinted.assert_called_once_with(
+            canvas,
+            5,
+            Player.JICHA,
+            DrawType.TEDASHI,
+            base_overlay_bands=_discard_tint_base_overlay_bands("red"),
+            overlay_bands=(),
+            tile_scale=1.0,
         )
 
     def test_draw_discards_reuses_unchanged_tile_and_tags_new_items_at_creation(self) -> None:
@@ -212,11 +263,13 @@ class DiscardBorderKindTest(unittest.TestCase):
                 self.discard_render_cache_by_key = {}
                 self.deleted_tags: list[str] = []
                 self.created_items: list[tuple[str, dict[str, object]]] = []
+                self.items_by_id: dict[int, tuple[str, dict[str, object]]] = {}
                 self._next_item_id = 0
 
             def _create(self, kind: str, **kwargs: object) -> int:
                 self._next_item_id += 1
                 self.created_items.append((kind, kwargs))
+                self.items_by_id[self._next_item_id] = (kind, kwargs)
                 return self._next_item_id
 
             def create_image(self, *_args: object, **kwargs: object) -> int:
@@ -236,6 +289,23 @@ class DiscardBorderKindTest(unittest.TestCase):
 
             def delete(self, tag: str) -> None:
                 self.deleted_tags.append(tag)
+                normalized_tag = str(tag)
+                self.items_by_id = {
+                    item_id: (kind, kwargs)
+                    for item_id, (kind, kwargs) in self.items_by_id.items()
+                    if normalized_tag not in kwargs.get("tags", ())
+                }
+
+            def find_withtag(self, tag: str) -> tuple[int, ...]:
+                normalized_tag = str(tag)
+                return tuple(
+                    item_id
+                    for item_id, (_kind, kwargs) in self.items_by_id.items()
+                    if normalized_tag in kwargs.get("tags", ())
+                )
+
+            def type(self, item_id: int) -> str:
+                return self.items_by_id[int(item_id)][0]
 
             def bbox(self, _item_id: int) -> tuple[int, int, int, int] | None:
                 return None
@@ -304,20 +374,89 @@ class DiscardBorderKindTest(unittest.TestCase):
         self.assertEqual(canvas.last_discard_render_stats["skipped"], 1)
         self.assertEqual(len(canvas.discard_tile_selection_click_specs), 1)
 
+        canvas.discard_tile_image_refs = {}
         _draw_discards(
             canvas,
             img_table,
             {Player.JICHA: [discard]},
-            {int(Player.JICHA): frozenset({0})},
+            {},
             layout,
             visible_summary,
             {},
             {},
             (),
         )
+        self.assertGreater(len(canvas.created_items), first_item_count)
+        self.assertEqual(canvas.last_discard_render_stats["skipped"], 0)
+        self.assertEqual(canvas.last_discard_render_stats["changed"], 1)
+        self.assertEqual(canvas.last_discard_render_stats["missing_image_refs"], 1)
+
+        first_item_count = len(canvas.created_items)
+        canvas.deleted_tags = []
+        canvas.delete(item_tag)
+        _draw_discards(
+            canvas,
+            img_table,
+            {Player.JICHA: [discard]},
+            {},
+            layout,
+            visible_summary,
+            {},
+            {},
+            (),
+        )
+        self.assertGreater(len(canvas.created_items), first_item_count)
+        self.assertEqual(canvas.last_discard_render_stats["skipped"], 0)
+        self.assertEqual(canvas.last_discard_render_stats["changed"], 1)
+        self.assertEqual(canvas.last_discard_render_stats["missing_image_items"], 1)
+
+        first_item_count = len(canvas.created_items)
+        canvas.deleted_tags = []
+        canvas.items_by_id = {
+            999: (
+                "rectangle",
+                {"tags": ("live_async_discards", item_tag)},
+            )
+        }
+        _draw_discards(
+            canvas,
+            img_table,
+            {Player.JICHA: [discard]},
+            {},
+            layout,
+            visible_summary,
+            {},
+            {},
+            (),
+        )
+        self.assertGreater(len(canvas.created_items), first_item_count)
+        self.assertEqual(canvas.last_discard_render_stats["skipped"], 0)
+        self.assertEqual(canvas.last_discard_render_stats["changed"], 1)
+        self.assertEqual(canvas.last_discard_render_stats["missing_image_items"], 1)
+
+        first_item_count = len(canvas.created_items)
+        canvas.deleted_tags = []
+        with patch(
+            "ui.table_renderer.build_tile_photoimage_from_base_overlay",
+            return_value=ImageStub(),
+        ) as build_tinted:
+            _draw_discards(
+                canvas,
+                img_table,
+                {Player.JICHA: [discard]},
+                {int(Player.JICHA): frozenset({0})},
+                layout,
+                visible_summary,
+                {},
+                {},
+                (),
+            )
         self.assertEqual(canvas.deleted_tags, [item_tag])
         self.assertGreater(len(canvas.created_items), first_item_count)
         self.assertEqual(canvas.last_discard_render_stats["changed"], 1)
+        build_tinted.assert_called_once()
+        new_items = canvas.created_items[first_item_count:]
+        self.assertFalse(any(kind == "rectangle" for kind, _kwargs in new_items))
 
     def test_visible_count_marker_kind_prefers_four_over_three(self) -> None:
         visible_summary = VisibleTileSummary(
@@ -576,25 +715,25 @@ class DiscardBorderKindTest(unittest.TestCase):
             },
         )
 
-    def test_push_discard_marker_draws_only_from_second_river_row(self) -> None:
+    def test_push_discard_marker_draws_on_any_river_row(self) -> None:
         first_row_discard = Discard(tile_id=5, draw_type=DrawType.TEDASHI)
         second_row_discard = Discard(tile_id=5, draw_type=DrawType.TEDASHI)
 
-        self.assertFalse(
+        self.assertTrue(
             _should_draw_push_discard_marker(first_row_discard, 5, frozenset({5}))
         )
         self.assertTrue(
             _should_draw_push_discard_marker(second_row_discard, 6, frozenset({6}))
         )
 
-    def test_push_discard_marker_keeps_global_index_but_uses_local_row_gate(self) -> None:
+    def test_push_discard_marker_uses_global_index_without_local_row_gate(self) -> None:
         discard = SimpleNamespace(
             tile_id=5,
             draw_type=DrawType.TEDASHI,
             round_discard_index=42,
         )
 
-        self.assertFalse(_should_draw_push_discard_marker(discard, 5, frozenset({42})))
+        self.assertTrue(_should_draw_push_discard_marker(discard, 5, frozenset({42})))
         self.assertTrue(_should_draw_push_discard_marker(discard, 6, frozenset({42})))
 
     def test_push_marker_ignores_old_panel_latch_when_raw_push_is_gone(self) -> None:
@@ -1170,16 +1309,23 @@ class DiscardBorderKindTest(unittest.TestCase):
         self.assertEqual(visible_summary.four_visible_tile34_index_set, frozenset({4}))
 
     def test_discard_tint_uses_white_brighten_band_before_color(self) -> None:
-        self.assertEqual(
-            _discard_tint_brighten_overlay_band("red"),
-            (
-                0.0,
-                1.0,
-                DISCARD_TINT_BRIGHTEN_COLOR,
-                DISCARD_TINT_BRIGHTEN_COLOR,
-                DISCARD_TINT_BRIGHTEN_BLEND,
-            ),
+        brighten_band = (
+            0.0,
+            1.0,
+            DISCARD_TINT_BRIGHTEN_COLOR,
+            DISCARD_TINT_BRIGHTEN_COLOR,
+            DISCARD_TINT_BRIGHTEN_BLEND,
         )
+        red_band = (
+            0.0,
+            1.0,
+            DISCARD_RED_TINT_COLOR,
+            DISCARD_RED_TINT_COLOR,
+            DISCARD_RED_TINT_BLEND,
+        )
+
+        self.assertEqual(_discard_tint_brighten_overlay_band("red"), brighten_band)
+        self.assertEqual(_discard_tint_base_overlay_bands("red"), (brighten_band, red_band))
         self.assertIsNone(_discard_tint_brighten_overlay_band("none"))
 
     def test_red_tint_turns_brown_when_all_sequences_through_tile_are_blocked(self) -> None:

@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 import tkinter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
@@ -87,6 +87,9 @@ LIVE_DISCARD_RED_TINT_ENABLED = True
 LIVE_ASYNC_BUNDLE_REFRESH_ENABLED = True
 LIVE_RUNTIME_WATCHDOG_POLL_INTERVAL_S = 1.0
 LIVE_SNAPSHOT_REQUEST_MIN_INTERVAL_S = 0.08
+LIVE_SNAPSHOT_PUBLISH_LAG_LOG_THRESHOLD_S = 4.0
+LIVE_SNAPSHOT_PUBLISH_LAG_LOG_REPEAT_S = 5.0
+LIVE_SNAPSHOT_BUILD_SLOW_LOG_THRESHOLD_MS = 1000.0
 NAGA_BUTTON_X = 82
 NAGA_BUTTON_Y = 64
 NAGA_WINDOW_WIDTH = 860
@@ -1114,9 +1117,9 @@ def _start_naga_auto_query(
                     "naga-auto",
                     "query_error",
                     detail=error_text,
-                    blocked_hint="NAGA auto query failed",
-                    stale_after_s=10.0,
-                    repeat_after_s=20.0,
+                    blocked_hint="NAGA auto query failed; automatic retry is paused for this round",
+                    stale_after_s=3600.0,
+                    repeat_after_s=3600.0,
                 )
         else:
 
@@ -3401,6 +3404,95 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
     return snapshot
 
 
+def build_fast_live_table_snapshot(
+    capture_state: CaptureState,
+    base_snapshot: LiveTableSnapshot,
+    refresh_token: object | None,
+) -> LiveTableSnapshot | None:
+    """Build a lightweight current-frame snapshot before heavy live workers catch up."""
+
+    snapshot_result = _snapshot_live_capture_state(capture_state, blocking=False)
+    if snapshot_result is None:
+        return None
+    snapshot_state, player_names_by_seat, live_refresh_token = snapshot_result
+    round_identity = build_live_round_identity(snapshot_state)
+    same_round = getattr(base_snapshot, "round_identity", None) == round_identity
+    melds_by_player = build_live_meld_map(snapshot_state)
+    visible_summary = build_live_visible_tile_summary(snapshot_state)
+    hand_tiles = tiles136_to_tiles37(snapshot_state.live_hand_tiles_136)
+    hand_draw_tile = build_live_hand_draw_tile(snapshot_state)
+    hand_state_matches_base = (
+        same_round
+        and tuple(getattr(base_snapshot, "hand_tiles", ())) == tuple(hand_tiles)
+        and getattr(base_snapshot, "hand_draw_tile", None) == hand_draw_tile
+    )
+    resolved_refresh_token = (
+        refresh_token
+        if refresh_token is not None
+        else (
+            live_refresh_token,
+            _combined_live_async_update_sequence(capture_state)
+            if LIVE_ASYNC_BUNDLE_REFRESH_ENABLED
+            else 0,
+        )
+    )
+    return replace(
+        base_snapshot,
+        discard_map={
+            player: list(snapshot_state.tracker.discards.get(player, []))
+            for player in Player
+        },
+        discard_red_tint_indices_by_seat=(
+            dict(base_snapshot.discard_red_tint_indices_by_seat)
+            if same_round
+            else {}
+        ),
+        hand_tiles=hand_tiles,
+        hand_draw_tile=hand_draw_tile,
+        hand_danger_percentages=(
+            list(base_snapshot.hand_danger_percentages)
+            if hand_state_matches_base
+            else []
+        ),
+        opponent_suji_panel_summaries=(
+            dict(base_snapshot.opponent_suji_panel_summaries)
+            if same_round
+            else _build_loading_opponent_suji_panel_summaries(snapshot_state.current_round)
+        ),
+        player_push_alert_percentages=(
+            dict(base_snapshot.player_push_alert_percentages)
+            if same_round
+            else {}
+        ),
+        player_alert_indicators_by_seat=(
+            dict(base_snapshot.player_alert_indicators_by_seat)
+            if same_round
+            else {}
+        ),
+        player_score_diffs_by_seat=build_player_score_diffs_by_seat(snapshot_state.current_round),
+        player_names_by_seat=player_names_by_seat,
+        meld_tiles=flatten_visible_meld_tiles(melds_by_player),
+        dora_indicator_tiles=tiles136_to_tiles37(snapshot_state.live_dora_indicator_tiles_136),
+        round_events=_build_awaseuchi_round_events(snapshot_state.current_round),
+        round_info_panel=build_live_round_info_panel(snapshot_state),
+        melds_by_player=melds_by_player,
+        visible_summary=visible_summary,
+        round_identity=round_identity,
+        refresh_token=resolved_refresh_token,
+        hand_recommendation_request_context=build_live_pystyle_display_context(snapshot_state),
+        table_situation_auto_scores_by_seat=(
+            dict(base_snapshot.table_situation_auto_scores_by_seat)
+            if same_round
+            else {}
+        ),
+        same_jun_marker_indices_by_seat=(
+            dict(base_snapshot.same_jun_marker_indices_by_seat)
+            if same_round
+            else {}
+        ),
+    )
+
+
 def force_live_table_snapshot_reinit(capture_state: CaptureState) -> tuple[int, int]:
     """Drop the live snapshot cache and force one refresh from the current capture state."""
 
@@ -3488,11 +3580,16 @@ class AsyncLiveTableSnapshotProvider:
         initial_snapshot: LiveTableSnapshot,
         *,
         snapshot_builder: Callable[[CaptureState], LiveTableSnapshot] = build_live_table_snapshot,
+        fast_snapshot_builder: Callable[
+            [CaptureState, LiveTableSnapshot, object | None],
+            LiveTableSnapshot | None,
+        ] = build_fast_live_table_snapshot,
         refresh_token_reader: Callable[[CaptureState], object | None] = build_live_refresh_token,
         reinit_action: Callable[[CaptureState], object | None] = force_live_table_snapshot_reinit,
     ) -> None:
         self._capture_state = capture_state
         self._snapshot_builder = snapshot_builder
+        self._fast_snapshot_builder = fast_snapshot_builder
         self._refresh_token_reader = refresh_token_reader
         self._reinit_action = reinit_action
         self._lock = threading.Lock()
@@ -3500,10 +3597,13 @@ class AsyncLiveTableSnapshotProvider:
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
         self._latest_snapshot = initial_snapshot
+        self._latest_fast_snapshot: LiveTableSnapshot | None = None
         self._pending_refresh_token: object | None = None
         self._in_flight_refresh_token: object | None = None
         self._last_error_text = ""
         self._last_request_latest_monotonic_s = 0.0
+        self._last_published_monotonic_s = time.monotonic()
+        self._last_publish_lag_log_monotonic_s = 0.0
 
     def _ensure_worker_locked(self) -> None:
         if self._worker_thread is not None and self._worker_thread.is_alive():
@@ -3547,16 +3647,22 @@ class AsyncLiveTableSnapshotProvider:
                     print(f"Live snapshot refresh-token read skipped: {error_text}", file=sys.stderr)
             return
         self._queue_refresh_token(refresh_token)
+        self._refresh_fast_snapshot_if_needed(refresh_token)
+        self._log_publish_lag_if_needed(refresh_token)
 
     def current_snapshot(self) -> LiveTableSnapshot:
         self.request_latest()
         with self._lock:
-            return self._latest_snapshot
+            return self._latest_fast_snapshot or self._latest_snapshot
 
     def current_refresh_token(self) -> object | None:
         self.request_latest()
         with self._lock:
-            return getattr(self._latest_snapshot, "refresh_token", None)
+            return getattr(
+                self._latest_fast_snapshot or self._latest_snapshot,
+                "refresh_token",
+                None,
+            )
 
     def force_reinit(self) -> object | None:
         try:
@@ -3569,8 +3675,13 @@ class AsyncLiveTableSnapshotProvider:
                     print(f"Live snapshot REINIT skipped: {error_text}", file=sys.stderr)
             return self.current_refresh_token()
         self._queue_refresh_token(refresh_token)
+        self._refresh_fast_snapshot_if_needed(refresh_token)
         with self._lock:
-            return getattr(self._latest_snapshot, "refresh_token", None)
+            return getattr(
+                self._latest_fast_snapshot or self._latest_snapshot,
+                "refresh_token",
+                None,
+            )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -3594,6 +3705,7 @@ class AsyncLiveTableSnapshotProvider:
                 self._wake_event.clear()
                 continue
             table_view.begin_thread_activity_notice("live snapshot")
+            build_started_at = time.perf_counter()
             try:
                 snapshot = self._snapshot_builder(self._capture_state)
             except Exception as exc:  # noqa: BLE001 - keep the snapshot worker alive after transient parse/cache errors.
@@ -3606,10 +3718,84 @@ class AsyncLiveTableSnapshotProvider:
                 continue
             finally:
                 table_view.finish_thread_activity_notice("live snapshot")
+            elapsed_ms = (time.perf_counter() - build_started_at) * 1000.0
             with self._lock:
                 self._latest_snapshot = snapshot
                 self._in_flight_refresh_token = None
                 self._last_error_text = ""
+                self._last_published_monotonic_s = time.monotonic()
+                if (
+                    getattr(self._latest_fast_snapshot, "refresh_token", None)
+                    == getattr(snapshot, "refresh_token", None)
+                ):
+                    self._latest_fast_snapshot = None
+                pending_after_publish = self._pending_refresh_token
+            if elapsed_ms >= LIVE_SNAPSHOT_BUILD_SLOW_LOG_THRESHOLD_MS:
+                message = (
+                    "Live snapshot build slow: "
+                    f"{elapsed_ms:.1f}ms requested_token={refresh_token} "
+                    f"published_token={getattr(snapshot, 'refresh_token', None)} "
+                    f"pending_after={pending_after_publish}"
+                )
+                print(message)
+                _append_live_runtime_log(message)
+
+    def _log_publish_lag_if_needed(self, requested_refresh_token: object | None) -> None:
+        now_monotonic_s = time.monotonic()
+        with self._lock:
+            latest_refresh_token = getattr(self._latest_snapshot, "refresh_token", None)
+            pending_refresh_token = self._pending_refresh_token
+            in_flight_refresh_token = self._in_flight_refresh_token
+            published_age_s = max(0.0, now_monotonic_s - self._last_published_monotonic_s)
+            last_log_s = self._last_publish_lag_log_monotonic_s
+            if (
+                published_age_s < LIVE_SNAPSHOT_PUBLISH_LAG_LOG_THRESHOLD_S
+                or (now_monotonic_s - last_log_s) < LIVE_SNAPSHOT_PUBLISH_LAG_LOG_REPEAT_S
+                or (
+                    requested_refresh_token == latest_refresh_token
+                    and pending_refresh_token is None
+                    and in_flight_refresh_token is None
+                )
+            ):
+                return
+            self._last_publish_lag_log_monotonic_s = now_monotonic_s
+        message = (
+            "Live snapshot publish lag: "
+            f"stale_for={published_age_s:.1f}s requested_token={requested_refresh_token} "
+            f"latest_token={latest_refresh_token} pending_token={pending_refresh_token} "
+            f"in_flight_token={in_flight_refresh_token}"
+        )
+        print(message)
+        _append_live_runtime_log(message)
+
+    def _refresh_fast_snapshot_if_needed(self, refresh_token: object | None) -> None:
+        with self._lock:
+            latest_snapshot = self._latest_snapshot
+            if refresh_token == getattr(latest_snapshot, "refresh_token", None):
+                self._latest_fast_snapshot = None
+                return
+            if refresh_token == getattr(self._latest_fast_snapshot, "refresh_token", None):
+                return
+        try:
+            fast_snapshot = self._fast_snapshot_builder(
+                self._capture_state,
+                latest_snapshot,
+                refresh_token,
+            )
+        except Exception as exc:  # noqa: BLE001 - fast frame is an optimization; worker remains source of truth.
+            error_text = f"{type(exc).__name__}: {exc}"
+            with self._lock:
+                if self._last_error_text != error_text:
+                    self._last_error_text = error_text
+                    print(f"Live fast snapshot skipped: {error_text}", file=sys.stderr)
+            return
+        if fast_snapshot is None:
+            return
+        with self._lock:
+            if refresh_token == getattr(self._latest_snapshot, "refresh_token", None):
+                self._latest_fast_snapshot = None
+            else:
+                self._latest_fast_snapshot = fast_snapshot
 
 
 def main() -> None:

@@ -123,6 +123,7 @@ class LiveSnapshotCacheTest(unittest.TestCase):
         state = CaptureState()
         current_token = {"value": (1, 0)}
         built_tokens: list[object] = []
+        release_builder = app_main.threading.Event()
 
         def token_reader(_state: CaptureState) -> object:
             return current_token["value"]
@@ -130,6 +131,7 @@ class LiveSnapshotCacheTest(unittest.TestCase):
         def snapshot_builder(_state: CaptureState) -> app_main.LiveTableSnapshot:
             token = current_token["value"]
             built_tokens.append(token)
+            release_builder.wait(timeout=2.0)
             return _build_minimal_live_table_snapshot(token)
 
         provider = app_main.AsyncLiveTableSnapshotProvider(
@@ -142,27 +144,42 @@ class LiveSnapshotCacheTest(unittest.TestCase):
         try:
             self.assertEqual(provider.current_refresh_token(), (1, 0))
             current_token["value"] = (2, 0)
-            self.assertEqual(provider.current_refresh_token(), (1, 0))
+            with provider._lock:
+                provider._last_request_latest_monotonic_s = 0.0
+            self.assertEqual(provider.current_refresh_token(), (2, 0))
+            self.assertEqual(provider.current_snapshot().refresh_token, (2, 0))
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not built_tokens:
+                time.sleep(0.01)
+            self.assertEqual(built_tokens, [(2, 0)])
 
+            release_builder.set()
             deadline = time.time() + 2.0
             while time.time() < deadline:
-                if provider.current_snapshot().refresh_token == (2, 0):
+                with provider._lock:
+                    heavy_token = provider._latest_snapshot.refresh_token
+                if heavy_token == (2, 0):
                     break
                 time.sleep(0.01)
 
-            self.assertEqual(provider.current_snapshot().refresh_token, (2, 0))
+            with provider._lock:
+                self.assertEqual(provider._latest_snapshot.refresh_token, (2, 0))
+                self.assertIsNone(provider._latest_fast_snapshot)
             self.assertIn((2, 0), built_tokens)
         finally:
+            release_builder.set()
             provider.stop()
 
-    def test_async_live_table_snapshot_provider_force_reinit_defers_publish_until_built(self) -> None:
+    def test_async_live_table_snapshot_provider_force_reinit_exposes_fast_snapshot(self) -> None:
         state = CaptureState()
         current_token = {"value": (1, 0)}
+        release_builder = app_main.threading.Event()
 
         def token_reader(_state: CaptureState) -> object:
             return current_token["value"]
 
         def snapshot_builder(_state: CaptureState) -> app_main.LiveTableSnapshot:
+            release_builder.wait(timeout=2.0)
             return _build_minimal_live_table_snapshot(current_token["value"])
 
         def reinit_action(_state: CaptureState) -> object:
@@ -177,17 +194,58 @@ class LiveSnapshotCacheTest(unittest.TestCase):
             reinit_action=reinit_action,
         )
         try:
-            self.assertEqual(provider.force_reinit(), (1, 0))
+            self.assertEqual(provider.force_reinit(), (3, 0))
+            self.assertEqual(provider.current_snapshot().refresh_token, (3, 0))
 
+            release_builder.set()
             deadline = time.time() + 2.0
             while time.time() < deadline:
-                if provider.current_snapshot().refresh_token == (3, 0):
+                with provider._lock:
+                    heavy_token = provider._latest_snapshot.refresh_token
+                if heavy_token == (3, 0):
                     break
                 time.sleep(0.01)
 
-            self.assertEqual(provider.current_snapshot().refresh_token, (3, 0))
+            with provider._lock:
+                self.assertEqual(provider._latest_snapshot.refresh_token, (3, 0))
+                self.assertIsNone(provider._latest_fast_snapshot)
         finally:
+            release_builder.set()
             provider.stop()
+
+    def test_fast_live_table_snapshot_keeps_push_alerts_for_same_round(self) -> None:
+        state = _build_live_capture_state()
+        base_snapshot = _build_minimal_live_table_snapshot((1, 0))
+        base_snapshot = app_main.replace(
+            base_snapshot,
+            round_identity=app_main.build_live_round_identity(state),
+            player_push_alert_percentages={
+                int(Player.SHIMOCHA): {
+                    "seat": int(Player.SHIMOCHA),
+                    "percentage": 12.0,
+                    "threshold_percent": 9.0,
+                    "discard_index": 7,
+                    "kind": "push",
+                }
+            },
+        )
+        state.tracker.add_discard(Player.SHIMOCHA, 2).round_discard_index = 1
+        state.live_update_sequence = 2
+
+        fast_snapshot = app_main.build_fast_live_table_snapshot(
+            state,
+            base_snapshot,
+            (2, 0),
+        )
+
+        self.assertIsNotNone(fast_snapshot)
+        assert fast_snapshot is not None
+        self.assertEqual(fast_snapshot.refresh_token, (2, 0))
+        self.assertEqual(len(fast_snapshot.discard_map[Player.SHIMOCHA]), 2)
+        self.assertEqual(
+            fast_snapshot.player_push_alert_percentages,
+            base_snapshot.player_push_alert_percentages,
+        )
 
     def test_live_discard_red_tint_cache_reuses_equivalent_round_signature(self) -> None:
         first_state = _build_live_capture_state()
