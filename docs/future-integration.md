@@ -154,6 +154,26 @@ It does not support:
 - formula DSL parsing
 - hidden-state learning
 
+## Future Issue: Cross-view Reallocation To Unexpanded And Exception Mass
+
+Current Phase1 keeps tile-efficiency readings, tile-count readings, yaku readings, and abstract readings as separate candidate trees with separate 100% spaces. Their input probabilities, residual probabilities, exception candidates, unknown buffers, and four-axis influence scores must not be merged automatically.
+
+Future pruning-ui / probability-tree editors may introduce cross-view correction. A reading in one view can strongly change the candidate distribution in another view. For example, an abstract reading can make yaku A thinner and yaku B denser. Even then, the probability mass removed from yaku A should not always be redistributed fully to existing yaku B.
+
+When existing candidates have weak explanatory power, only a few strong candidates exist, unresolved `mixed` / `unknown` remains, partial tile-pattern matching is insufficient, the abstract reading is strong but concrete tile-efficiency or yaku candidates are still undefined, or low-frequency high-loss exceptions should be retained, future tools may need to increase the mass of `未展開の枝`, `例外の枝置き場`, or `未知バッファ`.
+
+This is not implemented in Phase1. Phase1 must not automatically increase or decrease unexpanded or exception probability via cross-view correction. It must not overwrite input probabilities with cross-corrected distributions. It must not cut existing candidates aggressively from abstract readings alone. It must not treat cross-view integration as a fixed result without tile-pattern validation. Four-axis influence scores are not candidate probabilities and must not be mixed into a 100% candidate-probability space.
+
+Future design work should consider:
+
+- A mechanism to increase or decrease unexpanded, exception, and unknown-buffer mass after cross-view correction.
+- UI choice between redistributing mass to existing candidates and returning it to unexpanded or exception branches.
+- Reallocation rules based on candidate count, explanatory power, axis confidence, unresolved `mixed` / `unknown`, and residual rate.
+- A preview that distinguishes "move candidate A's lost mass to candidate B" from "return candidate A's lost mass to unexpanded or exception mass".
+- Confidence per cross-view correction rule and an impact log for the integrated distribution.
+- Validation through partial tile-pattern matching.
+- Separate display of input probability, tile-count-adjusted weight, cross-corrected weight, computation probability, and unexpanded/exception probability.
+
 ## Open Design Questions
 
 - Should pruning-ui import be append-only or replace the current probability tree?

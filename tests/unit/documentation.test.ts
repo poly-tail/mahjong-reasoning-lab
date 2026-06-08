@@ -23,6 +23,10 @@ describe("documentation scope", () => {
     expect(specification).toContain("卓上動態 / 他家介入読み");
     expect(specification).toContain("候補木ビュー");
     expect(specification).toContain("例外の枝置き場");
+    expect(requirements).toContain("観点横断補正時の未展開・例外確率");
+    expect(requirements).toContain("4軸影響スコアを候補確率100%空間に混ぜない");
+    expect(specification).toContain("横断補正後重み");
+    expect(specification).toContain("抽象読みだけで既存候補を自動的に大きく切りません");
   });
 
   it("keeps README PDF commands aligned with scripts", () => {
