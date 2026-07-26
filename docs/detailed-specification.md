@@ -1,6 +1,7 @@
 # Mahjong Reasoning Lab 詳細仕様書
 
 作成日: 2026-06-08
+更新日: 2026-07-26
 
 ## 1. 全体アーキテクチャ
 
@@ -11,10 +12,10 @@ Phase1 の正式名称は Reading Probability Core です。Phase1 は、観測�
 主な境界:
 
 - `src/app`: app shell、navigation、Zustand store
-- `src/domain`: zod schema、seed、taxonomy、reading numerics、residual mass、drawer catalog
+- `src/domain`: zod schema、seed、taxonomy、Project / Sheet scope、template catalog、reading numerics、residual mass、export変換
 - `src/infrastructure`: IndexedDB、file helpers
 - `src/ui`: Case Workspace、Quick Reading Input、Workbench、Lens UI
-- `docs`: 要件、仕様、理論、運用ドキュメント
+- `docs`: 要件、詳細仕様、画面仕様、ユーザー仕様、理論、将来連携
 
 ## 2. データモデル
 
@@ -23,13 +24,20 @@ Phase1 の正式名称は Reading Probability Core です。Phase1 は、観測�
 主な要素:
 
 - `KnowledgeNode`: 観測、仮説、metric、choice group、例外、曖昧性など
-- `KnowledgeEdge`: semantic / probabilistic / influence / reasoning の関係
-- `CaseItem`: active case と attached nodes
+- `KnowledgeEdge`: semantic / probabilistic / influence の関係
+- `CaseData`: active case と attached nodes
+- `Project`: 研究テーマや用途の単位と所属Sheet ID
+- `Sheet`: Project内の作業面と、node / edge / case / rule / saved view等の所属ID
+- `GlobalSettings`: Project / Sheet作成時の既定テンプレートと空作成の既定値
 - `ReadingImpactDraft`: Quick Reading Input の入力状態
 - `ResidualMassSummary`: choice group の未配分確率と扱い
 - `ReadingDrawerItem`: 未配分や思い出し漏れから候補化できるcatalog item
 
-schema変更なしで扱うため、未配分や例外は既存の node type、tags、probability fields、pruning hints を組み合わせて保存します。
+`WorkspaceDocument` はtop-levelの `nodes` / `edges` / `cases` / `rules` / `saved_views` を維持し、`projects` / `sheets` / `active_project_id` / `active_sheet_id` / `global_settings` を同じworkspace v4へ追加しています。未配分や例外は既存の node type、tags、probability fields、pruning hints を組み合わせて保存します。
+
+表示スコープ `sheet` / `project` / `workspace` は `WorkspaceScopeMode` として定義しますが、`scopeMode` はZustandの一時UI状態であり、`WorkspaceDocument` へ永続化しません。
+
+Reasoning Labの多段処理は `ReadingChain` / `ReadingChainStep` として保存し、`KnowledgeEdge.relation_layer` に `reasoning` を追加しません。
 
 ## 3. Semantic / Probabilistic / Influence layer
 
@@ -253,7 +261,9 @@ Warning rules:
 
 候補木ビューは Sheet / Project / Workspace のスコープ切替に対応します。Sheetではactive Sheetだけ、Projectではactive Project配下、Workspaceでは全体を候補木に投影します。テンプレートから作成された `牌理`、`枚数`、`手役`、`抽象的な読み` は初期枝として表示します。ただしこれらは推奨手順や自動判断ではなく、読み候補を整理する初期素材です。
 
-枝を切る操作では、mixed / unknown の軸、未展開の枝、未知の枝、例外の枝置き場、低い軸確信度、固定中の枝との矛盾を警告します。警告がある場合でも、候補木ビューは保存済みグラフを直接破壊せず、反映前確認で差分を見せます。
+`枝を切る` を選択した場合は、mixed / unknown の軸、未展開の枝、未知の枝、例外の枝置き場、低い軸確信度、固定中の枝との矛盾を警告します。警告がある場合でも、候補木ビューは保存済みグラフを直接変更せず、反映前確認に見込みを表示します。
+
+現行の候補木ビューは読み候補の投影、枝選択、操作種別の選択、警告プレビューまでです。`反映前確認` / `反映する` / `元に戻す`、未展開・例外への送信、読みの枝候補から追加するボタンにはworkspace mutationを接続していません。実データの確率編集、伝播preview適用、枝刈り記録は詳細編集またはReasoning Labで扱います。
 
 テストでは次を確認します。
 
@@ -262,7 +272,7 @@ Warning rules:
 - 未配分確率が `未展開の枝` として表示される。
 - 例外候補が `例外の枝置き場` として表示される。
 - 候補木ビュー内に英語の除外操作名が出ない。
-- `枝を切る`、`枝を弱める`、`有力枝を残す` が内部操作に対応している。
+- `枝を切る`、`枝を弱める`、`有力枝を残す` が内部 `PruningActionType` の表示ラベルへ対応している。
 - mixed / unknown / 未展開の枝が残る状態で `枝を切る` を選ぶと警告が出る。
 - Sheet / Project / Workspace のスコープを切り替えられる。
 - テンプレート作成枝が初期枝として表示される。
@@ -327,7 +337,9 @@ TemplateCatalog は `牌理`、`枚数`、`手役`、`抽象的な読み` を提
 
 App shellにはProject Selector、Sheet Selector、Project作成、Sheet作成、Global Settings、表示スコープ切替を置きます。Project作成ダイアログはProject名、説明、タグ、初期Sheet作成、初期Sheet名、テンプレート選択、空作成を扱います。Sheet作成ダイアログは所属Project、Sheet名、説明、タグ、テンプレート選択、空作成を扱います。
 
-表示スコープは Sheet / Project / Workspace です。Knowledge Mapはscopeに応じてノードとエッジを絞ります。Case Workspaceはactive Sheetに属するcaseを優先し、候補ノードはactive Sheet、active Project、Workspaceの順に優先します。Reading DrawerとException Libraryはscope badgeを表示します。Residual Massは未配分候補の送信先をactive Sheet / Project / Global / unknown bufferとして分類します。
+表示スコープは Sheet / Project / Workspace です。Knowledge Mapはscopeに応じてノードとエッジを絞ります。Case Workspaceはactive Sheetに属するcaseを優先し、候補ノードはactive Sheet、active Project、Workspaceの順に優先します。Reading DrawerとException Libraryはscope badgeを表示します。
+
+Residual Mass panelは未配分候補の送信先としてactive Sheet / Project / Global / unknown bufferを選ぶUIを持ちます。ただし現行では選択値をpanel内stateにだけ保持し、追加・未知保持handlerへ渡しません。新規要素の所属は既存store actionによりactive Sheetになります。Project / Globalへの実ルーティングは将来接続です。
 
 ### Export / Import
 
@@ -336,3 +348,7 @@ workspace JSON export/importはProject/Sheet/Global Settingsを含みます。su
 ### Score Semantics
 
 4軸は排他的候補ではありません。影響ウェイトは各軸独立の0〜100スコアで、候補確率ではありません。4軸の合計を100にする必要はありません。軸確信度も0〜100スコアです。候補確率と未配分確率だけを%表示します。内部保存では `magnitude` と `confidence` を0〜1として維持します。
+
+## 17. 画面仕様
+
+共通フレーム、目的別ナビゲーション、各画面のカラム構成、空・警告状態、現行の操作制約は [screen-specification.md](./screen-specification.md) を正本とします。

@@ -1,11 +1,27 @@
 # Future Integration
 
+更新日: 2026-07-26
+
 ## Purpose
 
 This project owns the knowledge map, case workspace, and a small explainable probabilistic propagation layer.
 A separate pruning-ui / probability-tree editor can consume selected subgraphs later.
 
 The boundary is JSON, not direct runtime coupling.
+
+## Current UI Integration Boundary
+
+The current Candidate Tree is a scoped projection over the existing graph. It selects a branch, selects a `PruningActionType` label, and shows warnings. It does not dispatch workspace mutations from the tree's `反映前確認`, `反映する`, `元に戻す`, residual destination, exception destination, or drawer buttons.
+
+Persistent operations currently remain in:
+
+- Probability Workbench detailed editor
+- propagation preview apply
+- Reasoning Lab pruning and lock records
+
+The Residual Mass panel also exposes active Sheet / Project / Global / unknown destination choices as local UI state. Those choices are not passed to the add or keep-unknown handlers. Created records continue to use active Sheet membership.
+
+Future integration must reuse store/domain actions rather than adding a second mutation path inside the presentation components. Candidate Tree preview should be generated from the same domain operation that will later be applied.
 
 ## Export Contract
 
@@ -192,4 +208,12 @@ Future design work should consider:
 
 ## Suggested Next Step
 
-Create a small pruning-ui importer that accepts `pruning-ui.subgraph.v4`, shows `choice_groups`, `locks`, `weights`, `distributions`, `influence_model`, and `reasoning_lab`, then lets the user edit weights before any automatic pruning behavior is added.
+Before adding automatic pruning behavior:
+
+1. Connect Candidate Tree preview to the existing probability / Reasoning Lab domain operations.
+2. Connect apply and undo to the same Zustand history path used by other workspace mutations.
+3. Pass residual destination scope into domain actions and persist active Sheet / Project / Global ownership explicitly.
+4. Add tests proving that preview is non-mutating and apply changes only the intended scoped records.
+5. Keep hard-prune warnings blocking or explicit when residual, mixed / unknown, low-confidence, or fixed branches remain.
+
+After that boundary is stable, create a small pruning-ui importer that accepts `pruning-ui.subgraph.v4`, shows `choice_groups`, `locks`, `weights`, `distributions`, `influence_model`, and `reasoning_lab`, then lets the user edit weights before any automatic pruning behavior is added.

@@ -1,5 +1,7 @@
 # Schema
 
+更新日: 2026-07-26
+
 The schema source of truth is `src/domain/schema.ts`.
 All persisted and exported JSON has an explicit `schema_version`.
 
@@ -12,6 +14,11 @@ Version: `mahjong-knowledge-map.workspace.v4`
 Top-level fields:
 
 - `schema_version`
+- `projects`
+- `sheets`
+- `active_project_id`
+- `active_sheet_id`
+- `global_settings`
 - `nodes`
 - `edges`
 - `cases`
@@ -25,6 +32,85 @@ Top-level fields:
 - `teaching_logs`
 - `active_case_id`
 - `updated_at`
+
+Project / Sheet fields are additive defaults inside workspace v4. A v4 document without them is normalized into Default Project / Default Sheet before use.
+
+`scopeMode` is not a top-level field. It is transient Zustand UI state with values `sheet` / `project` / `workspace`.
+
+## Project
+
+Fields:
+
+- `id`
+- `title`
+- `description`
+- `tags`
+- `created_at`
+- `updated_at`
+- `default_sheet_template_options`
+- `sheet_ids`
+- `archived`
+
+`default_sheet_template_options` has four booleans:
+
+- `tile_efficiency`
+- `tile_count`
+- `yaku`
+- `abstract_reading`
+
+## Sheet
+
+Fields:
+
+- `id`
+- `project_id`
+- `title`
+- `description`
+- `tags`
+- `created_at`
+- `updated_at`
+- `node_ids`
+- `edge_ids`
+- `case_ids`
+- `rule_ids`
+- `saved_view_ids`
+- `reading_drawer_item_ids`
+- `exception_node_ids`
+- `residual_group_ids`
+- `template_source`
+- `archived`
+
+The content records remain in the workspace top-level arrays. Sheet arrays are membership indexes; they do not embed copies of nodes, edges, cases, rules, or saved views.
+
+`template_source` is optional and contains:
+
+- `created_from_template`
+- `enabled_template_keys`
+
+`enabled_template_keys` uses the same four template keys as `default_sheet_template_options`. It is used to keep normal template application idempotent.
+
+## Global Settings
+
+Fields:
+
+- `project_creation_defaults`
+- `sheet_creation_defaults`
+- `create_empty_project_by_default`
+- `create_empty_sheet_by_default`
+
+Both defaults objects use the four template booleans. All four templates default to `true`; empty creation defaults to `false`.
+
+## Scope Normalization
+
+`normalizeWorkspaceScopes()` guarantees:
+
+- at least one Project and one Sheet when existing content needs a scope
+- valid `project_id` references for Sheets
+- valid active Project / Sheet ids
+- Project `sheet_ids` synchronized with actual Sheets
+- orphan node / edge / case / rule / saved view ids assigned to the active or first Sheet
+
+The normalizer does not embed Project / Sheet ownership directly into each content record. Membership remains on Sheet.
 
 ## Knowledge Node
 
@@ -428,5 +514,10 @@ Pruning hints:
 
 ## Compatibility Policy
 
-Schema changes should add a new version string and a migration function instead of silently changing the meaning of fields.
-For the MVP, import accepts `mahjong-knowledge-map.workspace.v4` and normalizes v1/v2/v3.
+For the current MVP, import accepts `mahjong-knowledge-map.workspace.v4` and normalizes v1/v2/v3.
+
+Workspace v4 allows additive fields with zod defaults. This is how Project / Sheet / Global Settings remain compatible with older v4 documents.
+
+A change that removes fields, changes field meaning, or cannot be reconstructed with a default must introduce a new version string and an explicit migration.
+
+All IndexedDB loads, workspace imports, and exports pass through zod validation and scope normalization.

@@ -12,7 +12,7 @@ TemplateCatalog は Reading Probability Core の初期素材です。読み候�
 
 画面上部のProject Selector / Sheet Selectorでactive Project / Sheetを切り替えられます。表示スコープは Sheet / Project / Workspace から選べます。Knowledge Mapは選択スコープに応じてノードとエッジを絞り込み、Case Workspaceはactive Sheetのcaseを優先し、新規caseやQuick Reading Inputで作成した要素をactive Sheetへ紐付けます。
 
-Reading DrawerとException Libraryには Sheet / Project / Global のscope badgeを表示します。Residual Massでは未配分候補の送信先をactive Sheet / Project / Global / unknown bufferとして分類できます。subgraph exportは選択中ノードだけでなく、active Sheet、active Project、Workspace全体を対象にできます。
+Reading DrawerとException Libraryには Sheet / Project / Global のscope badgeを表示します。Residual Massにはactive Sheet / Project / Global / unknown bufferの送信先選択がありますが、現行では表示上の選択に留まり、追加要素の永続所属はactive Sheetです。Project / Globalへの実ルーティングは将来接続です。subgraph exportは選択中ノードだけでなく、active Sheet、active Project、Workspace全体を対象にできます。
 
 Project / Sheet機能は、4軸の影響ウェイトを0〜100スコアとして扱う既存方針を維持します。候補確率と未配分確率だけを%表示し、影響ウェイトと軸確信度は確率ではありません。4軸の合計を100にする必要はありません。
 
@@ -345,10 +345,12 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 
 ## Docs
 
+- [docs index](./docs/README.md)
 - [requirements-definition.md](./docs/requirements-definition.md)
 - [requirements-definition.pdf](./docs/requirements-definition.pdf)
 - [detailed-specification.md](./docs/detailed-specification.md)
 - [detailed-specification.pdf](./docs/detailed-specification.pdf)
+- [screen-specification.md](./docs/screen-specification.md)
 - [specification.md](./docs/specification.md)
 - [specification.pdf](./docs/specification.pdf)
 - [user-guide.md](./docs/user-guide.md)
@@ -389,6 +391,8 @@ READMEにスクリーンショットを貼る場合は、開発サーバを起�
 候補木ビューでは、左ペインに候補グループ、候補枝、4軸影響、未展開の枝、例外の枝置き場を表示します。中央ペインでは選択した枝の候補確率、影響スコア、軸確信度、観測、例外、操作履歴を確認します。右ペインでは `枝を切る`、`枝を弱める`、`有力枝を残す`、`枝を固定する`、`比率を固定する` などの日本語ラベルで枝操作を選べます。
 
 Project / Sheet / Workspace のスコープ切替に対応し、新規ProjectまたはSheet作成時の `牌理`、`枚数`、`手役`、`抽象的な読み` テンプレートは初期枝として確認できます。未展開の枝、未知の枝、例外の枝置き場が残る状態では、枝を切る前に反映前確認で警告を確認します。
+
+現行の候補木ビューは読み候補の投影、操作種別の選択、警告プレビューまでを担当します。候補木内の `反映前確認` / `反映する` / `元に戻す` と、未展開・例外への送信ボタンは永続データを変更しません。実際の確率編集、伝播preview適用、枝刈り記録は `詳細編集` またはReasoning Labで行います。
 
 ## まだ出来ないこと
 
