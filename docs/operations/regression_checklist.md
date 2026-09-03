@@ -45,8 +45,8 @@
 
 ## danger / suji / push
 
-- 自動テスト: `tests/test_danger_suji_*.py`, `tests/test_player_panel_alerts.py`, `tests/test_live_snapshot_cache.py`
-- 期待結果: Push、remain、red tint、safe tile の判定データがpanel/河/DBで矛盾しない。河 `P` の1段目非表示は意図的な表示 gate として扱う。同一局の heavy suji / 危険度計算中は直前完了済み panel / hand danger / analysis overlay を保持し、手牌 danger は同じ牌と同牌内の出現順で現在手牌へ対応付ける。初回だけ loading / 棒なし、新局では前局値なしとする。保持中の stale 値は自動打牌や alert 音声の新規判定へ使わない。
+- 自動テスト: `tests/test_danger_suji_*.py`, `tests/test_danger_suji_line_table.py`, `tests/test_tenpai_probability.py`, `tests/test_player_panel_alerts.py`, `tests/test_live_snapshot_cache.py`
+- 期待結果: 固定 table は安定した 18 行を持ち、名前付き係数の積、legacy `line_weights` 順、base / concentrated の 34 要素 numerator と denominator が従来値に一致する。過去 Push 再生は current actor だけを構築しても返却結果と cache hit を変えない。Push、remain、red tint、safe tile の判定データがpanel/河/DBで矛盾しない。河 `P` の1段目非表示は意図的な表示 gate として扱う。同一局の heavy suji / 危険度計算中は直前完了済み panel / hand danger / analysis overlay を保持し、手牌 danger は同じ牌と同牌内の出現順で現在手牌へ対応付ける。初回だけ loading / 棒なし、新局では前局値なしとする。保持中の stale 値は自動打牌や alert 音声の新規判定へ使わない。
 - 疑う箇所: `src/logic/danger_suji.py`, `src/ui/table_renderer.py`, `src/capture/storage.py`。
 
 ## Bridge / pystyle / Nodocchi / NAGA

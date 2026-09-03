@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
 from capture.state import (
@@ -31,6 +32,18 @@ SUJI_LINE_NUMBER_PAIRS = (
     (3, 6),
     (6, 9),
 )
+# Canonical calculation order for the fixed 18 suji lines.  This deliberately keeps the
+# historical insertion order used by `_build_weighted_suji_line_map`; profile serialization still
+# uses lexicographic `(suit, left, right)` order for backward compatibility.
+SUJI_LINE_KEYS = tuple(
+    (suit_index, left_number, right_number)
+    for suit_index in range(3)
+    for left_number, right_number in SUJI_LINE_NUMBER_PAIRS
+)
+SUJI_LINE_INDEX_BY_KEY = {
+    line_key: line_index
+    for line_index, line_key in enumerate(SUJI_LINE_KEYS)
+}
 # BASE_SUJI_LINE_COUNT の定義。
 BASE_SUJI_LINE_COUNT = 1.0
 # LAST_TEDASHI_MATAGI_FACTOR の定義。
@@ -269,7 +282,66 @@ def _ensure_tedashi_history_cache(round_state: RoundState, seat: int) -> dict[st
     return cache
 
 
-# Immutable transport objects passed from logic into the renderer.
+# Immutable calculation and transport objects passed from logic into the renderer.
+@dataclass(frozen=True)
+class SujiLineRow:
+    """One fixed suji line with its raw count and named correction columns."""
+
+    line_id: int
+    suit_index: int
+    left_number: int
+    right_number: int
+    left_tile_34: int
+    right_tile_34: int
+    raw_count: int
+    matagi_assignment_count: float | None
+    matagi_visible_factor: float
+    chi_factor: float
+    inside_to_outside_factor: float
+    urasuji_factor: float
+    low_remain_long_think_factor: float
+    lag_factor: float
+    base_weight: float
+    concentration_factor: float
+    concentrated_weight: float
+
+    @property
+    def line_key(self) -> tuple[int, int, int]:
+        """Return the legacy `(suit, left, right)` key for this row."""
+
+        return (self.suit_index, self.left_number, self.right_number)
+
+
+@dataclass(frozen=True)
+class SujiLineTable:
+    """One immutable 18-row projection plus pre-aggregated tile numerators."""
+
+    target_seat: int
+    include_temporary_safe: bool
+    rows: tuple[SujiLineRow, ...]
+    raw_denominator_count: int
+    raw_tile_numerator_counts_34: tuple[int, ...]
+    base_denominator_count: float
+    concentrated_denominator_count: float
+    base_tile_numerator_counts_34: tuple[float, ...]
+    concentrated_tile_numerator_counts_34: tuple[float, ...]
+
+    def to_legacy_map(self) -> dict[tuple[int, int, int], float]:
+        """Return the established insertion-ordered mapping used by older callers."""
+
+        return {row.line_key: row.base_weight for row in self.rows}
+
+
+@dataclass(frozen=True)
+class _ConcentratedSujiProjection:
+    """Pure value-keyed concentration projection shared by table-backed and legacy profiles."""
+
+    line_weight_items: tuple[tuple[tuple[int, int, int], float], ...]
+    factor_by_line_key: tuple[tuple[tuple[int, int, int], float], ...]
+    denominator_count: float
+    tile_numerator_counts_34: tuple[float, ...]
+
+
 @dataclass(frozen=True)
 class OpponentSujiDangerProfile:
     """Per-opponent suji danger weights over the 34-tile space."""
@@ -496,22 +568,40 @@ def _matagi_line_count(
 ) -> float:
     """Return the counted line amount for one matagi candidate."""
 
-    if visible_count >= 4:
-        return 0.0
+    assignment_count, visible_factor = _matagi_assignment_and_visible_factor(
+        followup_tedashi_count,
+        taatsu_drop_softened=taatsu_drop_softened,
+        red_five_discarded=red_five_discarded,
+        visible_count=visible_count,
+    )
+    return assignment_count * visible_factor
+
+
+def _matagi_assignment_and_visible_factor(
+    followup_tedashi_count: int,
+    *,
+    taatsu_drop_softened: bool = False,
+    red_five_discarded: bool = False,
+    visible_count: int = 0,
+) -> tuple[float, float]:
+    """Return the exclusive matagi assignment and its separate visibility multiplier."""
+
     if red_five_discarded:
-        line_count = RED_FIVE_MATAGI_LINE_COUNT
+        assignment_count = RED_FIVE_MATAGI_LINE_COUNT
     else:
         # Representative cut-order handling: once a later tedashi pair clearly drops one taatsu,
         # earlier matagi lines are treated as 70% counts instead of aging down to 50% / 30%.
         if taatsu_drop_softened and followup_tedashi_count > 0:
-            line_count = TAATSU_DROP_MATAGI_COUNT
+            assignment_count = TAATSU_DROP_MATAGI_COUNT
         else:
-            line_count = BASE_SUJI_LINE_COUNT * _matagi_factor_by_followup_tedashi_count(
+            assignment_count = BASE_SUJI_LINE_COUNT * _matagi_factor_by_followup_tedashi_count(
                 followup_tedashi_count
             )
+    if visible_count >= 4:
+        return assignment_count, 0.0
     if visible_count == 3:
-        return line_count * THREE_VISIBLE_MATAGI_FACTOR
-    return line_count
+        return assignment_count, THREE_VISIBLE_MATAGI_FACTOR
+    return assignment_count, 1.0
 
 
 def _representative_taatsu_drop_second_index(
@@ -1045,10 +1135,11 @@ def _historical_push_count_by_seat(
         prefix_state.discards[actor_seat].append(discard)
         if actor_seat not in push_count_by_seat:
             continue
-        latest_push_alert = build_latest_discard_push_alert_percentages(
+        latest_push_alert = _build_latest_discard_push_alert_percentages_for_actors(
             prefix_state,
             threshold_percent=threshold_percent,
             max_target_remain_count=max_target_remain_count,
+            actor_seats=(actor_seat,),
         ).get(actor_seat)
         if latest_push_alert is None:
             continue
@@ -1891,6 +1982,46 @@ def _musuji_concentration_factor_for_line(
     return MUSUJI_CONCENTRATION_FIVE_PLUS_VISIBLE_FACTOR
 
 
+@lru_cache(maxsize=512)
+def _build_concentrated_suji_projection(
+    line_weights: tuple[tuple[int, int, int, float], ...],
+    visible_counts_34: tuple[int, ...],
+) -> _ConcentratedSujiProjection:
+    """Return one immutable, value-keyed concentration projection.
+
+    The key contains every input used by this stage, so the bounded cache can be shared safely
+    without attaching mutable derived state to ``RoundState`` or the public profile DTO.
+    """
+
+    adjusted_line_weight_items: list[tuple[tuple[int, int, int], float]] = []
+    factor_by_line_key: list[tuple[tuple[int, int, int], float]] = []
+    tile_numerator_counts_34 = [0.0] * 34
+    for suit_index, left_number, right_number, line_weight in line_weights:
+        line_key = (suit_index, left_number, right_number)
+        concentration_factor = _musuji_concentration_factor_for_line(
+            visible_counts_34,
+            line_key,
+        )
+        adjusted_weight = float(line_weight) * concentration_factor
+        factor_by_line_key.append((line_key, concentration_factor))
+        adjusted_line_weight_items.append((line_key, adjusted_weight))
+        if adjusted_weight <= 0.0:
+            continue
+        left_tile_34 = _tile34_from_suit_and_number(suit_index, left_number)
+        right_tile_34 = _tile34_from_suit_and_number(suit_index, right_number)
+        tile_numerator_counts_34[left_tile_34] += adjusted_weight
+        tile_numerator_counts_34[right_tile_34] += adjusted_weight
+
+    return _ConcentratedSujiProjection(
+        line_weight_items=tuple(adjusted_line_weight_items),
+        factor_by_line_key=tuple(factor_by_line_key),
+        denominator_count=float(
+            sum(line_weight for _line_key, line_weight in adjusted_line_weight_items)
+        ),
+        tile_numerator_counts_34=tuple(tile_numerator_counts_34),
+    )
+
+
 def _self_hand_count_for_tile(
     self_hand_counts_34: Sequence[int],
     tile_34: int | None,
@@ -2053,36 +2184,40 @@ def _build_ugly_wait_add_percentages(
     return tuple(ugly_wait_add_percentages)
 
 
-def _build_weighted_suji_line_map(
+def _build_suji_line_table(
     round_state: RoundState,
     seat: int,
     *,
     visible_counts_34: Sequence[int] | None = None,
     include_temporary_safe: bool = True,
-) -> dict[tuple[int, int, int], float]:
-    """Return weighted unresolved suji lines keyed by `(suit_index, left, right)`."""
+) -> SujiLineTable:
+    """Build one immutable fixed table for all 18 suji lines of a target seat."""
 
-    # Phase 1: build the unresolved-line map. Exact-safe and persistent suppressors immediately
-    # force the affected lines to 0.0, while the remaining unresolved lines start from 1.0 line.
+    # Phase 1: record raw 0/1 counts. Exact-safe and persistent suppressors immediately force the
+    # affected rows to zero, while every other row starts as one unresolved line.
     suppressed_numbers = _line_suppressor_numbers_by_suit(
         round_state,
         seat,
         include_temporary_safe=include_temporary_safe,
     )
     normalized_visible_counts_34 = _normalize_visible_counts_34(visible_counts_34)
-    line_weights: dict[tuple[int, int, int], float] = {}
-    for suit_index in range(3):
-        suit_discards = suppressed_numbers[suit_index]
-        for left_number, right_number in SUJI_LINE_NUMBER_PAIRS:
-            if left_number in suit_discards or right_number in suit_discards:
-                line_weights[(suit_index, left_number, right_number)] = 0.0
-                continue
-            line_weights[(suit_index, left_number, right_number)] = BASE_SUJI_LINE_COUNT
+    raw_count_by_key = {
+        line_key: (
+            0
+            if line_key[1] in suppressed_numbers[line_key[0]]
+            or line_key[2] in suppressed_numbers[line_key[0]]
+            else 1
+        )
+        for line_key in SUJI_LINE_KEYS
+    }
 
-    # Phase 2: assign at most one matagi line count per still-unresolved line, aging backward
+    # Phase 2: assign at most one matagi count per still-unresolved row, aging backward
     # through the tedashi history as 100% -> 50% -> 30% of one full line. When a later
     # representative taatsu-drop second tedashi exists, older matagi candidates are kept at 70%.
-    assigned_line_weights: dict[tuple[int, int, int], float] = {}
+    # The visibility multiplier is kept in its own column instead of being flattened into the
+    # assignment, which makes the final value explainable without changing the formula.
+    matagi_assignment_by_key: dict[tuple[int, int, int], float] = {}
+    matagi_visible_factor_by_key: dict[tuple[int, int, int], float] = {}
     tedashi_discards = _tedashi_discard_history(round_state, seat)
     tedashi_tiles = [discard.tile_34 for discard in tedashi_discards]
     latest_taatsu_drop_second_index = _representative_taatsu_drop_second_index(tedashi_discards)
@@ -2096,11 +2231,11 @@ def _build_weighted_suji_line_map(
         suit_index, suit_number = suited_tile
         for left_number, right_number in _matagi_line_pairs_for_number(suit_number):
             line_key = (suit_index, left_number, right_number)
-            if line_weights.get(line_key, 0.0) <= 0.0:
+            if raw_count_by_key.get(line_key, 0) <= 0:
                 continue
-            if line_key in assigned_line_weights:
+            if line_key in matagi_assignment_by_key:
                 continue
-            matagi_line_count = _matagi_line_count(
+            assignment_count, visible_factor = _matagi_assignment_and_visible_factor(
                 followup_tedashi_count,
                 taatsu_drop_softened=(
                     latest_taatsu_drop_second_index is not None
@@ -2109,48 +2244,143 @@ def _build_weighted_suji_line_map(
                 red_five_discarded=_is_red_five_discard(discard),
                 visible_count=_visible_count_for_tile(normalized_visible_counts_34, tile_34),
             )
-            assigned_line_weights[line_key] = matagi_line_count
-
-    for line_key, matagi_line_count in assigned_line_weights.items():
-        line_weights[line_key] = matagi_line_count
+            matagi_assignment_by_key[line_key] = assignment_count
+            matagi_visible_factor_by_key[line_key] = visible_factor
 
     # Phase 3: chi-shape correction, inside->outside tedashi correction, and latest-tedashi
-    # urasuji-ryanmen all multiply the counted line amount. When multiple AND conditions hit the
-    # same line, all percentage-style reductions stack multiplicatively against the current count.
-    line_factors: dict[tuple[int, int, int], float] = {}
-    for source_factors in (
-        _chi_line_factors(round_state, seat),
-        _inside_to_outside_line_factors(round_state, seat),
-        _latest_tedashi_urasuji_ryanmen_line_factors(
-            round_state,
-            seat,
-            normalized_visible_counts_34,
-        ),
-    ):
-        for line_key, factor in source_factors.items():
-            _multiply_line_factor(line_factors, line_key, factor)
-    for line_key, factor in line_factors.items():
-        if line_weights.get(line_key, 0.0) <= 0.0:
-            continue
-        line_weights[line_key] *= factor
-    current_remain_count = float(sum(line_weights.values()))
-    for line_key, factor in _low_remain_long_thinking_tsumogiri_line_factors(
+    # urasuji-ryanmen each get a named multiplier column. The product is deliberately formed in
+    # the same source order as the legacy map so threshold behavior and floating-point rounding are
+    # preserved. The low-remain decision sees the subtotal before its own multiplier, as before.
+    chi_factor_by_key = _chi_line_factors(round_state, seat)
+    inside_to_outside_factor_by_key = _inside_to_outside_line_factors(round_state, seat)
+    urasuji_factor_by_key = _latest_tedashi_urasuji_ryanmen_line_factors(
+        round_state,
+        seat,
+        normalized_visible_counts_34,
+    )
+    subtotal_weight_by_key: dict[tuple[int, int, int], float] = {}
+    for line_key in SUJI_LINE_KEYS:
+        raw_count = raw_count_by_key[line_key]
+        assignment_count = matagi_assignment_by_key.get(line_key)
+        counted_amount = (
+            float(assignment_count)
+            if assignment_count is not None
+            else float(raw_count) * BASE_SUJI_LINE_COUNT
+        )
+        counted_amount *= matagi_visible_factor_by_key.get(line_key, 1.0)
+        combined_factor = 1.0
+        combined_factor *= chi_factor_by_key.get(line_key, 1.0)
+        combined_factor *= inside_to_outside_factor_by_key.get(line_key, 1.0)
+        combined_factor *= urasuji_factor_by_key.get(line_key, 1.0)
+        subtotal_weight_by_key[line_key] = (
+            counted_amount * combined_factor
+            if raw_count > 0 and counted_amount > 0.0
+            else 0.0
+        )
+    current_remain_count = float(sum(subtotal_weight_by_key.values()))
+    low_remain_factor_by_key = _low_remain_long_thinking_tsumogiri_line_factors(
         round_state,
         seat,
         remain_count=current_remain_count,
-    ).items():
-        if line_weights.get(line_key, 0.0) <= 0.0:
-            continue
-        line_weights[line_key] *= factor
+    )
 
     # Phase 4: lag only scales the selected neighbor lines. It never revives a suppressed line and
     # never scales unrelated numerator/denominator contributions. Long skip windows strengthen the
     # neighboring lines at 120% or 140%, while <=1400ms and >7000ms apply no lag bonus.
-    for line_key, factor in _lag_neighbor_line_factors(round_state, seat).items():
-        if line_weights.get(line_key, 0.0) <= 0.0:
+    lag_factor_by_key = _lag_neighbor_line_factors(round_state, seat)
+
+    base_weight_by_key: dict[tuple[int, int, int], float] = {}
+    for line_key in SUJI_LINE_KEYS:
+        low_remain_factor = low_remain_factor_by_key.get(line_key, 1.0)
+        lag_factor = lag_factor_by_key.get(line_key, 1.0)
+        base_weight = subtotal_weight_by_key[line_key]
+        if base_weight > 0.0:
+            base_weight *= low_remain_factor
+            base_weight *= lag_factor
+        base_weight_by_key[line_key] = base_weight
+
+    # The legacy profile serializes rows lexicographically. Concentration aggregates historically
+    # followed that order, so keep it as the cache key and arithmetic order while the table itself
+    # retains the canonical calculation order above.
+    legacy_line_weights = tuple(
+        (line_key[0], line_key[1], line_key[2], line_weight)
+        for line_key, line_weight in sorted(base_weight_by_key.items())
+    )
+    concentrated_projection = _build_concentrated_suji_projection(
+        legacy_line_weights,
+        normalized_visible_counts_34,
+    )
+    concentration_factor_by_key = dict(concentrated_projection.factor_by_line_key)
+    concentrated_weight_by_key = dict(concentrated_projection.line_weight_items)
+
+    rows: list[SujiLineRow] = []
+    for line_id, line_key in enumerate(SUJI_LINE_KEYS):
+        suit_index, left_number, right_number = line_key
+        base_weight = base_weight_by_key[line_key]
+        rows.append(
+            SujiLineRow(
+                line_id=line_id,
+                suit_index=suit_index,
+                left_number=left_number,
+                right_number=right_number,
+                left_tile_34=_tile34_from_suit_and_number(suit_index, left_number),
+                right_tile_34=_tile34_from_suit_and_number(suit_index, right_number),
+                raw_count=raw_count_by_key[line_key],
+                matagi_assignment_count=matagi_assignment_by_key.get(line_key),
+                matagi_visible_factor=matagi_visible_factor_by_key.get(line_key, 1.0),
+                chi_factor=chi_factor_by_key.get(line_key, 1.0),
+                inside_to_outside_factor=inside_to_outside_factor_by_key.get(line_key, 1.0),
+                urasuji_factor=urasuji_factor_by_key.get(line_key, 1.0),
+                low_remain_long_think_factor=low_remain_factor_by_key.get(line_key, 1.0),
+                lag_factor=lag_factor_by_key.get(line_key, 1.0),
+                base_weight=base_weight,
+                concentration_factor=concentration_factor_by_key[line_key],
+                concentrated_weight=concentrated_weight_by_key[line_key],
+            )
+        )
+
+    # Base projection follows the historical calculation order. Concentration historically used
+    # the profile's lexicographically serialized rows, so its aggregate keeps that separate order.
+    raw_tile_numerator_counts_34 = [0] * 34
+    base_tile_numerator_counts_34 = [0.0] * 34
+    for row in rows:
+        if row.raw_count > 0:
+            raw_tile_numerator_counts_34[row.left_tile_34] += row.raw_count
+            raw_tile_numerator_counts_34[row.right_tile_34] += row.raw_count
+        if row.base_weight <= 0.0:
             continue
-        line_weights[line_key] *= factor
-    return line_weights
+        base_tile_numerator_counts_34[row.left_tile_34] += row.base_weight
+        base_tile_numerator_counts_34[row.right_tile_34] += row.base_weight
+    return SujiLineTable(
+        target_seat=seat,
+        include_temporary_safe=include_temporary_safe,
+        rows=tuple(rows),
+        raw_denominator_count=sum(row.raw_count for row in rows),
+        raw_tile_numerator_counts_34=tuple(raw_tile_numerator_counts_34),
+        base_denominator_count=float(sum(row.base_weight for row in rows)),
+        concentrated_denominator_count=concentrated_projection.denominator_count,
+        base_tile_numerator_counts_34=tuple(base_tile_numerator_counts_34),
+        concentrated_tile_numerator_counts_34=(
+            concentrated_projection.tile_numerator_counts_34
+        ),
+    )
+
+
+def _build_weighted_suji_line_map(
+    round_state: RoundState,
+    seat: int,
+    *,
+    visible_counts_34: Sequence[int] | None = None,
+    include_temporary_safe: bool = True,
+) -> dict[tuple[int, int, int], float]:
+    """Return the legacy map adapter over the fixed 18-row suji table."""
+
+    return _build_suji_line_table(
+        round_state,
+        seat,
+        visible_counts_34=visible_counts_34,
+        include_temporary_safe=include_temporary_safe,
+    ).to_legacy_map()
 
 
 def build_opponent_suji_danger_profile(
@@ -2164,29 +2394,24 @@ def build_opponent_suji_danger_profile(
 
     normalized_visible_counts_34 = _normalize_visible_counts_34(visible_counts_34)
     normalized_self_hand_counts_34 = _normalize_visible_counts_34(self_hand_counts_34)
-    tile_weights_34 = [0.0] * 34
-    line_weights = _build_weighted_suji_line_map(
+    line_table = _build_suji_line_table(
         round_state,
         seat,
         visible_counts_34=normalized_visible_counts_34,
     )
+    line_weights = line_table.to_legacy_map()
     safe_tile34 = frozenset(
         _self_discard_safe_tile34_set(round_state, seat)
         | _riichi_safe_tile34_set(round_state, seat)
         | _temporary_safe_tile34_set(round_state, seat)
     )
-    # Convert the final line weights back into per-tile danger by adding each line onto its two
-    # endpoint tiles. The denominator stays as the total unresolved weighted line count.
-    for (suit_index, left_number, right_number), line_weight in line_weights.items():
-        if line_weight <= 0.0:
-            continue
-        tile_weights_34[_tile34_from_suit_and_number(suit_index, left_number)] += line_weight
-        tile_weights_34[_tile34_from_suit_and_number(suit_index, right_number)] += line_weight
-
-    corrected_musuji_count = float(sum(line_weights.values()))
+    # The table has already projected all endpoint numerators and both denominator variants once.
+    # Consumers only select a projection and divide; they no longer rebuild 18 adjusted rows for
+    # every hand tile and panel ranking lookup.
+    corrected_musuji_count = line_table.base_denominator_count
     return OpponentSujiDangerProfile(
         seat=seat,
-        tile_weights_34=tuple(tile_weights_34),
+        tile_weights_34=line_table.base_tile_numerator_counts_34,
         corrected_musuji_count=corrected_musuji_count,
         safe_tile34=safe_tile34,
         line_weights=tuple(
@@ -2235,6 +2460,20 @@ def _profile_line_weight_items(
     )
 
 
+def _profile_concentrated_suji_projection(
+    profile: OpponentSujiDangerProfile,
+) -> _ConcentratedSujiProjection:
+    """Return the bounded pure concentration projection for any compatible profile value."""
+
+    return _build_concentrated_suji_projection(
+        tuple(
+            (suit_index, left_number, right_number, float(line_weight))
+            for suit_index, left_number, right_number, line_weight in profile.line_weights
+        ),
+        _normalize_visible_counts_34(profile.visible_counts_34),
+    )
+
+
 def _tile_base_denominator_count(profile: OpponentSujiDangerProfile) -> float:
     """Return the shared denominator before tile-specific concentration corrections."""
 
@@ -2275,16 +2514,7 @@ def _tile_adjusted_line_weight_items(
     if _tile_base_weight_percent_value(profile, tile_34) <= MUSUJI_CONCENTRATION_TRIGGER_PERCENT:
         return line_weight_items
 
-    adjusted_line_weight_items: list[tuple[tuple[int, int, int], float]] = []
-    for line_key, line_weight in line_weight_items:
-        adjusted_line_weight_items.append(
-            (
-                line_key,
-                line_weight
-                * _musuji_concentration_factor_for_line(profile.visible_counts_34, line_key),
-            )
-        )
-    return tuple(adjusted_line_weight_items)
+    return _profile_concentrated_suji_projection(profile).line_weight_items
 
 
 def _tile_weight_percent_value(profile: OpponentSujiDangerProfile, tile_34: int | None) -> float:
@@ -2328,10 +2558,9 @@ def _tile_denominator_count(profile: OpponentSujiDangerProfile, tile_34: int | N
 
     if tile_34 is None or tile_34 in profile.safe_tile34:
         return _tile_base_denominator_count(profile)
-    return max(
-        0.0,
-        sum(line_weight for _line_key, line_weight in _tile_adjusted_line_weight_items(profile, tile_34)),
-    )
+    if _tile_base_weight_percent_value(profile, tile_34) <= MUSUJI_CONCENTRATION_TRIGGER_PERCENT:
+        return _tile_base_denominator_count(profile)
+    return max(0.0, _profile_concentrated_suji_projection(profile).denominator_count)
 
 
 def _tile_numerator_count(profile: OpponentSujiDangerProfile, tile_34: int | None) -> float:
@@ -2341,19 +2570,12 @@ def _tile_numerator_count(profile: OpponentSujiDangerProfile, tile_34: int | Non
         return 0.0
     if tile_34 in profile.safe_tile34:
         return 0.0
-    suited_tile = _tile34_to_suit_and_number(tile_34)
-    if suited_tile is None:
+    if _tile_base_weight_percent_value(profile, tile_34) <= MUSUJI_CONCENTRATION_TRIGGER_PERCENT:
         return _tile_base_numerator_count(profile, tile_34)
-    suit_index, suit_number = suited_tile
-    numerator_count = 0.0
-    for line_key, line_weight in _tile_adjusted_line_weight_items(profile, tile_34):
-        line_suit_index, left_number, right_number = line_key
-        if line_suit_index != suit_index:
-            continue
-        if suit_number not in (left_number, right_number):
-            continue
-        numerator_count += line_weight
-    return max(0.0, numerator_count)
+    concentrated_projection = _profile_concentrated_suji_projection(profile)
+    if 0 <= tile_34 < len(concentrated_projection.tile_numerator_counts_34):
+        return max(0.0, concentrated_projection.tile_numerator_counts_34[tile_34])
+    return 0.0
 
 
 def _top_weighted_line_summaries(
@@ -2747,6 +2969,27 @@ def build_latest_discard_push_alert_percentages(
     `Remain <= max_target_remain_count`. Riichi targets use the lower `6%` threshold.
     """
 
+    return _build_latest_discard_push_alert_percentages_for_actors(
+        round_state,
+        actor_seats=SUJI_LABEL_SEAT_ORDER,
+        visible_counts_34=visible_counts_34,
+        threshold_percent=threshold_percent,
+        riichi_target_threshold_percent=riichi_target_threshold_percent,
+        max_target_remain_count=max_target_remain_count,
+    )
+
+
+def _build_latest_discard_push_alert_percentages_for_actors(
+    round_state: RoundState,
+    *,
+    actor_seats: Sequence[int],
+    visible_counts_34: Sequence[int] | None = None,
+    threshold_percent: float = PUSH_ALERT_PERCENT_THRESHOLD,
+    riichi_target_threshold_percent: float = PUSH_ALERT_PERCENT_THRESHOLD_AGAINST_RIICHI,
+    max_target_remain_count: float = PUSH_ALERT_MAX_TARGET_REMAIN_COUNT,
+) -> dict[int, PlayerPushAlertSummary]:
+    """Build the public Push projection for only the requested opponent actors."""
+
     try:
         resolved_threshold_percent = float(threshold_percent)
     except (TypeError, ValueError):
@@ -2768,7 +3011,12 @@ def build_latest_discard_push_alert_percentages(
     global_discards = _iter_global_discards(round_state)
     latest_global_discard_index = global_discards[-1][0] if global_discards else None
     alert_percentages: dict[int, PlayerPushAlertSummary] = {}
-    for actor_seat in SUJI_LABEL_SEAT_ORDER:
+    resolved_actor_seats = tuple(
+        actor_seat
+        for actor_seat in dict.fromkeys(actor_seats)
+        if actor_seat in SUJI_LABEL_SEAT_ORDER
+    )
+    for actor_seat in resolved_actor_seats:
         # Push is evaluated from the actor's newest discard, but the result is kept even when that
         # discard is no longer the table-global latest tile.  The renderer uses `is_current` to
         # decide immediate `P` marker/audio timing and keeps panel-side latches separately.

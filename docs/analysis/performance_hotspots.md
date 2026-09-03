@@ -52,6 +52,38 @@ UI の重さは主に次の層で見る。
 - `stale_deleted`
 - phase breakdown
 
+## `suji / danger / push`
+
+重くなりやすい処理:
+
+- 牌ごとに同じ 18 筋線へ見え枚数濃度補正を掛け直し、numerator / denominator を再集計する処理
+- 過去 Push 回数の各 prefix で、実際の discard actor 以外も含む全 actor の profile を構築する処理
+
+現行対策:
+
+- 各 target seat / `include_temporary_safe` mode の筋計算は、固定 18 行の immutable `SujiLineTable` を 1 回構築する。rule family ごとの係数列を残したまま、raw / base / concentrated の denominator と 34 要素 numerator を先に集計し、候補牌ごとは strict `> 10%` gate で配列を選ぶだけにする。
+- table は build-local derived state とし、公開 `OpponentSujiDangerProfile` や `RoundState` / `_danger_suji_runtime_cache` へ追加しない。濃度投影は `line_weights + visible_counts_34` を完全keyとする上限512件のpure memoで再利用する。入力値が変われば必ず別keyになり、cross-refresh の row mutation / event invalidation は導入しない。
+- `_historical_push_count_by_seat()` は各 prefix の discard actor だけを `build_latest_discard_push_alert_percentages()` の内部対象へ渡す。従来の全 actor 評価から不要な profile 構築だけを除き、返却値と既存の履歴 result cache は維持する。
+
+2026-09-03 の同一プロセス paired benchmark（synthetic 4-seat round、I/O なし、変更前 `219423d` と CH-241 を交互に 9 回実行した中央値）:
+
+| global discards | 変更前 | CH-241 | 短縮率 |
+| ---: | ---: | ---: | ---: |
+| 16 | 29.145 ms | 20.053 ms | 31.2% |
+| 32 | 47.984 ms | 28.720 ms | 40.1% |
+| 48 | 71.073 ms | 39.421 ms | 44.5% |
+| 64 | 98.224 ms | 52.577 ms | 46.5% |
+| 72 | 113.793 ms | 60.361 ms | 47.0% |
+
+32 打牌では profile build が `219 -> 84`、実質 line 計算が `235 -> 100`、concentration の候補牌ごとの 18 行再走査が `902 -> 0` となった。時間値はローカル比較用であり CI の固定閾値にはしない。
+
+同じ32打牌局面の単発31回中央値では、profile 1件が `0.1891 -> 0.2720 ms`、legacy map 1件が `0.0940 -> 0.1817 ms`、latest Push 1件が `1.8671 -> 2.6253 ms` と、それぞれ table materialize 分だけ遅くなった。局所差は1回あたり1ms未満であり、heavy bundle 全体では候補牌再走査と履歴 actor の削減が上回る。今後この局所経路を増やす場合は再計測する。
+
+既知の未解決事項:
+
+- panel の no-temp line table 構築経路は `visible_counts_34` を伝播していない。これは今回以前からの数値挙動であり、意味保存のため本変更では補正しない。
+- heavy suji input signature は、危険度ロジックが参照する `Discard.riichi_marker_before` と `Meld.called_tile_id` をまだ含まない。今回の table は cross-refresh cache ではないため、この既存 freshness debt は別の signature 修正と回帰テストで扱う。
+
 ## `side_panels`
 
 重くなりやすい処理:

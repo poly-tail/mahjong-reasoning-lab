@@ -71,7 +71,7 @@ class OpponentTenpaiProbabilityTest(unittest.TestCase):
             }
 
         with patch(
-            "logic.danger_suji.build_latest_discard_push_alert_percentages",
+            "logic.danger_suji._build_latest_discard_push_alert_percentages_for_actors",
             side_effect=fake_push_alerts,
         ):
             probabilities = build_opponent_tenpai_probability_percentages(round_state)
@@ -100,7 +100,7 @@ class OpponentTenpaiProbabilityTest(unittest.TestCase):
         )
 
         with patch(
-            "logic.danger_suji.build_latest_discard_push_alert_percentages",
+            "logic.danger_suji._build_latest_discard_push_alert_percentages_for_actors",
             return_value={2: SimpleNamespace(percentage=9.0)},
         ):
             probabilities = build_opponent_tenpai_probability_percentages(round_state)

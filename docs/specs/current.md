@@ -8,6 +8,8 @@
 
 - `LiveTableSnapshot` は UI 1 回の描画用 snapshot として扱う。現在局面の構造データを持ち、heavy suji / 危険度の新入力が計算中の場合だけ、同一局の直前完了 bundle を表示用 fallback として含めてよい。
 - 表示用 fallback は最新入力に対する計算結果とはみなさず、次 job の enqueue / coalescing を妨げない。手牌危険度は旧 bundle の `hand_tiles` から現在手牌へ牌 ID と同牌内の出現順で再対応付けし、対応元のない牌は棒なしとする。完了値がまだない初回は loading / 危険度棒なし、新局では fallback なしとする。stale な panel / hand / Push payload は自動打牌や alert 音声の新規判定へ使わない。
+- 筋計算内部は 3 色 x 6 本の immutable な `SujiLineRow` / `SujiLineTable` を build-local に構築し、raw / base / 見え枚数濃度補正後それぞれの numerator 34 要素と denominator を事前集計する。公開 `OpponentSujiDangerProfile` は従来の7 field・reflection・pickle形状を維持する。濃度投影だけは `line_weights + visible_counts_34` を完全keyとする上限付きpure memoで共有し、`RoundState` へのmutable cacheやevent invalidationは導入しない。現行の計算順、閾値、DB、UI 出力は変更しない。
+- 過去 Push 回数の再生では、その時点の discard actor だけを評価対象に限定する。従来の全 actor 評価から不要な profile 構築だけを省き、Push の判定結果、保持、表示、音声は変更しない。
 - `NagaAutoPanelData` を renderer へ渡し、南2局以降の NAGA 段位 pt 変化を下部へ表示する。
 - `PlayerAlertIndicator` は panel 表示と音声判定の正本であり、panel に出ない自分側 alert は音声へ流さない。
 - renderer の実 Canvas は `alert_sound_enabled = False` で初期化する。上部の `アラート音 OFF/ON` ボタンでセッション中だけ切り替え、ON 切替時は alert 遷移 latch と独立した上昇2音の確認チャイム、続いて `alert_sound_on.wav` の「サウンド、オン」音声を共有 sound worker で1回鳴らす。OFF 中も各音声経路の遷移 latch を更新して、ON 切替時に既存 alert を再生しない。

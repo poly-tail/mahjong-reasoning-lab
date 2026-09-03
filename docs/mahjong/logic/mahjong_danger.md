@@ -11,7 +11,7 @@
 
 ## 基本定義
 
-筋線は 6 本固定とする。
+筋線は 1 色につき 6 本、萬子・筒子・索子の合計 18 本で固定する。
 
 - `1-4`
 - `4-7`
@@ -19,6 +19,30 @@
 - `5-8`
 - `3-6`
 - `6-9`
+
+### 内部の固定 18 行テーブル
+
+実装は各対象 seat と `include_temporary_safe` mode ごとに、3 色 x 上記 6 本を `SujiLineRow` の固定 18 行として一括計算する。`line_id` は色順、その中では上記の列挙順で `0..17` を割り当てる。これは計算用の安定順であり、既存 `OpponentSujiDangerProfile.line_weights` の直列化順は変更しない。
+
+各行は suppressor 判定だけを反映した `raw_count` (`0` または `1`) と、`matagi_assignment_count`、`matagi_visible_factor`、`chi_factor`、`inside_to_outside_factor`、`urasuji_factor`、`low_remain_long_think_factor`、`lag_factor` の名前付き列を分けて持つ。`matagi_assignment_count` は後段の倍率ではなく、またぎ筋候補が選ばれたときの `1.0 / 0.7 / 0.5 / 0.3 / 0.25` への置換値で、未選択時は `raw_count` を使う。
+
+```text
+seed_count = raw_count == 0 ? 0 : (matagi_assignment_count または raw_count)
+base_weight = seed_count
+              x matagi_visible_factor
+              x chi_factor
+              x inside_to_outside_factor
+              x urasuji_factor
+              x low_remain_long_think_factor
+              x lag_factor
+concentrated_weight = base_weight x concentration_factor
+```
+
+`low_remain_long_think_factor` の発火判定に使う Remain は、従来どおり同係数と lag を掛ける前の 18 行 subtotal で一度だけ求める。各係数 family 内の複数 hit は従来の順序で乗算し、途中丸めを行わない。`raw_count == 0` の hard zero は後段係数で復活させない。
+
+18 行から、生の 0/1 合計 `D_raw` / `N_raw[34]`、補正後の `D_base` / `N_base[34]`、濃度補正後の `D_concentrated` / `N_concentrated[34]` を一度だけ事前集計する。現行危険度は候補牌の base 値 `N_base[tile] / D_base * 100` が厳密に `10%` を超える場合だけ concentrated 側を選び、`10%` 以下では base 側を使う。愚形待ち加算と聴牌近さ係数はこの選択後の既存段階に残す。
+
+名前付き係数列は rule family 単位の説明用 ledger であり、統計的に独立な証拠の分解ではない。同じ見え枚数や手出しが複数 family に寄与し得るため、係数の積、`Remain`、危険度 `%` を校正済み確率として解釈しない。このテーブル化では現行の重複寄与と数値をそのまま維持し、相関除去・cap・再校正は行わない。
 
 牌ごとの基礎無筋危険度は、対象牌が属する筋線重みの合計を、全筋線重み合計で割って % 化したものとする。
 
@@ -30,7 +54,7 @@
 
 ### 1. 線の初期化
 
-- 対象プレイヤーの手出し牌、リーチ後現物、一時 safe 牌から suppressor を集める
+- 対象プレイヤー自身の公開数牌 discard（手出し / ツモ切りを問わない）、リーチ後現物、一時 safe 牌から suppressor を集める。`called` は後から鳴かれた結果であり suppressor 性を変えない
 - suppressor に触れる筋線は `0.0`
 - それ以外の筋線は `1.0`
 
@@ -148,7 +172,8 @@
 
 - 補正対象は愚形加算前の numerator / denominator
 - 牌ごとに、全筋線へ対して「その筋線の両端 2 牌の合計見え枚数」で倍率を付ける
-- このあとに numerator / denominator を再計算し、最後に愚形待ち加算を足す
+- base / concentrated の numerator / denominator は固定 18 行から先に両方集計し、候補牌の base `%` が厳密に `10%` を超えるかで一方を選ぶ。ちょうど `10%` は base 側とする
+- この選択後、最後に愚形待ち加算を足す
 
 筋線ごとの倍率:
 
@@ -235,7 +260,8 @@
 ### 自家手牌下バー
 
 - 各牌ごとに、対面・上家・下家それぞれの総合危険度を丸めて表示する
-- 分子表示は従来どおり筋本数ベースの raw 値を残す
+- 分子表示に使う `numerator_count` は、候補牌ごとの濃度補正後の筋質量へ互換名 `tenpai_probability` の聴牌近さ係数を掛けた値であり、固定 18 行の `raw_count` 合計ではない
+- 3 席分を `1 - product(1 - seat_score)` でまとめる値は手牌 tint とベタオリ候補比較用の heuristic aggregate であり、各席の独立性を実証した放銃確率ではない
 
 ### 各プレイヤーパネル
 

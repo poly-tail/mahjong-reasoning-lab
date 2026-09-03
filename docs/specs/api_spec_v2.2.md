@@ -33,6 +33,10 @@ live の `discard_map` は `GameState.live_river_store` / `CaptureState.live_riv
 
 `LiveSujiComputationBundle` は `hand_tiles`、`hand_danger_percentages`、`opponent_suji_panel_summaries`、`player_push_alert_percentages`、`player_alert_indicators_by_seat` を同じ入力からまとめて算出した完了単位である。
 
+筋計算内部では、固定 18 行の immutable `SujiLineTable` が raw / base / 見え枚数濃度補正後それぞれの denominator と 34 要素 numerator を build-local に事前集計する。table 自体を公開 profile へ格納せず、既存 `OpponentSujiDangerProfile` の7 field、dataclass reflection / positional constructor / pickle形状、数値、snapshot / DB payload を維持する。濃度投影は immutable な `line_weights + visible_counts_34` を完全keyとする上限付きpure memoで共有するが、`RoundState` へのmutable cacheやevent invalidationは導入しない。`LiveSujiComputationBundle` / `LiveTableSnapshot` の外部契約も不変である。
+
+過去 Push 回数の再生は各 prefix の discard actor だけを内部評価する。公開される `build_latest_discard_push_alert_percentages()` の通常挙動と返却値、Push 閾値・保持・表示・音声は変更しない。
+
 - `LiveTableSnapshot.suji_analysis_is_current` は、snapshot に載せた heavy bundle が現在の input signature に対する完了値のときだけ `True` とする。同一局の表示 fallback、fast snapshot、初回 loading は `False` とし、renderer は `False` の値を自動打牌や alert 音声の新規判定へ使わない。
 - 最新 input signature の bundle が pending / in-flight の間は、同じ `round_identity` の直前完了 bundle を表示用 fallback として `LiveTableSnapshot` へ載せる。input signature が古いことだけを理由に loading summary や空の危険度配列へ置き換えない。手牌危険度は bundle の `hand_tiles` から現在の手牌へ牌 ID と同牌内の出現順で再対応付けし、対応元がない牌は空 metric とする。
 - fallback は current bundle ではなく、最新 job の enqueue / `1 in-flight + pending 1` coalescing を止めない。stale な値は panel、手牌危険度棒、関連 analysis overlay の表示だけに使い、自動打牌や alert 音声の新規判定へ渡さない。

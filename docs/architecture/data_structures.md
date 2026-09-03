@@ -99,6 +99,18 @@ owner: `src/visible_tiles.py`
 - `inferred_three_visible_tiles`
 - `inferred_four_visible_tiles`
 
+### `SujiLineRow` / `SujiLineTable`
+
+owner: `src/logic/danger_suji.py`
+
+意味:
+
+- `SujiLineRow` は萬子・筒子・索子それぞれ 6 本の筋線を固定した 18 行のうち 1 行で、suppressor 適用直後の `raw_count` と rule family 別の名前付き係数、`base_weight`、`concentrated_weight` を分離して保持する
+- `SujiLineTable` は 18 行に加え、生の 0/1 集計 `raw_denominator_count` / `raw_tile_numerator_counts_34`、補正後の `base_denominator_count` / `base_tile_numerator_counts_34`、濃度補正後の `concentrated_denominator_count` / `concentrated_tile_numerator_counts_34` を保持する。3 つの numerator 配列は必ず 34 要素とする
+- いずれも `frozen=True` の build-local derived state であり、公開 profile や `RoundState` へ格納しない。濃度補正の immutable projection だけは `line_weights + visible_counts_34` の完全値keyで上限付きmemo化する。row単位のmutationやevent invalidationは持たない
+
+`OpponentSujiDangerProfile` は従来の7 dataclass field、positional constructor、`fields()` / `vars()` / `asdict()` / `astuple()` / pickle形状、`line_weights` の直列化順、DB / UI payloadを変更しない。
+
 ## 3. Inferred Visible Popup
 
 ### `InferredVisibleEntry`
