@@ -10,9 +10,13 @@
 - 最新仕様書: `docs/specs/current.md`
 - 最新画面仕様書: `docs/screen_specs/current.md`
 - docs 全体の入口: `docs/README.md`
+- Codex / agent 作業ルール: `AGENTS.md`
 - プロジェクト概要: `docs/architecture/project_guide.md`
 - ソースコード概要: `docs/architecture/source_overview.md`
 - フォルダ構成: `docs/architecture/folder_structure.md`
+- 設計判断: `docs/architecture/adr/`
+- 横断回帰チェック: `docs/operations/regression_checklist.md`
+- コードレビュー規則: `docs/operations/code_review.md`
 - 手牌分析仕様: `docs/mahjong/logic/hand_analysis.md`
 - 変更履歴: `docs/changelog.md`
 
@@ -23,6 +27,8 @@
 - `src/capture/` の契約が変わったら `docs/integrations/packet_capture.md` と `docs/specs/current.md` を同時に更新する
 - 画面レイアウト変更時は `docs/screen_specs/current.md` と固定版を更新する
 - DB schema 変更時は `docs/reference/csv_db_design.md` と changelog を更新する
+- 設計判断や責務境界を変えたら `docs/architecture/adr/` を更新する
+- 配布、runtime data、秘密情報、回帰確認、レビュー規則を変えたら `docs/operations/` を更新する
 
 ## 文書分類ルール
 - 麻雀そのもののルールや判断基準は `docs/mahjong/`

@@ -40,6 +40,8 @@ from app.mock_data import (
     tiles136_to_tiles37,
 )
 from app.window import configure_window
+from capture.discard_ledger import DiscardResetReason
+from capture.live_river_store import RiverProjectionSource, RiverResetAuthority
 from capture.pcap_replay import DEFAULT_TEST_PACKET_INTERVAL_MS, run_test_capture
 from capture.state import (
     CaptureState,
@@ -72,11 +74,12 @@ from logic.danger_suji import (
     build_hand_tile_suji_danger_metrics,
     build_latest_discard_push_alert_percentages,
 )
-from sutehai import Player, SutehaiTracker
+from sutehai import Discard as SutehaiDiscard
+from sutehai import DrawType, Player
 import ui.table_renderer as table_view
 from visible_tiles import VisibleTileSummary, collect_visible_tile_summary
 from capture.fragment_parser import (
-    _rebuild_tracker_from_round,
+    _rebuild_tracker_from_live_river_store,
     _reindex_round_discards,
     _restore_reach_state_from_snapshot_discards,
     _sync_live_state,
@@ -90,6 +93,7 @@ LIVE_SNAPSHOT_REQUEST_MIN_INTERVAL_S = 0.08
 LIVE_SNAPSHOT_PUBLISH_LAG_LOG_THRESHOLD_S = 4.0
 LIVE_SNAPSHOT_PUBLISH_LAG_LOG_REPEAT_S = 5.0
 LIVE_SNAPSHOT_BUILD_SLOW_LOG_THRESHOLD_MS = 1000.0
+LIVE_SNAPSHOT_RECENT_EVENT_COUNT = 8
 NAGA_BUTTON_X = 82
 NAGA_BUTTON_Y = 64
 NAGA_WINDOW_WIDTH = 860
@@ -1277,6 +1281,24 @@ class LiveTableSnapshot:
     hand_recommendation_request_context: PystyleDisplayContext
     table_situation_auto_scores_by_seat: dict[int, tuple[float, ...]] = field(default_factory=dict)
     same_jun_marker_indices_by_seat: dict[int, frozenset[int]] = field(default_factory=dict)
+    latest_event_type: str = ""
+    recent_event_types: tuple[str, ...] = ()
+    suji_analysis_is_current: bool = True
+
+
+@dataclass(frozen=True)
+class LiveAnalysisSnapshot:
+    """Worker-owned analysis input copied from the capture thread.
+
+    Worker jobs must not receive the live `CaptureState` object.  The contained round state is a
+    cloned snapshot and is converted into a temporary CaptureState only inside the worker.
+    """
+
+    round_state: RoundState | None
+    live_hand_tiles_136: tuple[int, ...]
+    live_last_draw_tile_136: int | None
+    live_dora_indicator_tiles_136: tuple[int, ...]
+    visible_summary: VisibleTileSummary
 
 
 @dataclass(frozen=True)
@@ -1286,6 +1308,7 @@ class LiveSujiComputationBundle:
     source_refresh_token: int
     round_identity: object | None
     input_signature: tuple[object, ...]
+    hand_tiles: tuple[int, ...]
     hand_danger_percentages: list[dict[int, object]]
     opponent_suji_panel_summaries: dict[int, object]
     player_push_alert_percentages: dict[int, object]
@@ -1294,10 +1317,9 @@ class LiveSujiComputationBundle:
 
 @dataclass(frozen=True)
 class LiveSujiComputationJob:
-    """One pending background suji computation request for a copied live snapshot."""
+    """One pending background suji computation request for a copied analysis snapshot."""
 
-    snapshot_state: CaptureState
-    visible_summary: VisibleTileSummary
+    analysis_snapshot: LiveAnalysisSnapshot
     source_refresh_token: int
     round_identity: object | None
     input_signature: tuple[object, ...]
@@ -1314,9 +1336,9 @@ class LiveRedTintComputationBundle:
 
 @dataclass(frozen=True)
 class LiveRedTintComputationJob:
-    """One pending background red-tint computation request for a copied live snapshot."""
+    """One pending background red-tint computation request for a copied analysis snapshot."""
 
-    snapshot_state: CaptureState
+    analysis_snapshot: LiveAnalysisSnapshot
     source_refresh_token: int
     round_identity: object | None
 
@@ -1615,6 +1637,60 @@ def flatten_visible_meld_tiles(meld_map: dict[Player, list[Meld]]) -> list[int]:
     ]
 
 
+def _sutehai_discard_from_capture_discard(discard: object) -> SutehaiDiscard | None:
+    tile_id = tile136_to_tile37(getattr(discard, "tile_136", None))
+    if tile_id is None:
+        return None
+    rendered_discard = SutehaiDiscard(
+        tile_id=tile_id,
+        draw_type=(
+            DrawType.TSUMOGIRI
+            if bool(getattr(discard, "tsumogiri", False))
+            else DrawType.TEDASHI
+        ),
+        called=bool(getattr(discard, "called", False)),
+        tag=getattr(discard, "raw_tag", None),
+        riichi_marker_before=bool(getattr(discard, "riichi_marker_before", False)),
+        thinking_time_ms=getattr(discard, "thinking_time_ms", None),
+        thinking_time_source=getattr(discard, "thinking_time_source", None),
+        thinking_time_before_reach_ms=getattr(
+            discard,
+            "thinking_time_before_reach_ms",
+            None,
+        ),
+        thinking_time_before_reach_source=getattr(
+            discard,
+            "thinking_time_before_reach_source",
+            None,
+        ),
+        self_hand_tiles_before_discard_136=list(
+            getattr(discard, "self_hand_tiles_before_discard_136", ()) or ()
+        ),
+        lagged=int(getattr(discard, "lagged", 0) or 0),
+        lag_delay_ms=getattr(discard, "lag_delay_ms", None),
+    )
+    rendered_discard.round_discard_index = getattr(discard, "round_discard_index", None)
+    rendered_discard.event_index = int(getattr(discard, "event_index", -1) or -1)
+    return rendered_discard
+
+
+def build_discard_map_from_live_river_store(capture_state: CaptureState) -> dict[Player, list[object]]:
+    """Build the renderer discard map from the long-lived base river store."""
+
+    river_store = getattr(capture_state, "live_river_store", None)
+    if river_store is None:
+        return {player: [] for player in Player}
+
+    discard_map: dict[Player, list[object]] = {player: [] for player in Player}
+    for seat in range(SEAT_COUNT):
+        player = Player(seat)
+        for discard in river_store.snapshot_by_seat().get(seat, ()):
+            rendered_discard = _sutehai_discard_from_capture_discard(discard)
+            if rendered_discard is not None:
+                discard_map[player].append(rendered_discard)
+    return discard_map
+
+
 def build_live_visible_tile_summary(capture_state: CaptureState) -> VisibleTileSummary:
     """Build the current actual visible-tile summary from live state.
 
@@ -1628,7 +1704,7 @@ def build_live_visible_tile_summary(capture_state: CaptureState) -> VisibleTileS
 
     meld_map = build_live_meld_map(capture_state)
     return collect_visible_tile_summary(
-        discard_map=capture_state.tracker.discards,
+        discard_map=build_discard_map_from_live_river_store(capture_state),
         hand_tiles=tiles136_to_tiles37(capture_state.live_hand_tiles_136),
         meld_tiles=flatten_visible_meld_tiles(meld_map),
         dora_indicator_tiles=tiles136_to_tiles37(capture_state.live_dora_indicator_tiles_136),
@@ -1640,7 +1716,7 @@ def _collect_uncalled_discard_tiles37(capture_state: CaptureState) -> list[int]:
 
     return [
         int(discard.tile_id)
-        for discards in capture_state.tracker.discards.values()
+        for discards in build_discard_map_from_live_river_store(capture_state).values()
         for discard in discards
         if not discard.called
     ]
@@ -2004,11 +2080,43 @@ def _build_bridge_snapshot_kawa_raw_tokens(
     return raw_tokens
 
 
+def _bridge_snapshot_is_clearly_different_round(
+    round_state: RoundState,
+    *,
+    game_id: str | None,
+    kyoku_index: int | None,
+    honba: int | None,
+    kyotaku: int | None,
+    oya: int | None,
+) -> bool:
+    """Return whether a browser snapshot should start a new partial round."""
+
+    if round_state.result is not None:
+        return True
+    snapshot_values = (kyoku_index, honba, kyotaku, oya)
+    round_values = (
+        round_state.kyoku_index,
+        round_state.honba,
+        round_state.kyotaku,
+        round_state.oya,
+    )
+    if all(value is not None for value in snapshot_values):
+        snapshot_round_id = build_round_id(game_id, kyoku_index, honba, kyotaku, oya)
+        if round_state.round_id and snapshot_round_id != round_state.round_id:
+            return True
+    return any(
+        current_value is not None
+        and snapshot_value is not None
+        and current_value != snapshot_value
+        for current_value, snapshot_value in zip(round_values, snapshot_values)
+    )
+
+
 def _import_tenhou_ui_bridge_table_snapshot(
     capture_state: CaptureState,
     snapshot_result: dict[str, object],
 ) -> dict[str, object]:
-    """Bootstrap the local live state from the current browser-side table snapshot."""
+    """Bootstrap or annotate live state from the current browser-side table snapshot."""
 
     hand_tiles_136 = _normalize_bridge_snapshot_tile_ids(snapshot_result.get("handTiles136"))
     dora_indicators_136 = _normalize_bridge_snapshot_tile_ids(snapshot_result.get("doraIndicators136"))
@@ -2033,12 +2141,172 @@ def _import_tenhou_ui_bridge_table_snapshot(
         dora_indicators_136=dora_indicators_136,
         river_entries_by_seat=river_entries_by_seat,
     )
+    browser_projection_by_seat = {
+        seat: [
+            {
+                "tile_136": int(tile_136),
+                "tile34Index": entry.get("tile34Index"),
+                "tsumogiri": bool(entry.get("tsumogiri", False)),
+                "riichiMarkerBefore": bool(entry.get("riichiMarkerBefore", False)),
+            }
+            for tile_136, entry in zip(
+                allocated_river_tiles_by_seat.get(seat, ()),
+                river_entries_by_seat.get(seat, ()),
+            )
+        ]
+        for seat in range(SEAT_COUNT)
+    }
 
     with capture_state.state_lock:
         preserved_game_id = capture_state.game_id
         preserved_go_type = capture_state.go_type
         preserved_room_class_code = capture_state.room_class_code
         preserved_room_class_label = capture_state.room_class_label
+        previous_round = capture_state.current_round
+        live_river_store = getattr(capture_state, "live_river_store", None)
+        live_river_has_discards = False
+        if live_river_store is not None:
+            try:
+                live_river_has_discards = any(
+                    int(count or 0) > 0
+                    for count in live_river_store.counts_by_seat().values()
+                )
+            except Exception:  # noqa: BLE001 - bridge import must survive diagnostics failures.
+                live_river_has_discards = False
+        round_has_discards = (
+            previous_round is not None
+            and any(
+                len(previous_round.discards.get(seat, ())) > 0
+                for seat in range(SEAT_COUNT)
+            )
+        )
+        tracker_has_discards = any(
+            len(capture_state.tracker.discards[player]) > 0
+            for player in Player
+        )
+        existing_discard_state_has_discards = (
+            live_river_has_discards
+            or round_has_discards
+            or tracker_has_discards
+        )
+        # If RoundState was temporarily dropped by reset_live_session/bridge reinit while the
+        # long-lived river, RoundState, or tracker still has tiles, browser rivers are only
+        # projections. INIT/REINIT are the only inputs allowed to clear existing discard state.
+        should_bootstrap_from_browser = (
+            not existing_discard_state_has_discards
+            and (
+                previous_round is None
+                or (
+                    previous_round is not None
+                    and _bridge_snapshot_is_clearly_different_round(
+                        previous_round,
+                        game_id=capture_state.game_id,
+                        kyoku_index=kyoku_index,
+                        honba=honba,
+                        kyotaku=kyotaku,
+                        oya=oya,
+                    )
+                )
+            )
+        )
+
+        if not should_bootstrap_from_browser:
+            round_state = previous_round if previous_round is not None else capture_state.ensure_round()
+            for seat in range(SEAT_COUNT):
+                name_text = str(player_names_by_seat.get(seat, "") or "").strip()
+                if not name_text:
+                    continue
+                capture_state.players_rel[seat].seat = seat
+                capture_state.players_rel[seat].name = name_text
+                capture_state.players_abs[seat].seat = seat
+                capture_state.players_abs[seat].name = name_text
+            capture_state.refresh_player_views()
+
+            if any(value is not None for value in (kyoku_index, honba, kyotaku, oya)):
+                if kyoku_index is not None:
+                    round_state.kyoku_index = kyoku_index
+                if honba is not None:
+                    round_state.honba = honba
+                if kyotaku is not None:
+                    round_state.kyotaku = kyotaku
+                if oya is not None:
+                    round_state.oya = oya
+                    round_state.oya_rel = oya
+            if scores:
+                round_state.scores = list(scores)
+            if dora_indicators_136:
+                round_state.dora_indicators_136 = list(dora_indicators_136)
+            if hand_tiles_136:
+                round_state.current_hands_136[LOCAL_RELATIVE_SEAT] = list(hand_tiles_136)
+                round_state.last_draw_tiles_136[LOCAL_RELATIVE_SEAT] = (
+                    hand_tiles_136[-1] if len(hand_tiles_136) % 3 == 2 else None
+                )
+            round_state.browser_visible_river_projection = {
+                seat: list(browser_projection_by_seat.get(seat, ()))
+                for seat in range(SEAT_COUNT)
+            }
+            capture_state.live_river_store.store_projection_only(
+                source=RiverProjectionSource.BROWSER_BRIDGE,
+                projection_by_seat=browser_projection_by_seat,
+            )
+            round_state.raw_reinit_attrs = {
+                **dict(getattr(round_state, "raw_reinit_attrs", {}) or {}),
+                "bridge_table_snapshot_projection": "metadata_only",
+            }
+            if round_state.round_key is None:
+                round_state.round_key = build_round_key(
+                    capture_state.game_id,
+                    round_state.kyoku_index,
+                    round_state.honba,
+                    round_state.kyotaku,
+                    round_state.oya,
+                )
+            if round_state.round_id is None:
+                round_state.round_id = build_round_id(
+                    capture_state.game_id,
+                    round_state.kyoku_index,
+                    round_state.honba,
+                    round_state.kyotaku,
+                    round_state.oya,
+                )
+            _sync_live_state(capture_state)
+            capture_state.sync_current_round_context()
+            capture_state.diagnostics.append(
+                {
+                    "level": "info",
+                    "code": "bridge_table_snapshot_projection_only",
+                    "message": (
+                        "Ignored browser river projection for discard history; "
+                        "updated only metadata on existing round."
+                    ),
+                }
+            )
+            capture_state.prune_live_history()
+            capture_state.mark_live_update()
+            mapped_discard_count_by_seat = [
+                len(round_state.discards.get(seat, ()))
+                for seat in range(SEAT_COUNT)
+            ]
+            mapped_riichi_seat_count = sum(
+                1
+                for seat in range(SEAT_COUNT)
+                if str(round_state.reach_state.get(seat, "none")) == "accepted"
+            )
+            return {
+                "importMode": "metadata_only",
+                "mappedHandTileCount": len(hand_tiles_136),
+                "mappedDiscardCountTotal": sum(mapped_discard_count_by_seat),
+                "mappedDiscardCountBySeat": mapped_discard_count_by_seat,
+                "browserProjectionDiscardCountBySeat": [
+                    len(browser_projection_by_seat.get(seat, ()))
+                    for seat in range(SEAT_COUNT)
+                ],
+                "mappedDoraIndicatorCount": len(dora_indicators_136),
+                "mappedRiichiSeatCount": mapped_riichi_seat_count,
+                "mappedSnapshotBootstrapSequence": int(
+                    getattr(capture_state, "live_snapshot_bootstrap_sequence", 0)
+                ),
+            }
 
         capture_state.reset_live_session(preserve_player_metadata=True)
         capture_state.game_id = preserved_game_id
@@ -2086,11 +2354,27 @@ def _import_tenhou_ui_bridge_table_snapshot(
         )
         round_state.raw_attrs = {"source": "bridge_table_snapshot"}
         round_state.raw_reinit_attrs = {"source": "bridge_table_snapshot"}
+        round_state.snapshot_event_type = "bridge_table_snapshot"
+        round_state.browser_visible_river_projection = {
+            seat: list(browser_projection_by_seat.get(seat, ()))
+            for seat in range(SEAT_COUNT)
+        }
+        # Bridge bootstrap is not an actual INIT.  It may reset an empty store for a visible
+        # starting point, but an existing base river must be protected by the store gate.
+        capture_state.reset_live_river_for_authoritative_new_round(
+            authority=RiverResetAuthority.INIT_NEW_ROUND,
+            round_key=round_state.round_key,
+            reset_source="bridge_table_snapshot_bootstrap",
+        )
+        capture_state.live_river_store.store_projection_only(
+            source=RiverProjectionSource.BROWSER_BRIDGE,
+            projection_by_seat=browser_projection_by_seat,
+        )
 
         for seat in range(SEAT_COUNT):
             allocated_tiles_136 = allocated_river_tiles_by_seat.get(seat, [])
             river_entries = river_entries_by_seat.get(seat, [])
-            round_state.discards[seat] = [
+            bootstrap_discards = [
                 CaptureDiscard(
                     tile_136=int(tile_136),
                     tsumogiri=bool(entry.get("tsumogiri", False)),
@@ -2100,6 +2384,11 @@ def _import_tenhou_ui_bridge_table_snapshot(
                 )
                 for tile_136, entry in zip(allocated_tiles_136, river_entries)
             ]
+            round_state.append_discards(seat, bootstrap_discards)
+            capture_state.live_river_store.append_many(
+                seat=seat,
+                discards=bootstrap_discards,
+            )
             round_state.reinit_kawa_raw[seat] = _build_bridge_snapshot_kawa_raw_tokens(
                 allocated_tiles_136,
                 river_entries,
@@ -2107,7 +2396,7 @@ def _import_tenhou_ui_bridge_table_snapshot(
 
         _reindex_round_discards(round_state)
         _restore_reach_state_from_snapshot_discards(round_state)
-        _rebuild_tracker_from_round(capture_state)
+        _rebuild_tracker_from_live_river_store(capture_state)
         _sync_live_state(capture_state)
         capture_state.sync_current_round_context()
 
@@ -2122,6 +2411,7 @@ def _import_tenhou_ui_bridge_table_snapshot(
         )
 
     return {
+        "importMode": "bootstrap",
         "mappedHandTileCount": len(hand_tiles_136),
         "mappedDiscardCountTotal": sum(mapped_discard_count_by_seat),
         "mappedDiscardCountBySeat": mapped_discard_count_by_seat,
@@ -2326,6 +2616,90 @@ def _get_live_red_tint_async_state(capture_state: CaptureState) -> LiveRedTintAs
     return async_state
 
 
+def _build_live_analysis_snapshot(
+    snapshot_state: CaptureState,
+    visible_summary: VisibleTileSummary,
+) -> LiveAnalysisSnapshot:
+    """Build the frozen worker input from a copied live snapshot.
+
+    The worker receives this DTO instead of the shared CaptureState, so calculation results can
+    never mutate the authoritative river or the renderer's base discard layer.
+    """
+
+    return LiveAnalysisSnapshot(
+        round_state=_clone_round_state_for_live_snapshot(snapshot_state.current_round),
+        live_hand_tiles_136=tuple(int(tile) for tile in snapshot_state.live_hand_tiles_136),
+        live_last_draw_tile_136=(
+            int(snapshot_state.live_last_draw_tile_136)
+            if snapshot_state.live_last_draw_tile_136 is not None
+            else None
+        ),
+        live_dora_indicator_tiles_136=tuple(
+            int(tile) for tile in snapshot_state.live_dora_indicator_tiles_136
+        ),
+        visible_summary=visible_summary,
+    )
+
+
+def _capture_state_from_analysis_snapshot(snapshot: LiveAnalysisSnapshot) -> CaptureState:
+    """Return a worker-local CaptureState facade built from an analysis snapshot."""
+
+    state = CaptureState(
+        current_round=_clone_round_state_for_live_snapshot(snapshot.round_state),
+        live_hand_tiles_136=list(snapshot.live_hand_tiles_136),
+        live_last_draw_tile_136=snapshot.live_last_draw_tile_136,
+        live_dora_indicator_tiles_136=list(snapshot.live_dora_indicator_tiles_136),
+    )
+    if state.current_round is not None:
+        for seat in range(SEAT_COUNT):
+            state.live_river_store.append_many(
+                seat=seat,
+                discards=state.current_round.discards.get(seat, ()),
+            )
+    _rebuild_tracker_from_live_river_store(state)
+    return state
+
+
+def _remap_hand_danger_percentages_by_tile(
+    source_hand_tiles: Sequence[int],
+    source_hand_danger_percentages: Sequence[dict[int, object]],
+    target_hand_tiles: Sequence[int],
+) -> list[dict[int, object]]:
+    """Map completed danger metrics onto a newer hand by tile id and duplicate order."""
+
+    metrics_by_tile: dict[int, list[dict[int, object]]] = {}
+    for index, raw_tile in enumerate(source_hand_tiles):
+        try:
+            tile = int(raw_tile)
+        except (TypeError, ValueError):
+            continue
+        raw_metrics = (
+            source_hand_danger_percentages[index]
+            if index < len(source_hand_danger_percentages)
+            else {}
+        )
+        metrics_by_tile.setdefault(tile, []).append(
+            dict(raw_metrics) if isinstance(raw_metrics, dict) else {}
+        )
+
+    next_metric_index_by_tile: dict[int, int] = {}
+    remapped: list[dict[int, object]] = []
+    for raw_tile in target_hand_tiles:
+        try:
+            tile = int(raw_tile)
+        except (TypeError, ValueError):
+            remapped.append({})
+            continue
+        tile_metrics = metrics_by_tile.get(tile, ())
+        metric_index = next_metric_index_by_tile.get(tile, 0)
+        if metric_index >= len(tile_metrics):
+            remapped.append({})
+            continue
+        remapped.append(dict(tile_metrics[metric_index]))
+        next_metric_index_by_tile[tile] = metric_index + 1
+    return remapped
+
+
 def _build_loading_opponent_suji_panel_summaries(round_state: object | None) -> dict[int, object]:
     """Return lightweight placeholder summaries while the heavy remain bundle is computing."""
 
@@ -2354,8 +2728,7 @@ def _build_loading_opponent_suji_panel_summaries(round_state: object | None) -> 
 
 
 def _build_live_suji_computation_bundle(
-    snapshot_state: CaptureState,
-    visible_summary: VisibleTileSummary,
+    analysis_snapshot: LiveAnalysisSnapshot,
     *,
     source_refresh_token: int,
     round_identity: object | None,
@@ -2363,6 +2736,8 @@ def _build_live_suji_computation_bundle(
 ) -> LiveSujiComputationBundle:
     """Compute the heavy suji-derived bundle outside the Tk redraw path."""
 
+    snapshot_state = _capture_state_from_analysis_snapshot(analysis_snapshot)
+    visible_summary = analysis_snapshot.visible_summary
     precomputed_profiles = (
         build_all_opponent_suji_danger_profiles(
             snapshot_state.current_round,
@@ -2390,6 +2765,7 @@ def _build_live_suji_computation_bundle(
         source_refresh_token=source_refresh_token,
         round_identity=round_identity,
         input_signature=input_signature,
+        hand_tiles=tuple(tiles136_to_tiles37(snapshot_state.live_hand_tiles_136)),
         hand_danger_percentages=build_hand_tile_suji_danger_metrics(
             snapshot_state,
             snapshot_state.live_hand_tiles_136,
@@ -2428,8 +2804,7 @@ def _live_suji_worker(capture_state: CaptureState) -> None:
         table_view.begin_thread_activity_notice("live suji")
         try:
             bundle = _build_live_suji_computation_bundle(
-                job.snapshot_state,
-                job.visible_summary,
+                job.analysis_snapshot,
                 source_refresh_token=job.source_refresh_token,
                 round_identity=job.round_identity,
                 input_signature=job.input_signature,
@@ -2479,7 +2854,7 @@ def _live_red_tint_worker(capture_state: CaptureState) -> None:
                 source_refresh_token=job.source_refresh_token,
                 round_identity=job.round_identity,
                 discard_red_tint_indices_by_seat=build_live_discard_red_tint_indices_by_seat(
-                    job.snapshot_state
+                    _capture_state_from_analysis_snapshot(job.analysis_snapshot)
                 ),
             )
         except Exception as exc:
@@ -2504,8 +2879,7 @@ def _live_red_tint_worker(capture_state: CaptureState) -> None:
 
 def _request_live_suji_bundle(
     capture_state: CaptureState,
-    snapshot_state: CaptureState,
-    visible_summary: VisibleTileSummary,
+    analysis_snapshot: LiveAnalysisSnapshot,
     *,
     source_refresh_token: int,
     round_identity: object | None,
@@ -2522,9 +2896,11 @@ def _request_live_suji_bundle(
         if (
             isinstance(completed_bundle, LiveSujiComputationBundle)
             and async_state.completed_round_identity == round_identity
-            and completed_bundle.input_signature == input_signature
         ):
-            if async_state.completed_source_refresh_token == source_refresh_token:
+            if (
+                async_state.completed_source_refresh_token == source_refresh_token
+                and completed_bundle.input_signature == input_signature
+            ):
                 current_bundle = completed_bundle
             else:
                 fallback_bundle = completed_bundle
@@ -2539,8 +2915,7 @@ def _request_live_suji_bundle(
         )
         if current_bundle is None and not already_targeted:
             async_state.pending_job = LiveSujiComputationJob(
-                snapshot_state=snapshot_state,
-                visible_summary=visible_summary,
+                analysis_snapshot=analysis_snapshot,
                 source_refresh_token=source_refresh_token,
                 round_identity=round_identity,
                 input_signature=input_signature,
@@ -2564,7 +2939,7 @@ def _request_live_suji_bundle(
 
 def _request_live_red_tint_bundle(
     capture_state: CaptureState,
-    snapshot_state: CaptureState,
+    analysis_snapshot: LiveAnalysisSnapshot,
     *,
     source_refresh_token: int,
     round_identity: object | None,
@@ -2596,7 +2971,7 @@ def _request_live_red_tint_bundle(
         )
         if current_indices is None and not already_targeted:
             async_state.pending_job = LiveRedTintComputationJob(
-                snapshot_state=snapshot_state,
+                analysis_snapshot=analysis_snapshot,
                 source_refresh_token=source_refresh_token,
                 round_identity=round_identity,
             )
@@ -2709,9 +3084,10 @@ def _build_live_suji_input_signature(
 ) -> tuple[object, ...]:
     """Return one signature for the async suji bundle inputs.
 
-    Reusing the previous bundle is only safe while both the public round state and visible-count
-    inputs still match. Lag metadata can arrive one event later; if we blindly reuse the fallback
-    bundle, player-panel values such as `menzen` can contradict the newly drawn lag marker.
+    An exact match marks a bundle as current.  A same-round mismatch may still be retained as a
+    display-only fallback while its replacement is computing; consumers use
+    ``LiveTableSnapshot.suji_analysis_is_current`` to keep that stale payload out of decisions and
+    alert transitions.
     """
 
     round_state = snapshot_state.current_round
@@ -2799,21 +3175,158 @@ def build_live_player_names_by_seat(capture_state: CaptureState) -> dict[int, st
 
 
 def build_live_round_identity(capture_state: CaptureState) -> object | None:
-    """Return a stable token that changes when INIT/REINIT rebuilds the live table."""
+    """Return the identity of the authoritative base-river epoch currently being drawn.
+
+    The long-lived LiveRiverStore owns the base river. Its epoch increments only at
+    authoritative reset boundaries, so renderer/cache identity must follow that epoch instead of
+    INIT/INITBYLOG/WGC wrapper labels alone.
+    """
 
     round_state = capture_state.current_round
+    river_store = getattr(capture_state, "live_river_store", None)
+    river_epoch = int(getattr(river_store, "epoch", 0) or 0)
     if round_state is None:
+        # A temporary UI/bridge reset may drop RoundState while LiveRiverStore still owns the base
+        # river. Keep a stable river-epoch identity so renderer/cache does not treat the next
+        # projection as a hard reset.
+        return ("river_epoch", river_epoch, getattr(river_store, "round_key", None))
+    if (
+        str(getattr(round_state, "snapshot_event_type", "") or "") == "init"
+        and all(
+            value is None
+            for value in (
+                round_state.kyoku_index,
+                round_state.honba,
+                round_state.kyotaku,
+                round_state.oya,
+            )
+        )
+    ):
+        logical_round_identity = (
+            "init",
+            int(getattr(round_state, "snapshot_bootstrap_sequence", 0) or 0),
+        )
+    elif round_state.round_id:
+        logical_round_identity = round_state.round_id
+    elif not round_state.started_from_init_like and all(
+        value is None
+        for value in (
+            round_state.kyoku_index,
+            round_state.honba,
+            round_state.kyotaku,
+            round_state.oya,
+        )
+    ):
+        logical_round_identity = (
+            "provisional",
+            int(getattr(round_state, "provisional_round_sequence", 0) or 0),
+        )
+    else:
+        logical_round_identity = (
+            round_state.kyoku_index,
+            round_state.honba,
+            round_state.kyotaku,
+            round_state.oya,
+        )
+    return ("river_epoch", river_epoch, logical_round_identity)
+
+
+def _live_discard_history_identity(round_identity: object | None) -> object | None:
+    """Return the logical round identity while keeping INIT reset wrappers distinct."""
+
+    if isinstance(round_identity, tuple) and len(round_identity) == 2:
+        try:
+            int(round_identity[1])
+        except (TypeError, ValueError):
+            return round_identity
+        return round_identity[0]
+    return round_identity
+
+
+_LIVE_DISCARD_HISTORY_INIT_EVENTS = frozenset({"init", "initbylog", "wgc"})
+
+
+def _live_discard_history_event_wrapper(
+    round_identity: object | None,
+) -> tuple[str, object, int] | None:
+    """Return an INIT-like identity wrapper after removing the outer bootstrap sequence."""
+
+    identity = _live_discard_history_identity(round_identity)
+    if not (isinstance(identity, tuple) and len(identity) == 3):
         return None
-    logical_round_identity = round_state.round_id or (
-        round_state.kyoku_index,
-        round_state.honba,
-        round_state.kyotaku,
-        round_state.oya,
-    )
+    event_type = str(identity[0]).lower()
+    if event_type not in _LIVE_DISCARD_HISTORY_INIT_EVENTS:
+        return None
+    try:
+        sequence = int(identity[2])
+    except (TypeError, ValueError):
+        return None
+    return (event_type, identity[1], sequence)
+
+
+def _live_discard_history_continuity_identity(round_identity: object | None) -> object | None:
+    """Return the underlying round id for non-INIT discard-history continuity."""
+
+    identity = _live_discard_history_identity(round_identity)
+    if (
+        isinstance(identity, tuple)
+        and len(identity) == 3
+        and str(identity[0]) == "river_epoch"
+    ):
+        return identity[2]
+    wrapper = _live_discard_history_event_wrapper(round_identity)
+    if wrapper is not None:
+        return wrapper[1]
+    return identity
+
+
+def _live_discard_history_river_epoch(round_identity: object | None) -> int | None:
+    """Return the LiveRiverStore epoch embedded in a live discard-history identity."""
+
+    identity = _live_discard_history_identity(round_identity)
+    if not (
+        isinstance(identity, tuple)
+        and len(identity) == 3
+        and str(identity[0]) == "river_epoch"
+    ):
+        return None
+    try:
+        return int(identity[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_live_discard_history_round(
+    previous_round_identity: object | None,
+    current_round_identity: object | None,
+) -> bool:
+    """Return whether two snapshots can share retained same-round river history."""
+
+    if previous_round_identity is None or current_round_identity is None:
+        return False
+    previous_identity = _live_discard_history_identity(previous_round_identity)
+    current_identity = _live_discard_history_identity(current_round_identity)
+    if previous_identity == current_identity:
+        return True
+    previous_epoch = _live_discard_history_river_epoch(previous_round_identity)
+    current_epoch = _live_discard_history_river_epoch(current_round_identity)
+    if (
+        previous_epoch is not None
+        and current_epoch is not None
+        and previous_epoch != current_epoch
+    ):
+        return False
+    # INIT/INITBYLOG/WGC wrappers are recovery/bootstrap labels.  Keep discard-history
+    # continuity when the underlying round id is unchanged; otherwise a same-round recovery
+    # snapshot can erase called tiles from the renderer/cache pipeline.
+    previous_continuity_identity = _live_discard_history_continuity_identity(previous_round_identity)
+    current_continuity_identity = _live_discard_history_continuity_identity(current_round_identity)
     return (
-        logical_round_identity,
-        int(getattr(round_state, "snapshot_bootstrap_sequence", 0)),
+        previous_continuity_identity is not None
+        and current_continuity_identity is not None
+        and previous_continuity_identity == current_continuity_identity
     )
+
 
 
 def _format_round_text(kyoku_index: int | None, honba: int | None) -> str:
@@ -2899,28 +3412,200 @@ def _build_awaseuchi_round_events(round_state: object | None) -> list[object]:
     ]
 
 
-def _clone_tracker_discard_for_live_snapshot(discard: object) -> object:
-    """Return one lightweight copy of a tracker discard for UI snapshot use."""
+def _copy_player_discard_map(
+    discard_map: object,
+) -> dict[Player, list[object]]:
+    """Return a Player-keyed copy of a renderer discard map-like object."""
 
-    cloned_discard = copy.copy(discard)
-    self_hand_tiles = getattr(discard, "self_hand_tiles_before_discard_136", None)
-    if isinstance(self_hand_tiles, list):
-        cloned_discard.self_hand_tiles_before_discard_136 = list(self_hand_tiles)
-    return cloned_discard
+    if not isinstance(discard_map, dict):
+        return {player: [] for player in Player}
+    copied: dict[Player, list[object]] = {}
+    for player in Player:
+        raw_discards = discard_map.get(player)
+        if raw_discards is None:
+            raw_discards = discard_map.get(int(player), ())
+        try:
+            copied[player] = list(raw_discards)
+        except TypeError:
+            copied[player] = []
+    return copied
 
 
-def _clone_tracker_discard_map_for_live_snapshot(
+def _player_discard_map_total(discard_map: object) -> int:
+    copied = _copy_player_discard_map(discard_map)
+    return sum(len(copied.get(player, ())) for player in Player)
+
+
+def _player_discard_map_display_signature(discard_map: object) -> tuple[object, ...]:
+    copied = _copy_player_discard_map(discard_map)
+    signature: list[object] = []
+    for player in Player:
+        signature.append(
+            (
+                int(player),
+                tuple(
+                    (
+                        getattr(discard, "tile_id", None),
+                        getattr(discard, "tile_136", None),
+                        getattr(discard, "round_discard_index", None),
+                        str(getattr(getattr(discard, "draw_type", None), "name", getattr(discard, "draw_type", ""))),
+                        bool(getattr(discard, "called", False)),
+                        int(getattr(discard, "lagged", 0) or 0),
+                        getattr(discard, "thinking_time_ms", None),
+                        getattr(discard, "thinking_time_source", None),
+                        getattr(discard, "event_index", None),
+                    )
+                    for discard in copied.get(player, ())
+                ),
+            )
+        )
+    return tuple(signature)
+
+
+def _discard_count_tuple_for_live_log(discard_map: object) -> tuple[tuple[int, int], ...]:
+    copied = _copy_player_discard_map(discard_map)
+    return tuple(
+        (int(player), len(copied.get(player, ())))
+        for player in Player
+    )
+
+
+def _short_live_log_repr(value: object, *, limit: int = 180) -> str:
+    text = repr(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _optimistic_live_stable_discard_map(
+    capture_state: CaptureState,
+) -> tuple[object | None, dict[Player, list[object]]]:
+    """Read the last published display-only river copy without mutating capture state."""
+
+    return (
+        getattr(capture_state, "live_stable_discard_round_identity", None),
+        _copy_player_discard_map(
+            getattr(capture_state, "live_stable_discard_map", {})
+        ),
+    )
+
+
+def _read_live_stable_discard_map(
+    capture_state: CaptureState,
+) -> tuple[object | None, dict[Player, list[object]]]:
+    """Read the stable display river even when the parser briefly owns state_lock."""
+
+    state_lock = capture_state.state_lock
+    if not state_lock.acquire(blocking=False):
+        return _optimistic_live_stable_discard_map(capture_state)
+    try:
+        return _optimistic_live_stable_discard_map(capture_state)
+    finally:
+        state_lock.release()
+
+
+def _publish_live_stable_discard_map(
+    capture_state: CaptureState,
+    round_identity: object | None,
     discard_map: dict[Player, list[object]],
 ) -> dict[Player, list[object]]:
-    """Clone tracker discards without paying for a full recursive deepcopy."""
+    """Store a copy of the current authoritative visual river for fallback diagnostics."""
 
-    return {
-        player: [
-            _clone_tracker_discard_for_live_snapshot(discard)
-            for discard in discards
-        ]
-        for player, discards in discard_map.items()
-    }
+    next_map = _copy_player_discard_map(discard_map)
+    next_total = _player_discard_map_total(next_map)
+    state_lock = capture_state.state_lock
+    if not state_lock.acquire(blocking=False):
+        previous_identity, previous_map = _optimistic_live_stable_discard_map(capture_state)
+        if (
+            _same_live_discard_history_round(previous_identity, round_identity)
+            and _player_discard_map_total(previous_map) > next_total
+        ):
+            return previous_map
+        return next_map
+    try:
+        previous_identity, previous_map = _optimistic_live_stable_discard_map(capture_state)
+        if (
+            _same_live_discard_history_round(previous_identity, round_identity)
+            and _player_discard_map_total(previous_map) > next_total
+        ):
+            return previous_map
+        capture_state.live_stable_discard_round_identity = round_identity
+        capture_state.live_stable_discard_map = {
+            player: list(next_map.get(player, ()))
+            for player in Player
+        }
+        return _copy_player_discard_map(capture_state.live_stable_discard_map)
+    finally:
+        state_lock.release()
+
+
+def _live_snapshot_with_stable_discard_map(
+    capture_state: CaptureState,
+    snapshot: LiveTableSnapshot,
+) -> LiveTableSnapshot:
+    """Return a cached snapshot repaired only from the last authoritative river copy."""
+
+    stable_round_identity, stable_discard_map = _read_live_stable_discard_map(capture_state)
+
+    if not _same_live_discard_history_round(
+        getattr(snapshot, "round_identity", None),
+        stable_round_identity,
+    ):
+        return snapshot
+    stable_total = _player_discard_map_total(stable_discard_map)
+    if stable_total <= 0:
+        return snapshot
+    snapshot_total = _player_discard_map_total(snapshot.discard_map)
+    if (
+        stable_total < snapshot_total
+        or (
+            stable_total == snapshot_total
+            and _player_discard_map_display_signature(stable_discard_map)
+            == _player_discard_map_display_signature(snapshot.discard_map)
+        )
+    ):
+        return snapshot
+
+    visible_summary = collect_visible_tile_summary(
+        discard_map=stable_discard_map,
+        hand_tiles=snapshot.hand_tiles,
+        meld_tiles=snapshot.meld_tiles,
+        dora_indicator_tiles=snapshot.dora_indicator_tiles,
+    )
+    table_situation_auto_scores_by_seat = (
+        table_view._build_table_situation_auto_scores_by_seat(
+            stable_discard_map,
+            snapshot.discard_red_tint_indices_by_seat,
+        )
+        if table_view.TABLE_SITUATION_ENABLED
+        else {}
+    )
+    same_jun_marker_indices_by_seat = (
+        table_view._same_jun_match_discard_indices_by_seat(
+            stable_discard_map,
+            snapshot.melds_by_player,
+            snapshot.round_events,
+        )
+        if table_view.AWASEUCHI_MARKERS_ENABLED
+        else {}
+    )
+    message = (
+        "Live snapshot stable discard restore: "
+        f"snapshot_counts={_discard_count_tuple_for_live_log(snapshot.discard_map)} "
+        f"stable_counts={_discard_count_tuple_for_live_log(stable_discard_map)} "
+        f"round_identity={_short_live_log_repr(getattr(snapshot, 'round_identity', None))} "
+        f"stable_identity={_short_live_log_repr(stable_round_identity)} "
+        f"refresh_token={_short_live_log_repr(getattr(snapshot, 'refresh_token', None))}"
+    )
+    print(message)
+    _append_live_runtime_log(message)
+    return replace(
+        snapshot,
+        discard_map=stable_discard_map,
+        visible_summary=visible_summary,
+        table_situation_auto_scores_by_seat=table_situation_auto_scores_by_seat,
+        same_jun_marker_indices_by_seat=same_jun_marker_indices_by_seat,
+    )
 
 
 def _clone_capture_discard_for_live_snapshot(discard: CaptureDiscard) -> CaptureDiscard:
@@ -2955,6 +3640,31 @@ def _clone_capture_event_for_live_snapshot(event: CaptureEvent) -> CaptureEvent:
     return cloned_event
 
 
+def _latest_live_event_type(capture_state: CaptureState) -> str:
+    """Return the newest raw event type carried by a live snapshot."""
+
+    raw_events = getattr(capture_state, "raw_events", ())
+    if not raw_events:
+        return ""
+    latest_event = raw_events[-1]
+    return str(getattr(latest_event, "event_type", "") or "").strip().lower()
+
+
+def _recent_live_event_types(capture_state: CaptureState) -> tuple[str, ...]:
+    """Return recent raw event types retained for UI repair gates."""
+
+    raw_events = list(getattr(capture_state, "raw_events", ()) or ())
+    recent_events = raw_events[-LIVE_SNAPSHOT_RECENT_EVENT_COUNT:]
+    return tuple(
+        event_type
+        for event_type in (
+            str(getattr(event, "event_type", "") or "").strip().lower()
+            for event in recent_events
+        )
+        if event_type
+    )
+
+
 def _clone_round_state_for_live_snapshot(round_state: RoundState | None) -> RoundState | None:
     """Clone only the current-round fields needed by redraw/danger workers."""
 
@@ -2982,6 +3692,12 @@ def _clone_round_state_for_live_snapshot(round_state: RoundState | None) -> Roun
         snapshot_is_partial=bool(round_state.snapshot_is_partial),
         started_from_init_like=bool(round_state.started_from_init_like),
         snapshot_bootstrap_sequence=int(getattr(round_state, "snapshot_bootstrap_sequence", 0)),
+        snapshot_event_type=str(getattr(round_state, "snapshot_event_type", "") or ""),
+        provisional_round_sequence=int(getattr(round_state, "provisional_round_sequence", 0)),
+        hanchan_round_ordinal=int(getattr(round_state, "hanchan_round_ordinal", 0) or 0),
+        first_row_thinking_history_recorded=bool(
+            getattr(round_state, "first_row_thinking_history_recorded", False)
+        ),
         discards={
             seat: [
                 _clone_capture_discard_for_live_snapshot(discard)
@@ -3000,6 +3716,16 @@ def _clone_round_state_for_live_snapshot(round_state: RoundState | None) -> Roun
         raw_attrs=dict(getattr(round_state, "raw_attrs", {}) or {}),
         raw_init_attrs=dict(getattr(round_state, "raw_init_attrs", {}) or {}),
         raw_reinit_attrs=dict(getattr(round_state, "raw_reinit_attrs", {}) or {}),
+        browser_visible_river_projection={
+            seat: [
+                dict(entry) if isinstance(entry, dict) else entry
+                for entry in getattr(round_state, "browser_visible_river_projection", {}).get(
+                    seat,
+                    (),
+                )
+            ]
+            for seat in range(4)
+        },
         events=[
             _clone_capture_event_for_live_snapshot(event)
             for event in getattr(round_state, "events", ())
@@ -3150,11 +3876,22 @@ def _snapshot_live_capture_state(
     if not state_lock.acquire(blocking=blocking):
         return None
     try:
-        discard_map = _clone_tracker_discard_map_for_live_snapshot(capture_state.tracker.discards)
+        live_river_store = capture_state.live_river_store.copy_for_snapshot(
+            clone_item=_clone_capture_discard_for_live_snapshot,
+        )
         round_state = _clone_round_state_for_live_snapshot(capture_state.current_round)
+        if round_state is not None:
+            round_state.replace_discards_for_reset(
+                discards_by_seat=live_river_store.mutable_copy_by_seat(),
+                reason=DiscardResetReason.MANUAL_FULL_RESET,
+            )
         hand_tiles_136 = list(capture_state.live_hand_tiles_136)
         last_draw_tile_136 = capture_state.live_last_draw_tile_136
         dora_indicator_tiles_136 = list(capture_state.live_dora_indicator_tiles_136)
+        recent_raw_events = [
+            _clone_capture_event_for_live_snapshot(event)
+            for event in list(capture_state.raw_events)[-LIVE_SNAPSHOT_RECENT_EVENT_COUNT:]
+        ]
         player_names_by_seat = {
             seat: (
                 capture_state.players.get(seat).name
@@ -3163,16 +3900,31 @@ def _snapshot_live_capture_state(
             )
             for seat in range(4)
         }
+        hanchan_round_ordinal = int(getattr(capture_state, "hanchan_round_ordinal", 0) or 0)
+        first_row_thinking_avg_history_by_seat = {
+            seat: [
+                float(value)
+                for value in getattr(
+                    capture_state,
+                    "first_row_thinking_avg_history_by_seat",
+                    {},
+                ).get(seat, ())
+            ]
+            for seat in range(4)
+        }
         refresh_token = int(capture_state.live_update_sequence)
     finally:
         state_lock.release()
 
     snapshot_state = CaptureState(
-        tracker=SutehaiTracker(discards=discard_map),
         current_round=round_state,
         live_hand_tiles_136=hand_tiles_136,
         live_last_draw_tile_136=last_draw_tile_136,
         live_dora_indicator_tiles_136=dora_indicator_tiles_136,
+        live_river_store=live_river_store,
+        raw_events=recent_raw_events,
+        hanchan_round_ordinal=hanchan_round_ordinal,
+        first_row_thinking_avg_history_by_seat=first_row_thinking_avg_history_by_seat,
     )
     resolved_player_names_by_seat = dict(DEFAULT_PLAYER_NAMES_BY_SEAT)
     for seat, name in player_names_by_seat.items():
@@ -3207,7 +3959,7 @@ def _read_live_snapshot_cache_state_locked(
 
 
 def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
-    """Build one consistent live-table snapshot for the renderer."""
+    """Build one render snapshot, retaining same-round completed analysis while recomputing."""
 
     progress_thread_name = (
         "ui" if threading.current_thread() is threading.main_thread() else "live_snapshot"
@@ -3238,7 +3990,7 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
                 stale_after_s=4.0,
                 repeat_after_s=10.0,
             )
-            return cached_snapshot
+            return _live_snapshot_with_stable_discard_map(capture_state, cached_snapshot)
         with state_lock:
             refresh_token, cache_refresh_token, cached_snapshot, cached_refresh_token = _read_live_snapshot_cache_state_locked(
                 capture_state
@@ -3260,7 +4012,7 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
             stale_after_s=4.0,
             repeat_after_s=10.0,
         )
-        return cached_snapshot
+        return _live_snapshot_with_stable_discard_map(capture_state, cached_snapshot)
 
     snapshot_result = _snapshot_live_capture_state(capture_state, blocking=False)
     if snapshot_result is None:
@@ -3276,19 +4028,37 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
                 stale_after_s=4.0,
                 repeat_after_s=10.0,
             )
-            return cached_snapshot
+            return _live_snapshot_with_stable_discard_map(capture_state, cached_snapshot)
         snapshot_result = _snapshot_live_capture_state(capture_state, blocking=True)
     if snapshot_result is None:
         raise RuntimeError("failed to snapshot live capture state")
     snapshot_state, player_names_by_seat, live_refresh_token = snapshot_result
     melds_by_player = build_live_meld_map(snapshot_state)
-    visible_summary = build_live_visible_tile_summary(snapshot_state)
     round_identity = build_live_round_identity(snapshot_state)
+    hand_tiles = tiles136_to_tiles37(snapshot_state.live_hand_tiles_136)
+    dora_indicator_tiles = tiles136_to_tiles37(snapshot_state.live_dora_indicator_tiles_136)
+    meld_tiles = flatten_visible_meld_tiles(melds_by_player)
+    live_discard_map = build_discard_map_from_live_river_store(snapshot_state)
+    # Render input starts as a copy of the authoritative live river store.  The stable map below is
+    # also LiveRiverStore-derived; it protects the display from a same-round short snapshot without
+    # writing repaired history back into CaptureState.
+    display_discard_map = _copy_player_discard_map(live_discard_map)
+    display_discard_map = _publish_live_stable_discard_map(
+        capture_state,
+        round_identity,
+        display_discard_map,
+    )
+    visible_summary = collect_visible_tile_summary(
+        discard_map=display_discard_map,
+        hand_tiles=hand_tiles,
+        meld_tiles=meld_tiles,
+        dora_indicator_tiles=dora_indicator_tiles,
+    )
+    analysis_snapshot = _build_live_analysis_snapshot(snapshot_state, visible_summary)
     suji_input_signature = _build_live_suji_input_signature(snapshot_state, visible_summary)
     current_suji_bundle, fallback_suji_bundle = _request_live_suji_bundle(
         capture_state,
-        snapshot_state,
-        visible_summary,
+        analysis_snapshot,
         source_refresh_token=live_refresh_token,
         round_identity=round_identity,
         input_signature=suji_input_signature,
@@ -3297,7 +4067,11 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
         current_suji_bundle.hand_danger_percentages
         if current_suji_bundle is not None
         else (
-            fallback_suji_bundle.hand_danger_percentages
+            _remap_hand_danger_percentages_by_tile(
+                fallback_suji_bundle.hand_tiles,
+                fallback_suji_bundle.hand_danger_percentages,
+                hand_tiles,
+            )
             if fallback_suji_bundle is not None
             else []
         )
@@ -3329,9 +4103,22 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
             else {}
         )
     )
+    first_row_fast_trend_alert_indicators_by_seat = (
+        table_view.build_first_row_fast_trend_alert_indicators_by_seat(
+            snapshot_state.current_round,
+            getattr(snapshot_state, "first_row_thinking_avg_history_by_seat", {}),
+            hanchan_round_ordinal=getattr(snapshot_state, "hanchan_round_ordinal", 0),
+        )
+    )
+    effective_player_alert_indicators_by_seat = (
+        table_view.merge_first_row_fast_trend_alert_indicators_by_seat(
+            effective_player_alert_indicators_by_seat,
+            first_row_fast_trend_alert_indicators_by_seat,
+        )
+    )
     current_red_tint_indices, fallback_red_tint_indices = _request_live_red_tint_bundle(
         capture_state,
-        snapshot_state,
+        analysis_snapshot,
         source_refresh_token=live_refresh_token,
         round_identity=round_identity,
     )
@@ -3343,7 +4130,7 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
     round_events = _build_awaseuchi_round_events(snapshot_state.current_round)
     table_situation_auto_scores_by_seat = (
         table_view._build_table_situation_auto_scores_by_seat(
-            snapshot_state.tracker.discards,
+            display_discard_map,
             effective_discard_red_tint_indices,
         )
         if table_view.TABLE_SITUATION_ENABLED
@@ -3351,7 +4138,7 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
     )
     same_jun_marker_indices_by_seat = (
         table_view._same_jun_match_discard_indices_by_seat(
-            snapshot_state.tracker.discards,
+            display_discard_map,
             melds_by_player,
             round_events,
         )
@@ -3359,12 +4146,9 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
         else {}
     )
     snapshot = LiveTableSnapshot(
-        discard_map={
-            player: list(snapshot_state.tracker.discards.get(player, []))
-            for player in Player
-        },
+        discard_map=display_discard_map,
         discard_red_tint_indices_by_seat=effective_discard_red_tint_indices,
-        hand_tiles=tiles136_to_tiles37(snapshot_state.live_hand_tiles_136),
+        hand_tiles=hand_tiles,
         hand_draw_tile=build_live_hand_draw_tile(snapshot_state),
         hand_danger_percentages=effective_hand_danger_percentages,
         opponent_suji_panel_summaries=effective_opponent_suji_panel_summaries,
@@ -3372,8 +4156,8 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
         player_alert_indicators_by_seat=effective_player_alert_indicators_by_seat,
         player_score_diffs_by_seat=build_player_score_diffs_by_seat(snapshot_state.current_round),
         player_names_by_seat=player_names_by_seat,
-        meld_tiles=flatten_visible_meld_tiles(melds_by_player),
-        dora_indicator_tiles=tiles136_to_tiles37(snapshot_state.live_dora_indicator_tiles_136),
+        meld_tiles=meld_tiles,
+        dora_indicator_tiles=dora_indicator_tiles,
         round_events=round_events,
         round_info_panel=build_live_round_info_panel(snapshot_state),
         melds_by_player=melds_by_player,
@@ -3383,6 +4167,9 @@ def build_live_table_snapshot(capture_state: CaptureState) -> LiveTableSnapshot:
         hand_recommendation_request_context=build_live_pystyle_display_context(snapshot_state),
         table_situation_auto_scores_by_seat=table_situation_auto_scores_by_seat,
         same_jun_marker_indices_by_seat=same_jun_marker_indices_by_seat,
+        latest_event_type=_latest_live_event_type(snapshot_state),
+        recent_event_types=_recent_live_event_types(snapshot_state),
+        suji_analysis_is_current=current_suji_bundle is not None,
     )
     with capture_state.state_lock:
         current_refresh_token = (
@@ -3418,13 +4205,23 @@ def build_fast_live_table_snapshot(
     round_identity = build_live_round_identity(snapshot_state)
     same_round = getattr(base_snapshot, "round_identity", None) == round_identity
     melds_by_player = build_live_meld_map(snapshot_state)
-    visible_summary = build_live_visible_tile_summary(snapshot_state)
     hand_tiles = tiles136_to_tiles37(snapshot_state.live_hand_tiles_136)
     hand_draw_tile = build_live_hand_draw_tile(snapshot_state)
-    hand_state_matches_base = (
-        same_round
-        and tuple(getattr(base_snapshot, "hand_tiles", ())) == tuple(hand_tiles)
-        and getattr(base_snapshot, "hand_draw_tile", None) == hand_draw_tile
+    live_discard_map = build_discard_map_from_live_river_store(snapshot_state)
+    # Render input starts as a copy of the authoritative live river store.  The stable map below is
+    # also LiveRiverStore-derived; it protects the display from a same-round short snapshot without
+    # writing repaired history back into CaptureState.
+    display_discard_map = _copy_player_discard_map(live_discard_map)
+    display_discard_map = _publish_live_stable_discard_map(
+        capture_state,
+        round_identity,
+        display_discard_map,
+    )
+    visible_summary = collect_visible_tile_summary(
+        discard_map=display_discard_map,
+        hand_tiles=hand_tiles,
+        meld_tiles=flatten_visible_meld_tiles(melds_by_player),
+        dora_indicator_tiles=tiles136_to_tiles37(snapshot_state.live_dora_indicator_tiles_136),
     )
     resolved_refresh_token = (
         refresh_token
@@ -3436,12 +4233,27 @@ def build_fast_live_table_snapshot(
             else 0,
         )
     )
+    base_player_alert_indicators_by_seat = (
+        dict(base_snapshot.player_alert_indicators_by_seat)
+        if same_round
+        else {}
+    )
+    first_row_fast_trend_alert_indicators_by_seat = (
+        table_view.build_first_row_fast_trend_alert_indicators_by_seat(
+            snapshot_state.current_round,
+            getattr(snapshot_state, "first_row_thinking_avg_history_by_seat", {}),
+            hanchan_round_ordinal=getattr(snapshot_state, "hanchan_round_ordinal", 0),
+        )
+    )
+    player_alert_indicators_by_seat = (
+        table_view.merge_first_row_fast_trend_alert_indicators_by_seat(
+            base_player_alert_indicators_by_seat,
+            first_row_fast_trend_alert_indicators_by_seat,
+        )
+    )
     return replace(
         base_snapshot,
-        discard_map={
-            player: list(snapshot_state.tracker.discards.get(player, []))
-            for player in Player
-        },
+        discard_map=display_discard_map,
         discard_red_tint_indices_by_seat=(
             dict(base_snapshot.discard_red_tint_indices_by_seat)
             if same_round
@@ -3450,8 +4262,12 @@ def build_fast_live_table_snapshot(
         hand_tiles=hand_tiles,
         hand_draw_tile=hand_draw_tile,
         hand_danger_percentages=(
-            list(base_snapshot.hand_danger_percentages)
-            if hand_state_matches_base
+            _remap_hand_danger_percentages_by_tile(
+                base_snapshot.hand_tiles,
+                base_snapshot.hand_danger_percentages,
+                hand_tiles,
+            )
+            if same_round
             else []
         ),
         opponent_suji_panel_summaries=(
@@ -3464,11 +4280,7 @@ def build_fast_live_table_snapshot(
             if same_round
             else {}
         ),
-        player_alert_indicators_by_seat=(
-            dict(base_snapshot.player_alert_indicators_by_seat)
-            if same_round
-            else {}
-        ),
+        player_alert_indicators_by_seat=player_alert_indicators_by_seat,
         player_score_diffs_by_seat=build_player_score_diffs_by_seat(snapshot_state.current_round),
         player_names_by_seat=player_names_by_seat,
         meld_tiles=flatten_visible_meld_tiles(melds_by_player),
@@ -3490,6 +4302,9 @@ def build_fast_live_table_snapshot(
             if same_round
             else {}
         ),
+        latest_event_type=_latest_live_event_type(snapshot_state),
+        recent_event_types=_recent_live_event_types(snapshot_state),
+        suji_analysis_is_current=False,
     )
 
 
@@ -3569,6 +4384,50 @@ def build_live_refresh_token(capture_state: CaptureState) -> tuple[int, int]:
         )
     finally:
         state_lock.release()
+
+
+def _is_live_async_only_refresh_token_change(
+    previous_refresh_token: object | None,
+    next_refresh_token: object | None,
+) -> bool:
+    """Return whether only the async component of one live refresh token advanced."""
+
+    if not (
+        isinstance(previous_refresh_token, tuple)
+        and len(previous_refresh_token) == 2
+        and isinstance(next_refresh_token, tuple)
+        and len(next_refresh_token) == 2
+    ):
+        return False
+    previous_live_token, previous_async_token = previous_refresh_token
+    next_live_token, next_async_token = next_refresh_token
+    if not all(
+        isinstance(value, int)
+        for value in (
+            previous_live_token,
+            previous_async_token,
+            next_live_token,
+            next_async_token,
+        )
+    ):
+        return False
+    return previous_live_token == next_live_token and previous_async_token != next_async_token
+
+
+def _is_newer_live_async_refresh_token(
+    previous_refresh_token: object | None,
+    next_refresh_token: object | None,
+) -> bool:
+    """Return whether ``next`` advances the async component for the same live state."""
+
+    if not _is_live_async_only_refresh_token_change(
+        previous_refresh_token,
+        next_refresh_token,
+    ):
+        return False
+    assert isinstance(previous_refresh_token, tuple)
+    assert isinstance(next_refresh_token, tuple)
+    return int(next_refresh_token[1]) > int(previous_refresh_token[1])
 
 
 class AsyncLiveTableSnapshotProvider:
@@ -3724,9 +4583,14 @@ class AsyncLiveTableSnapshotProvider:
                 self._in_flight_refresh_token = None
                 self._last_error_text = ""
                 self._last_published_monotonic_s = time.monotonic()
+                fast_refresh_token = getattr(self._latest_fast_snapshot, "refresh_token", None)
+                snapshot_refresh_token = getattr(snapshot, "refresh_token", None)
                 if (
-                    getattr(self._latest_fast_snapshot, "refresh_token", None)
-                    == getattr(snapshot, "refresh_token", None)
+                    fast_refresh_token == snapshot_refresh_token
+                    or _is_newer_live_async_refresh_token(
+                        fast_refresh_token,
+                        snapshot_refresh_token,
+                    )
                 ):
                     self._latest_fast_snapshot = None
                 pending_after_publish = self._pending_refresh_token
@@ -3771,10 +4635,22 @@ class AsyncLiveTableSnapshotProvider:
     def _refresh_fast_snapshot_if_needed(self, refresh_token: object | None) -> None:
         with self._lock:
             latest_snapshot = self._latest_snapshot
-            if refresh_token == getattr(latest_snapshot, "refresh_token", None):
+            latest_refresh_token = getattr(latest_snapshot, "refresh_token", None)
+            fast_refresh_token = getattr(self._latest_fast_snapshot, "refresh_token", None)
+            if refresh_token == latest_refresh_token:
                 self._latest_fast_snapshot = None
                 return
-            if refresh_token == getattr(self._latest_fast_snapshot, "refresh_token", None):
+            if refresh_token == fast_refresh_token:
+                return
+            effective_refresh_token = (
+                fast_refresh_token
+                if self._latest_fast_snapshot is not None
+                else latest_refresh_token
+            )
+            if _is_live_async_only_refresh_token_change(
+                effective_refresh_token,
+                refresh_token,
+            ):
                 return
         try:
             fast_snapshot = self._fast_snapshot_builder(

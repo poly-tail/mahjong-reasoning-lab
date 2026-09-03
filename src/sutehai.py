@@ -2,9 +2,11 @@
 
 import re  # Provide regular expression helpers for parsing Tenhou packet lines
 
+from collections.abc import Iterator, MutableMapping, MutableSequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field  # Import dataclass utilities for lightweight data containers
 from enum import Enum, IntEnum  # Import Enum types for integer and string based enumerations
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple  # Bring in typing helpers for collection annotations
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple  # Bring in typing helpers for collection annotations
 
 
 class Player(IntEnum):  # Enumerate the four seating positions in a Tenhou game
@@ -116,6 +118,153 @@ class Discard:  # Represent a single discard event with related metadata
     lag_delay_ms: float | None = None  # Measured delay until the resolving draw/call packet
 
 
+class DiscardHistoryMutationError(RuntimeError):
+    """Raised when code tries to shorten a discard history outside an authoritative reset."""
+
+
+class GuardedDiscardList(MutableSequence[Discard]):
+    """Append-only discard list used by SutehaiTracker."""
+
+    def __init__(self, owner: "GuardedDiscardMap", player: Player) -> None:
+        self._owner = owner
+        self._player = player
+        self._items: list[Discard] = []
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index: int | slice) -> Discard | list[Discard]:
+        return self._items[index]
+
+    def __setitem__(self, index: int | slice, value: Discard | Sequence[Discard]) -> None:
+        if isinstance(index, slice):
+            values = list(value)  # type: ignore[arg-type]
+            current_slice_length = len(self._items[index])
+            if len(values) < current_slice_length and not self._owner.reset_allowed:
+                raise DiscardHistoryMutationError(
+                    "tracker.discards cannot be shortened outside INIT/REINIT reset"
+                )
+            self._items[index] = values
+            return
+        self._items[index] = value  # type: ignore[assignment]
+
+    def __delitem__(self, index: int | slice) -> None:
+        if not self._owner.reset_allowed:
+            raise DiscardHistoryMutationError(
+                "tracker.discards cannot be deleted outside INIT/REINIT reset"
+            )
+        del self._items[index]
+
+    def insert(self, index: int, value: Discard) -> None:
+        if index != len(self._items) and not self._owner.reset_allowed:
+            raise DiscardHistoryMutationError("tracker.discards only supports tail append")
+        self._items.insert(index, value)
+
+    def append(self, value: Discard) -> None:
+        self._items.append(value)
+
+    def extend(self, values: Sequence[Discard]) -> None:
+        self._items.extend(values)
+
+    def clear(self) -> None:
+        if not self._owner.reset_allowed:
+            raise DiscardHistoryMutationError(
+                "tracker.discards cannot be cleared outside INIT/REINIT reset"
+            )
+        self._items.clear()
+
+    def replace_for_reset(self, values: Sequence[Discard]) -> None:
+        if not self._owner.reset_allowed and len(values) < len(self._items):
+            raise DiscardHistoryMutationError(
+                "tracker.discards cannot be shortened outside INIT/REINIT reset"
+            )
+        self._items = list(values)
+
+    def copy(self) -> list[Discard]:
+        return list(self._items)
+
+    def __iter__(self) -> Iterator[Discard]:
+        return iter(self._items)
+
+    def __reversed__(self) -> Iterator[Discard]:
+        return reversed(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        return self._items == other
+
+    def __repr__(self) -> str:
+        return repr(self._items)
+
+
+class GuardedDiscardMap(MutableMapping[Player, GuardedDiscardList]):
+    """Dictionary-like append-only discard map keyed by Player."""
+
+    _ALLOWED_RESET_REASONS = {
+        "init_new_round",
+        "reinit_different_round",
+        "tracker_init",
+    }
+
+    def __init__(self) -> None:
+        self._items = {player: GuardedDiscardList(self, player) for player in Player}
+        self._reset_depth = 0
+        self._reset_reason_stack: list[str] = []
+
+    @property
+    def reset_allowed(self) -> bool:
+        return self._reset_depth > 0
+
+    @contextmanager
+    def allow_reset(self, reason: str) -> Iterator[None]:
+        normalized_reason = str(reason or "").strip()
+        if not normalized_reason:
+            raise DiscardHistoryMutationError("discard reset reason is required")
+        if (
+            normalized_reason not in self._ALLOWED_RESET_REASONS
+            and not normalized_reason.startswith("test_")
+        ):
+            raise DiscardHistoryMutationError(
+                "tracker.discards reset is only allowed for INIT/REINIT boundaries"
+            )
+        self._reset_depth += 1
+        self._reset_reason_stack.append(normalized_reason)
+        try:
+            yield
+        finally:
+            self._reset_reason_stack.pop()
+            self._reset_depth -= 1
+
+    def __getitem__(self, player: Player | int) -> GuardedDiscardList:
+        return self._items[Player(player)]
+
+    def __setitem__(self, player: Player | int, values: Sequence[Discard]) -> None:
+        self[Player(player)].replace_for_reset(values)
+
+    def __delitem__(self, player: Player | int) -> None:
+        if not self.reset_allowed:
+            raise DiscardHistoryMutationError(
+                "tracker.discards seats cannot be deleted outside INIT/REINIT reset"
+            )
+        self[Player(player)].clear()
+
+    def __iter__(self) -> Iterator[Player]:
+        return iter(Player)
+
+    def __len__(self) -> int:
+        return len(Player)
+
+    def clear(self) -> None:
+        if not self.reset_allowed:
+            raise DiscardHistoryMutationError(
+                "tracker.discards cannot be cleared outside INIT/REINIT reset"
+            )
+        for discards in self._items.values():
+            discards.clear()
+
+    def copy(self) -> dict[Player, list[Discard]]:
+        return {player: self[player].copy() for player in Player}
+
+
 @dataclass  # Formalise the parsed AGARI data structure for downstream consumers
 class AgariResult:  # Represent a normalised view over AGARI packet contents
     """Container holding a parsed AGARI event with typed fields."""  # Explain what the dataclass provides
@@ -145,9 +294,35 @@ class AgariResult:  # Represent a normalised view over AGARI packet contents
 class SutehaiTracker:  # Manage discards per player seat
     """Helper that keeps track of discards for each player seat."""  # Docstring describing tracker responsibilities
 
-    discards: Dict[Player, List[Discard]] = field(  # Dictionary storing lists of discards keyed by player
-        default_factory=lambda: {player: [] for player in Player}  # Initialize each player key with an empty list
-    )  # Finish field definition with custom default factory
+    discards: GuardedDiscardMap = field(default_factory=GuardedDiscardMap)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.discards, GuardedDiscardMap):
+            return
+        initial_discards = self.discards
+        self.discards = GuardedDiscardMap()
+        with self.allow_discard_reset("tracker_init"):
+            for player in Player:
+                self.discards[player] = list(initial_discards.get(player, []))  # type: ignore[union-attr]
+
+    @contextmanager
+    def allow_discard_reset(self, reason: str) -> Iterator[None]:
+        with self.discards.allow_reset(reason):
+            yield
+
+    def reset_discards(self, *, reason: str) -> None:
+        with self.allow_discard_reset(reason):
+            self.discards.clear()
+
+    def replace_discards(
+        self,
+        player: Player,
+        discards: Sequence[Discard],
+        *,
+        reason: str,
+    ) -> None:
+        with self.allow_discard_reset(reason):
+            self.discards[player] = list(discards)
 
     def add_discard(  # Method to record a new discard event
         self,  # Reference to the current tracker instance
@@ -171,7 +346,7 @@ class SutehaiTracker:  # Manage discards per player seat
         self.discards[player].append(discard)  # Append the new discard to the list for the specified player
         return discard  # Return the newly created Discard instance to the caller
 
-    def get_discards(self, player: Player) -> List[Discard]:  # Retrieve the discard list for a specific player
+    def get_discards(self, player: Player) -> GuardedDiscardList:  # Retrieve the discard list for a specific player
         """Return the chronological list of discards for a player."""  # Docstring describing what is returned
         return self.discards[player]  # Provide direct access to the stored list (caller should avoid mutating it)
 

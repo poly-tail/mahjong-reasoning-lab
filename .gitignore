@@ -9,19 +9,30 @@ __pycache__/
 
 # Runtime logs
 logs/*.log
+*.log
 .env
 .env.*
 !.env.example
 .secrets/
 src/.secrets/
 naga-ptev-analyzer/.secrets/
+*.pcap
+*.pcapng
+*keylog*
+*storage_state*
+*storage-state*
+*cookie*
+*token*
 
 # Packaged artifacts
 dist/
 out/
 **/out/
+*.7z
+*.zip
 
 # Transient temp directories
+.pytest_tmp*/
 tmp*/
 !tmp_web/
 !tmp_web/**

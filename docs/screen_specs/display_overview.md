@@ -33,6 +33,6 @@ flowchart TB
 
 ## 現行の注意点
 
-- 河は差分描画なので、full redraw 時以外は `live_async_discards` 全体を削除しない。
+- 河の base river layer は full redraw 境界で全削除・全描画し、cached-layout redraw では slot 単位の cache と Canvas item tag 生存確認で再利用する。async-only refresh は `live_async_discards` を削除せず、analysis overlay だけを更新する。
 - panel に出ない alert は音声対象にしない。
 - NAGA 下部パネルは常時詳細を出す場所ではなく、局面上重要な pt 変化だけを短く出す。

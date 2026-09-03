@@ -84,6 +84,10 @@ PowerShell:
   - `parse_fragment()` 以前に止まっている
 - `--debug-tags` で `[debug-tag]` は出るが表示されない
   - parser / live state / redraw 側を調べる
+- 副露直後に捨て牌が消える
+  - `logs/live_capture.log` の `called_discard_disappearance_guard` を確認する。`cause`、`changes[].target`、`seat`、`before`、`after` が、`LiveRiverStore` / `RoundState.discards` / `tracker.discards` のどこで count が変わったかを示す
+  - `UI called discard short input` が出ていれば、capture 正本ではなく renderer が call 直後に短い `discard_map` を受け、表示用 cache で欠落 slot を保持した状態
+  - `UI called discard stale delete` が出ていれば、call 直後に Canvas 上の discard slot を削除した状態。`deleted_keys`、前後 count、`round_identity`、`refresh_token` を確認する
 
 ## Bridge 状態の見方
 - `Bridge connected`

@@ -45,10 +45,18 @@ python src/tenhou_hojo.py --mock
 python scripts/render_docs_graphs.py
 ```
 
-## 7. ワークスペース保存
+## 7. source 配布 ZIP
 
 ```powershell
 python scripts/package_workspace.py
 ```
 
-`dist/` 配下に ZIP を出力します。
+既定の `source` profile で `dist/` 配下に ZIP を出力します。source profile では `.secrets/`、Cookie state、token、TLS keylog、ログ、runtime CSV DB、分析出力、pcap、既存 ZIP、Python cache を含めません。
+
+runtime data を退避したい場合は、source 配布とは分けて明示指定します。
+
+```powershell
+python scripts/package_workspace.py --profile runtime-backup --include-runtime-data csv_db --output dist/runtime-backup.zip
+```
+
+runtime-backup でも秘密情報に見える path は拒否します。

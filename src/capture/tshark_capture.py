@@ -167,10 +167,16 @@ def resolve_tshark_interface(interface_override: str | None = None) -> str:
     default_interface = str(TSHARK_INTERFACE).strip()
     best_candidate: tuple[str, str] | None = None
     best_score = -1001
+    first_candidate: tuple[str, str] | None = None
     first_neutral_candidate: tuple[str, str] | None = None
+    default_interface_seen = False
     default_interface_blocked = False
     for interface_index, description in _list_tshark_interfaces():
         score = _score_tshark_interface_description(description)
+        if first_candidate is None:
+            first_candidate = (interface_index, description)
+        if interface_index == default_interface:
+            default_interface_seen = True
         if interface_index == default_interface and score <= -100:
             default_interface_blocked = True
         if score >= 0 and first_neutral_candidate is None:
@@ -180,8 +186,14 @@ def resolve_tshark_interface(interface_override: str | None = None) -> str:
             best_candidate = (interface_index, description)
     if best_candidate is not None and best_score > 0:
         return best_candidate[0]
+    if default_interface_seen and not default_interface_blocked:
+        return default_interface
     if default_interface_blocked and first_neutral_candidate is not None:
         return first_neutral_candidate[0]
+    if first_neutral_candidate is not None:
+        return first_neutral_candidate[0]
+    if first_candidate is not None:
+        return first_candidate[0]
     return default_interface
 
 
@@ -266,6 +278,59 @@ def _record_capture_warning(state: CaptureState, *, code: str, message: str, raw
         _append_live_capture_log(f"{code}: {message}")
 
 
+def _classify_tshark_runtime_message(raw_line: str) -> tuple[str, str]:
+    """Classify non-packet tshark output as info/warning/error."""
+
+    normalized = str(raw_line or "").casefold()
+    if not normalized.strip():
+        return "info", "tshark_runtime_empty"
+    info_tokens = (
+        "capturing on",
+        "capture started",
+        "packets captured",
+    )
+    if any(token in normalized for token in info_tokens):
+        return "info", "tshark_runtime_info"
+    error_tokens = (
+        "permission denied",
+        "access denied",
+        "cannot",
+        "can't",
+        "couldn't",
+        "failed",
+        "error",
+        "invalid capture filter",
+        "display filter",
+        "tls.keylog_file",
+        "no such file",
+        "does not exist",
+        "tshark:",
+    )
+    if any(token in normalized for token in error_tokens):
+        return "error", "tshark_runtime_error"
+    return "warning", "tshark_runtime_warning"
+
+
+def _record_tshark_runtime_message(state: CaptureState, raw_line: str) -> None:
+    """Keep classified tshark runtime output without treating normal startup as an error."""
+
+    level, code = _classify_tshark_runtime_message(raw_line)
+    message = f"TShark runtime message: {raw_line}"
+    with state.state_lock:
+        state.diagnostics.append(
+            {
+                "level": level,
+                "code": code,
+                "message": message,
+                "raw_line": raw_line,
+            }
+        )
+        state.prune_live_history()
+    _append_live_capture_log(f"{code}: {message}")
+    if level == "error":
+        _emit_live_capture_error(message, code=code)
+
+
 def _mark_capture_progress(
     state: CaptureState,
     stage: str,
@@ -333,7 +398,7 @@ def parse_tshark_output_line(
     line: str,
     *,
     debug_tags: bool = False,
-) -> None:
+) -> bool:
     """Parse one tshark text line and persist the normalized events."""
 
     # Step 1: split the tshark TSV line into timestamp and websocket payload.
@@ -354,22 +419,17 @@ def parse_tshark_output_line(
             message=f"Capture line split skipped: {exc}",
             raw_line=line.rstrip(),
         )
-        return
+        return False
     # TShark writes startup and failure diagnostics to the same combined stdout stream.
     # If the line is non-empty but not a timestamped packet row, surface it instead of silently
     # dropping it so interface/keylog/filter failures are visible to the user.
     if timestamp is None:
         raw_line = line.rstrip()
         if raw_line:
-            _record_capture_warning(
-                state,
-                code="tshark_runtime_message",
-                message=f"TShark runtime message: {raw_line}",
-                raw_line=raw_line,
-            )
-        return
+            _record_tshark_runtime_message(state, raw_line)
+        return False
     if timestamp is None or not payload:
-        return
+        return False
     # Step 2: extract one or more mjlog fragments from the websocket payload.
     _mark_capture_progress(
         state,
@@ -388,7 +448,9 @@ def parse_tshark_output_line(
             message=f"Payload fragment extraction skipped: {exc}",
             raw_line=payload,
         )
-        return
+        return False
+    if not fragments:
+        return False
     for fragment in fragments:
         if debug_tags:
             _debug_tag_fragment(timestamp, fragment)
@@ -448,6 +510,7 @@ def parse_tshark_output_line(
                     code="db_persist_skipped",
                     detail=traceback.format_exc(limit=5).strip(),
                 )
+    return True
 
 
 def run_and_capture(

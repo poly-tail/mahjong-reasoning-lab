@@ -43,6 +43,8 @@
 - XML import 時の player signature 照合
 - プレイヤー別分析での所属卓集計
 
+- live capture では `TAIKYOKU.log` / `state.game_id` から `https://tenhou.net/0/?log=...` を `source_url` へ保存する。INIT 時点で log id が未到着の場合も、後続の DB 対象イベントで空の `source_url` を backfill する。
+
 ## `kyoku_master.csv`
 
 1 局 1 行。
@@ -60,6 +62,12 @@
 - `seat2_player_name`
 - `seat3_player_name`
 - `oya_player_name`
+- `seat0_first_row_avg_thinking_time_ms`
+- `seat1_first_row_avg_thinking_time_ms`
+- `seat2_first_row_avg_thinking_time_ms`
+- `seat3_first_row_avg_thinking_time_ms`
+
+`seat0..3_first_row_avg_thinking_time_ms` は、各席の当該局の1段目（席ごとの先頭6打牌）に記録された `thinking_time_ms` の平均値を ms 単位で保存する。まだ打牌がない、または有効な思考時間がない席は空欄にする。
 
 ## `discard_fact_YYYYMM.csv`
 

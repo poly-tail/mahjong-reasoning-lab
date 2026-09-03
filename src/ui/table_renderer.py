@@ -4,6 +4,7 @@ from collections import deque
 from collections.abc import Sequence as SequenceABC
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 import json
+import math
 from pathlib import Path
 import queue
 import random
@@ -195,7 +196,7 @@ MELD_ZONE_OUTLINE = "#45648f"
 MELD_RYANMEN_CHI_BORDER = "#facc15"
 MELD_RYANMEN_CHI_BORDER_WIDTH = 2
 MELD_RYANMEN_CHI_BORDER_PADDING = 2
-CALLED_DISCARD_BORDER = "#c62828"
+CALLED_DISCARD_BORDER = "#facc15"
 CALLED_DISCARD_BORDER_WIDTH = 2
 POST_CALL_TEDASHI_DISCARD_BORDER = "#facc15"
 POST_CALL_TEDASHI_DISCARD_BORDER_WIDTH = 2
@@ -211,8 +212,11 @@ SAME_JUN_MATCH_DISCARD_MARKER = "#facc15"
 PUSH_DISCARD_MARKER = "#a855f7"
 LAG_MARKER_BADGE_FILL = "#4a2228"
 PUSH_DISCARD_MARKER_BADGE_FILL = "#6a5611"
+AWASEUCHI_MARKER_BADGE_FILL = "#6a5611"
 AWASEUCHI_MARKERS_ENABLED = True
-AWASEUCHI_PROVISIONAL_PUBLIC_EVENT_WINDOW = 7
+AWASEUCHI_DISCARD_HISTORY_WINDOW = 5
+# Compatibility alias for callers created before the window was defined in discard-count units.
+AWASEUCHI_PROVISIONAL_PUBLIC_EVENT_WINDOW = AWASEUCHI_DISCARD_HISTORY_WINDOW
 THREE_VISIBLE_MARKERS_ENABLED = THREE_VISIBLE_TILES_ENABLED
 INFERRED_VISIBLE_ENABLED = False
 PEAK_THINKING_TIME_DISCARD_MARKER = "#dc2626"
@@ -416,12 +420,20 @@ THREAD_ACTIVITY_NOTICE_FILL = "#16202c"
 THREAD_ACTIVITY_NOTICE_OUTLINE = "#29415d"
 THREAD_ACTIVITY_NOTICE_TEXT = "#d7deea"
 THREAD_ACTIVITY_NOTICE_REDRAW_MIN_INTERVAL_S = 0.25
-PLAYER_PANEL_ALERT_SOUND_MIN_INTERVAL_S = 0.9
+ALERT_SOUND_DEFAULT_ENABLED = False
+ALERT_SOUND_ENABLED_CONFIRMATION_TONES = ((988, 80), (1319, 120))
+ALERT_SOUND_ENABLED_CONFIRMATION_ASSET = "alert_sound_on"
 SELF_HAND_ALERT_SOUND_MIN_INTERVAL_S = 0.9
 MELD_DORA_ALERT_SOUND_MIN_INTERVAL_S = 0.9
 MELD_DORA_ALERT_THRESHOLD = 2
 ALERT_SOUND_ASSET_DIR = Path(__file__).resolve().parents[2] / "assets" / "audio"
-ALERT_SOUND_WORKER_QUEUE_MAXSIZE = 16
+SPECTATOR_MODE_ALERT_EVENT_TYPE = "initbylog"
+HUUURO_ALERT_SOUND_EVENT_TYPES = frozenset(
+    ("bridge", "wgc", SPECTATOR_MODE_ALERT_EVENT_TYPE)
+)
+HUUURO_ALERT_SOUND_ASSET = "alert_huuuro"
+HUUURO_ALERT_SOUND_SIGNATURE_LIMIT = 24
+SPECTATOR_MODE_ALERT_SOUND_ASSET = HUUURO_ALERT_SOUND_ASSET
 BRIDGE_STATUS_TICK_MS = 250
 BRIDGE_PERIODIC_SNAPSHOT_ENABLED = False
 BRIDGE_SNAPSHOT_POLL_S = 0.8
@@ -659,8 +671,8 @@ class _TaggedCanvasProxy:
 def _discard_item_canvas_tag(player: Player | int, local_index: int) -> str:
     """Return the stable Canvas tag for one seat/local discard slot."""
 
-    # Per-tile tags are what make `P` marker updates cheap: the redraw only deletes the tile that
-    # changed instead of clearing all rivers.
+    # Per-tile tags keep each slot identifiable for diagnostics, cache validation, and targeted
+    # cleanup paths without forcing the whole base river layer to be rebuilt every redraw.
     return f"{_LIVE_ASYNC_DISCARD_TAG}_{int(player)}_{int(local_index)}"
 
 
@@ -699,6 +711,36 @@ def _canvas_has_image_item_with_tag(canvas: tkinter.Canvas, tag: str) -> bool:
     return False
 
 
+def _canvas_image_item_tags_with_parent_tag(
+    canvas: tkinter.Canvas,
+    parent_tag: str,
+) -> frozenset[str] | None:
+    """Return all tags attached to live image items carrying one Canvas parent tag."""
+
+    find_withtag = getattr(canvas, "find_withtag", None)
+    gettags = getattr(canvas, "gettags", None)
+    if not callable(find_withtag) or not callable(gettags):
+        return None
+    try:
+        item_ids = tuple(find_withtag(str(parent_tag)))
+    except (tkinter.TclError, TypeError, ValueError):
+        return None
+    item_type = getattr(canvas, "type", None)
+    image_tags: set[str] = set()
+    for item_id in item_ids:
+        if callable(item_type):
+            try:
+                if str(item_type(item_id)) != "image":
+                    continue
+            except (tkinter.TclError, TypeError, ValueError):
+                continue
+        try:
+            image_tags.update(str(tag) for tag in gettags(item_id))
+        except (tkinter.TclError, TypeError, ValueError):
+            continue
+    return frozenset(image_tags)
+
+
 def _reset_discard_render_cache(canvas: tkinter.Canvas) -> None:
     """Forget per-discard signatures after a full tagged discard delete."""
 
@@ -711,10 +753,27 @@ def _reset_discard_render_cache(canvas: tkinter.Canvas) -> None:
         "drawn": 0,
         "skipped": 0,
         "stale_deleted": 0,
+        "stale_retained": 0,
         "changed": 0,
         "missing_image_refs": 0,
         "missing_image_items": 0,
     }
+
+
+def _invalidate_discard_layers_for_table_frame_redraw(canvas: tkinter.Canvas) -> None:
+    """Remove cached river items before opaque table-frame zones are recreated."""
+
+    # Canvas stacking follows creation order. A new discard-zone rectangle would otherwise cover
+    # unchanged cached tile items, while their signatures and tags still make them look reusable.
+    _delete_canvas_items_by_tags(
+        canvas,
+        _LIVE_ASYNC_DISCARD_TAG,
+        _LIVE_DISCARD_ANALYSIS_OVERLAY_TAG,
+    )
+    _reset_discard_render_cache(canvas)
+    canvas.discard_analysis_overlay_signature = None
+    canvas.discard_analysis_overlay_geometry_by_key = {}
+    canvas.last_discard_analysis_overlay_stats = {"skipped": False, "items": 0}
 
 
 def _stable_render_signature(value: object) -> object:
@@ -766,6 +825,8 @@ def _reset_transient_canvas_draw_state(canvas: tkinter.Canvas) -> None:
     canvas.hand_betaori_response_button_spec = None
     canvas.self_hand_bridge_click_specs = []
     canvas.layout_drag_specs = []
+    canvas.discard_analysis_overlay_signature = None
+    canvas.last_discard_analysis_overlay_stats = {"skipped": False, "items": 0}
 
 
 PLAYER_PANEL_SUMMARY_FONT = ("Consolas", 8, "bold")
@@ -816,6 +877,15 @@ PLAYER_ALERT_PURPLE = "#a855f7"
 PLAYER_ALERT_NONE_TEXT = "#6b7a90"
 PLAYER_ALERT_ROW_GAP = 16
 PLAYER_ALERT_DOT_RADIUS = 4
+PLAYER_PANEL_HAYA_ALERT_MAX_THINKING_TIME_MS = 2300.0
+PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX = "haya:"
+PLAYER_PANEL_OSO_ALERT_MIN_THINKING_TIME_MS = 4000.0
+PLAYER_PANEL_OSO_ALERT_KEY_PREFIX = "oso:"
+PLAYER_PANEL_DORA_ALERT_KEY_PREFIX = "dora:"
+PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX = "first_row_fast_trend:"
+PLAYER_PANEL_FIRST_ROW_FAST_TREND_LABEL = "早い傾向"
+PLAYER_PANEL_FIRST_ROW_FAST_TREND_MIN_PREVIOUS_ROUNDS = 2
+PLAYER_PANEL_FIRST_ROW_FAST_TREND_MIN_LOCAL_DISCARD_COUNT = 3
 PLAYER_PUSH_ALERT_PERSIST_TURNS = 3
 PLAYER_PUSH_ALERT_PERSIST_DISCARD_WINDOW = PLAYER_PUSH_ALERT_PERSIST_TURNS * 4
 PLAYER_PANEL_SECTION_MARGIN = 8
@@ -882,6 +952,7 @@ PlayerAlertIndicatorsBySeat = Mapping[int, Sequence["PlayerAlertIndicator"]]
 PlayerScoreDiffs = Mapping[int, object]
 DiscardRedTintIndicesBySeat = Mapping[int, object]
 PlayerNamesBySeat = Mapping[int, object]
+PLAYER_ALERT_INDICATOR_EMPTY_HOLD_DISCARD_COUNT = 3
 
 
 @dataclass(frozen=True)
@@ -1102,6 +1173,639 @@ class LiveAsyncRenderState:
     same_jun_marker_indices_by_seat: dict[int, frozenset[int]] = field(default_factory=dict)
 
 
+def _empty_round_discard_map_cache() -> dict[Player, list[Discard]]:
+    """Return the per-round river store used to survive short live inputs."""
+
+    return {player: [] for player in Player}
+
+
+def _copy_discard_map_for_round_cache(
+    discard_map: Mapping[object, Iterable[Discard]] | None,
+) -> dict[Player, list[Discard]]:
+    """Return a normalized Player-keyed discard map copy."""
+
+    return {
+        player: _discard_list_for_player(discard_map, player)
+        for player in Player
+    }
+
+
+def _discard_map_total_for_players(
+    discard_map: Mapping[object, Iterable[Discard]] | None,
+) -> int:
+    return sum(len(_discard_list_for_player(discard_map, player)) for player in Player)
+
+
+def _base_river_render_backup(
+    canvas: tkinter.Canvas,
+) -> tuple[object | None, dict[Player, list[Discard]]]:
+    """Return the last non-authoritatively-cleared base river render backup.
+
+    This is deliberately separate from `round_discard_map_cache`.  Round UI state resets may clear
+    the normal per-round cache while live capture still owns a non-empty LiveRiverStore.  The backup
+    lets the next short/empty projection restore the on-screen river instead of drawing the lossy
+    projection.
+    """
+
+    return (
+        getattr(canvas, "base_river_render_backup_identity", None),
+        _copy_discard_map_for_round_cache(
+            getattr(canvas, "base_river_render_backup_map", None)
+        ),
+    )
+
+
+def _remember_base_river_render_backup(
+    canvas: tkinter.Canvas,
+    *,
+    identity: object | None,
+    discard_map: Mapping[object, Iterable[Discard]],
+) -> None:
+    canvas.base_river_render_backup_identity = identity
+    canvas.base_river_render_backup_map = _copy_discard_map_for_round_cache(discard_map)
+
+
+def _round_discard_cache_identity(round_identity: object | None) -> object | None:
+    """Return the logical round identity while keeping INIT reset wrappers distinct."""
+
+    if isinstance(round_identity, tuple) and len(round_identity) == 2:
+        try:
+            int(round_identity[1])
+        except (TypeError, ValueError):
+            return round_identity
+        return round_identity[0]
+    return round_identity
+
+
+_ROUND_DISCARD_CACHE_INIT_EVENTS = frozenset({"init", "initbylog", "wgc"})
+
+
+def _round_discard_cache_event_wrapper(
+    round_identity: object | None,
+) -> tuple[str, object, int] | None:
+    """Return an INIT-like identity wrapper after removing the outer bootstrap sequence."""
+
+    identity = _round_discard_cache_identity(round_identity)
+    if not (isinstance(identity, tuple) and len(identity) == 3):
+        return None
+    event_type = str(identity[0]).lower()
+    if event_type not in _ROUND_DISCARD_CACHE_INIT_EVENTS:
+        return None
+    try:
+        sequence = int(identity[2])
+    except (TypeError, ValueError):
+        return None
+    return (event_type, identity[1], sequence)
+
+
+def _round_discard_cache_continuity_identity(round_identity: object | None) -> object | None:
+    """Return the underlying round id for non-INIT discard-cache continuity."""
+
+    identity = _round_discard_cache_identity(round_identity)
+    if (
+        isinstance(identity, tuple)
+        and len(identity) == 3
+        and str(identity[0]) == "river_epoch"
+    ):
+        return identity[2]
+    wrapper = _round_discard_cache_event_wrapper(round_identity)
+    if wrapper is not None:
+        return wrapper[1]
+    return identity
+
+
+def _round_discard_cache_river_epoch(round_identity: object | None) -> int | None:
+    """Return the authoritative LiveRiverStore epoch embedded in a render identity."""
+
+    identity = _round_discard_cache_identity(round_identity)
+    if not (
+        isinstance(identity, tuple)
+        and len(identity) == 3
+        and str(identity[0]) == "river_epoch"
+    ):
+        return None
+    try:
+        return int(identity[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_round_discard_cache_identity(
+    previous_round_identity: object | None,
+    current_round_identity: object | None,
+) -> bool:
+    """Return whether two UI round identities may share the base-river layer.
+
+    INITBYLOG/WGC/bridge snapshots are often same-round projections.  Treating those wrapper
+    changes as a hard round reset drops the retained base river exactly when a call removes a tile
+    from the visible browser river.  The actual new-round boundary is the underlying round id
+    (game/kyoku/honba/kyotaku/oya); wrappers only describe how the snapshot was bootstrapped.
+    """
+
+    if previous_round_identity is None or current_round_identity is None:
+        return False
+    previous_identity = _round_discard_cache_identity(previous_round_identity)
+    current_identity = _round_discard_cache_identity(current_round_identity)
+    if previous_identity == current_identity:
+        return True
+    previous_epoch = _round_discard_cache_river_epoch(previous_round_identity)
+    current_epoch = _round_discard_cache_river_epoch(current_round_identity)
+    if previous_epoch is not None and current_epoch is not None:
+        # LiveRiverStore.epoch is the authoritative lifetime of the base river layer.  Wrapper or
+        # logical identity churn inside the same epoch is only a projection change; an epoch change
+        # means INIT/new-round reset and the previous base river must not be retained.
+        return previous_epoch == current_epoch
+    # INIT/INITBYLOG/WGC wrappers describe how a snapshot was bootstrapped; they are not, by
+    # themselves, a river reset signal.  A true new round has a different underlying round id.
+    previous_continuity_identity = _round_discard_cache_continuity_identity(previous_round_identity)
+    current_continuity_identity = _round_discard_cache_continuity_identity(current_round_identity)
+    return (
+        previous_continuity_identity is not None
+        and current_continuity_identity is not None
+        and previous_continuity_identity == current_continuity_identity
+    )
+
+
+def _discard_list_for_player(
+    discard_map: Mapping[object, Iterable[Discard]] | None,
+    player: Player,
+) -> list[Discard]:
+    """Return one player's discard list from Player-keyed or int-keyed maps."""
+
+    if not isinstance(discard_map, Mapping):
+        return []
+    raw_discards = discard_map.get(player)
+    if raw_discards is None:
+        raw_discards = discard_map.get(int(player), ())
+    try:
+        return list(raw_discards)
+    except TypeError:
+        return []
+
+
+def _discard_count_tuple_for_log(
+    discard_map: Mapping[object, Iterable[Discard]] | None,
+) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        (int(player), len(_discard_list_for_player(discard_map, player)))
+        for player in Player
+    )
+
+
+def _short_repr_for_log(value: object, *, limit: int = 180) -> str:
+    text = repr(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _maybe_log_called_discard_short_input(
+    canvas: tkinter.Canvas,
+    *,
+    previous_identity: object | None,
+    current_identity: object | None,
+    previous_map: Mapping[object, Iterable[Discard]],
+    input_map: Mapping[object, Iterable[Discard]],
+    output_map: Mapping[object, Iterable[Discard]],
+    retained_total: int,
+    same_round: bool,
+) -> None:
+    if not _called_discard_context_active(canvas):
+        return
+    previous_counts = _discard_count_tuple_for_log(previous_map)
+    input_counts = _discard_count_tuple_for_log(input_map)
+    previous_total = sum(count for _seat, count in previous_counts)
+    input_total = sum(count for _seat, count in input_counts)
+    if input_total >= previous_total and retained_total <= 0:
+        return
+    output_counts = _discard_count_tuple_for_log(output_map)
+    signature = (
+        "called_discard_short_input",
+        getattr(canvas, "current_refresh_token", None),
+        previous_identity,
+        current_identity,
+        previous_counts,
+        input_counts,
+        output_counts,
+        int(retained_total),
+        bool(same_round),
+    )
+    if getattr(canvas, "last_called_discard_short_input_log_signature", None) == signature:
+        return
+    canvas.last_called_discard_short_input_log_signature = signature
+    message = (
+        "UI called discard short input: "
+        f"cause=discard_map_shorter_after_call "
+        f"retained={int(retained_total)} same_round={bool(same_round)} "
+        f"previous_counts={previous_counts} input_counts={input_counts} "
+        f"output_counts={output_counts} "
+        f"previous_identity={_short_repr_for_log(previous_identity)} "
+        f"current_identity={_short_repr_for_log(current_identity)} "
+        f"refresh_token={_short_repr_for_log(getattr(canvas, 'current_refresh_token', None))}"
+    )
+    print(message)
+    _append_ui_diagnostic_log(message)
+
+
+def _maybe_log_called_discard_stale_delete(
+    canvas: tkinter.Canvas,
+    *,
+    stale_deleted_keys: Sequence[tuple[int, int]],
+    previous_counts: Mapping[int, int],
+    current_counts: Mapping[int, int],
+) -> None:
+    if not stale_deleted_keys:
+        return
+    if not _called_discard_context_active(canvas):
+        return
+    sorted_keys = tuple(sorted(stale_deleted_keys))
+    signature = (
+        "called_discard_stale_delete",
+        getattr(canvas, "current_refresh_token", None),
+        getattr(canvas, "current_round_identity", None),
+        sorted_keys,
+    )
+    if getattr(canvas, "last_called_discard_stale_delete_log_signature", None) == signature:
+        return
+    canvas.last_called_discard_stale_delete_log_signature = signature
+    message = (
+        "UI called discard stale delete: "
+        f"cause=canvas_slot_deleted_after_call "
+        f"deleted_keys={sorted_keys} "
+        f"previous_counts={dict(previous_counts)} current_counts={dict(current_counts)} "
+        f"round_identity={_short_repr_for_log(getattr(canvas, 'current_round_identity', None))} "
+        f"refresh_token={_short_repr_for_log(getattr(canvas, 'current_refresh_token', None))}"
+    )
+    print(message)
+    _append_ui_diagnostic_log(message)
+
+
+def _called_discard_context_active(canvas: tkinter.Canvas) -> bool:
+    latest_event_type = str(getattr(canvas, "current_latest_event_type", "") or "").lower()
+    if latest_event_type == "call":
+        return True
+    recent_event_types = getattr(canvas, "current_recent_event_types", ())
+    try:
+        return "call" in {
+            str(event_type or "").strip().lower()
+            for event_type in recent_event_types
+        }
+    except TypeError:
+        return False
+
+
+def _called_discard_canvas_repair_enabled(canvas: tkinter.Canvas) -> bool:
+    return _called_discard_context_active(canvas)
+
+
+def _called_discard_missing_canvas_item_keys(
+    canvas: tkinter.Canvas,
+    discard_map: Mapping[object, Iterable[Discard]] | None,
+) -> tuple[tuple[int, int], ...]:
+    if not _called_discard_canvas_repair_enabled(canvas):
+        return ()
+    live_discard_image_item_tags = _canvas_image_item_tags_with_parent_tag(
+        canvas,
+        _LIVE_ASYNC_DISCARD_TAG,
+    )
+    missing_keys: list[tuple[int, int]] = []
+    for player in Player:
+        for idx, _discard in enumerate(_discard_list_for_player(discard_map, player)[:18]):
+            item_tag = _discard_item_canvas_tag(player, idx)
+            has_image_item = (
+                item_tag in live_discard_image_item_tags
+                if live_discard_image_item_tags is not None
+                else _canvas_has_image_item_with_tag(canvas, item_tag)
+            )
+            if not has_image_item:
+                missing_keys.append((int(player), int(idx)))
+    return tuple(missing_keys)
+
+
+def _repair_called_discard_canvas_items_if_needed(
+    canvas: tkinter.Canvas,
+    img_table: TileImageTable | None,
+    discard_map: Mapping[Player, Iterable[Discard]],
+    discard_red_tint_indices_by_seat: Mapping[int, frozenset[int]],
+    layout: Mapping[str, object] | None,
+    visible_summary: VisibleTileSummary | None,
+    player_push_alert_percentages: Mapping[int, Mapping[str, object]] | None = None,
+    melds_by_player: Mapping[Player, Iterable[Meld]] | None = None,
+    round_events: Sequence[object] | None = None,
+    *,
+    same_jun_marker_indices_by_seat: Mapping[int, Collection[int]] | None = None,
+) -> bool:
+    """Repair missing base river Canvas items immediately after a call event."""
+
+    if (
+        img_table is None
+        or visible_summary is None
+        or not isinstance(layout, Mapping)
+        or bool(getattr(canvas, "called_discard_canvas_repair_in_progress", False))
+    ):
+        return False
+    missing_keys = _called_discard_missing_canvas_item_keys(canvas, discard_map)
+    if not missing_keys:
+        return False
+
+    signature = (
+        "called_discard_canvas_repair",
+        getattr(canvas, "current_refresh_token", None),
+        getattr(canvas, "current_round_identity", None),
+        missing_keys,
+    )
+    canvas.called_discard_canvas_repair_in_progress = True
+    try:
+        _draw_discards(
+            canvas,
+            img_table,
+            discard_map,
+            discard_red_tint_indices_by_seat,
+            dict(layout),
+            visible_summary,
+            player_push_alert_percentages,
+            melds_by_player,
+            round_events,
+            same_jun_marker_indices_by_seat=same_jun_marker_indices_by_seat,
+        )
+    finally:
+        canvas.called_discard_canvas_repair_in_progress = False
+
+    remaining_missing_keys = _called_discard_missing_canvas_item_keys(canvas, discard_map)
+    repaired_keys = tuple(
+        key for key in missing_keys if key not in set(remaining_missing_keys)
+    )
+    canvas.last_called_discard_canvas_repair_stats = {
+        "missing_before": missing_keys,
+        "repaired": repaired_keys,
+        "missing_after": remaining_missing_keys,
+    }
+    if getattr(canvas, "last_called_discard_canvas_repair_log_signature", None) != signature:
+        canvas.last_called_discard_canvas_repair_log_signature = signature
+        message = (
+            "UI called discard canvas repair: "
+            f"missing_before={missing_keys} repaired={repaired_keys} "
+            f"missing_after={remaining_missing_keys} "
+            f"round_identity={_short_repr_for_log(getattr(canvas, 'current_round_identity', None))} "
+            f"refresh_token={_short_repr_for_log(getattr(canvas, 'current_refresh_token', None))}"
+        )
+        print(message)
+        _append_ui_diagnostic_log(message)
+    return bool(repaired_keys) and not remaining_missing_keys
+
+
+def _defer_called_discard_canvas_repair_if_needed(
+    canvas: tkinter.Canvas,
+    discard_map: Mapping[object, Iterable[Discard]] | None,
+) -> bool:
+    """Record missing called-discard Canvas items and let the redraw queue handle them."""
+
+    missing_keys = _called_discard_missing_canvas_item_keys(canvas, discard_map)
+    if not missing_keys:
+        return False
+    canvas.last_called_discard_canvas_repair_stats = {
+        "missing_before": missing_keys,
+        "repaired": (),
+        "missing_after": missing_keys,
+        "deferred_to_full_redraw": True,
+    }
+    signature = (
+        "called_discard_canvas_repair_deferred",
+        getattr(canvas, "current_refresh_token", None),
+        getattr(canvas, "current_round_identity", None),
+        missing_keys,
+    )
+    if getattr(canvas, "last_called_discard_canvas_repair_defer_log_signature", None) != signature:
+        canvas.last_called_discard_canvas_repair_defer_log_signature = signature
+        message = (
+            "UI called discard canvas repair deferred: "
+            f"missing={missing_keys} "
+            f"round_identity={_short_repr_for_log(getattr(canvas, 'current_round_identity', None))} "
+            f"refresh_token={_short_repr_for_log(getattr(canvas, 'current_refresh_token', None))}"
+        )
+        print(message)
+        _append_ui_diagnostic_log(message)
+    return True
+
+
+def _merge_discard_map_with_previous_render_state(
+    canvas: tkinter.Canvas,
+    discard_map: Mapping[Player, Iterable[Discard]],
+) -> tuple[dict[Player, list[Discard]], int]:
+    """Compatibility wrapper for older tests/callers."""
+
+    return _merge_discard_map_with_round_cache(canvas, discard_map)
+
+
+def _render_discard_tile_kind_for_retention(discard: object) -> int | None:
+    """Return the 34-kind tile id used to protect the render river from lossy inputs."""
+
+    tile_id = getattr(discard, "tile_id", None)
+    try:
+        if tile_id is not None:
+            return tile37_to_tile34_index(int(tile_id))
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _same_render_discard_slot_for_retention(
+    previous_discard: object,
+    current_discard: object,
+) -> bool:
+    """Return whether two render discard slots should be considered the same visible tile."""
+
+    previous_tile34 = _render_discard_tile_kind_for_retention(previous_discard)
+    current_tile34 = _render_discard_tile_kind_for_retention(current_discard)
+    return (
+        previous_tile34 is not None
+        and current_tile34 is not None
+        and previous_tile34 == current_tile34
+    )
+
+
+def _called_render_gap_copy(discard: Discard) -> Discard:
+    """Return a display-only called copy for a previous slot omitted by a projection."""
+
+    if bool(getattr(discard, "called", False)):
+        return discard
+    try:
+        return replace(discard, called=True)
+    except TypeError:
+        discard.called = True
+        return discard
+
+
+def _merge_discard_list_append_only_for_render(
+    previous_discards: Iterable[Discard],
+    current_discards: Iterable[Discard],
+) -> tuple[list[Discard], int]:
+    """Return a render-only append-only river list for one player.
+
+    The renderer must not let a shorter lossy projection erase an existing river.  This function is
+    intentionally display-only: it keeps previous slots when the new input appears to omit them,
+    marks those omitted slots as called for the yellow border, and appends any current tail.  It does
+    not mutate CaptureState.
+    """
+
+    previous = list(previous_discards)
+    current = list(current_discards)
+    if not previous:
+        return current, 0
+    if not current:
+        return [_called_render_gap_copy(discard) for discard in previous], len(previous)
+
+    merged: list[Discard] = []
+    retained_count = 0
+    current_index = 0
+    for previous_discard in previous:
+        if current_index >= len(current):
+            merged.append(_called_render_gap_copy(previous_discard))
+            retained_count += 1
+            continue
+
+        current_discard = current[current_index]
+        if _same_render_discard_slot_for_retention(previous_discard, current_discard):
+            # A called previous slot is no longer part of the visible river.  If the new input shows
+            # the same tile kind as not-called, it is a later same-kind discard and must be appended,
+            # not consumed by the called slot.
+            if bool(getattr(previous_discard, "called", False)) and not bool(
+                getattr(current_discard, "called", False)
+            ):
+                merged.append(previous_discard)
+                retained_count += 1
+                continue
+            merged.append(current_discard)
+            current_index += 1
+            continue
+
+        # Same logical round, but the new input skipped a previous slot.  Treat it as a called gap
+        # for display instead of letting a partial snapshot remove it from the base river layer.
+        merged.append(_called_render_gap_copy(previous_discard))
+        retained_count += 1
+
+    if current_index < len(current):
+        merged.extend(current[current_index:])
+    return merged, retained_count
+
+
+def _merge_discard_map_with_round_cache(
+    canvas: tkinter.Canvas,
+    discard_map: Mapping[Player, Iterable[Discard]],
+) -> tuple[dict[Player, list[Discard]], int]:
+    """Store the current visual river cache while preventing same-round render shrink.
+
+    CaptureState remains authoritative.  This guard only protects the Canvas base river layer from
+    full-redraw inputs that are accidentally shorter because they came from a projection, async
+    partial snapshot, or same-round spectator snapshot.
+    """
+
+    current_map = {
+        player: _discard_list_for_player(discard_map, player)
+        for player in Player
+    }
+    input_map = {
+        player: list(current_map.get(player, ()))
+        for player in Player
+    }
+    previous_identity = getattr(canvas, "round_discard_map_cache_identity", None)
+    raw_current_identity = getattr(canvas, "current_round_identity", None)
+    current_identity = _round_discard_cache_identity(raw_current_identity)
+    previous_map = _copy_discard_map_for_round_cache(
+        getattr(canvas, "round_discard_map_cache", None)
+    )
+    previous_total = _discard_map_total_for_players(previous_map)
+    if previous_total <= 0:
+        backup_identity, backup_map = _base_river_render_backup(canvas)
+        backup_total = _discard_map_total_for_players(backup_map)
+        if backup_total > 0:
+            previous_identity = backup_identity
+            previous_map = backup_map
+            previous_total = backup_total
+    same_round = _same_round_discard_cache_identity(previous_identity, raw_current_identity)
+
+    current_total = _discard_map_total_for_players(current_map)
+    previous_epoch = _round_discard_cache_river_epoch(previous_identity)
+    current_epoch = _round_discard_cache_river_epoch(raw_current_identity)
+    river_epoch_changed = (
+        previous_epoch is not None
+        and current_epoch is not None
+        and previous_epoch != current_epoch
+    )
+    same_live_river_epoch = (
+        previous_epoch is not None
+        and current_epoch is not None
+        and previous_epoch == current_epoch
+    )
+    if river_epoch_changed:
+        # Authoritative LiveRiverStore reset. Do not retain a previous-round base river just
+        # because the new river is a shorter non-empty projection.
+        same_round = False
+    if (
+        same_round
+        and not same_live_river_epoch
+        and previous_total > 0
+        and current_total == 0
+        and previous_identity != current_identity
+    ):
+        # Legacy non-epoch identities still use an empty changed-identity input as a new-round
+        # reset signal.  LiveRiverStore epoch identities bypass this guard above.
+        same_round = False
+    if (
+        not same_round
+        and not river_epoch_changed
+        and previous_total > 0
+        and (
+            current_total > 0
+            or same_live_river_epoch
+            or raw_current_identity is None
+        )
+        and current_total < previous_total
+    ):
+        # Defensive fallback: a same-hand recovery/projection may arrive with a different wrapper
+        # or incomplete identity.  A missing identity is never an authoritative river reset; keep
+        # the last painted river on screen until INIT/confirmed different REINIT advances the
+        # LiveRiverStore epoch.
+        same_round = True
+
+    retained_total = 0
+    if same_round:
+        merged_map: dict[Player, list[Discard]] = {}
+        for player in Player:
+            merged, retained = _merge_discard_list_append_only_for_render(
+                previous_map.get(player, ()),
+                current_map.get(player, ()),
+            )
+            merged_map[player] = merged
+            retained_total += retained
+        current_map = merged_map
+
+    next_cache_identity = current_identity
+    if same_round and raw_current_identity is None and previous_identity is not None:
+        next_cache_identity = previous_identity
+    canvas.round_discard_map_cache_identity = next_cache_identity
+    canvas.round_discard_map_cache = {
+        player: list(current_map.get(player, ()))
+        for player in Player
+    }
+    _remember_base_river_render_backup(
+        canvas,
+        identity=next_cache_identity,
+        discard_map=current_map,
+    )
+    _maybe_log_called_discard_short_input(
+        canvas,
+        previous_identity=previous_identity,
+        current_identity=raw_current_identity,
+        previous_map=previous_map,
+        input_map=input_map,
+        output_map=current_map,
+        retained_total=retained_total,
+        same_round=same_round,
+    )
+    return current_map, retained_total
+
+
 @dataclass(frozen=True)
 class SidePanelRenderCache:
     signature: object
@@ -1258,8 +1962,10 @@ _THREAD_ACTIVITY_NOTICE_EVENT_QUEUE: queue.Queue[tuple[str, int | None]] = queue
 _ALERT_SOUND_WORKER_LOCK = threading.Lock()
 _ALERT_SOUND_WORKER_THREAD: threading.Thread | None = None
 _ALERT_SOUND_JOB_QUEUE: queue.Queue[
-    tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
+    tuple[tuple[object, ...], Callable[..., object], tuple[object, ...], dict[str, object]]
 ] | None = None
+_ALERT_SOUND_QUEUED_SIGNATURES: set[tuple[object, ...]] = set()
+_ALERT_SOUND_ACTIVE_SIGNATURES: set[tuple[object, ...]] = set()
 _INFERRED_VISIBLE_WORKER_STOP = object()
 _SELECTED_INFERRED_VISIBLE_POPUP_ENTRY_KIND = "selected_inferred_visible_popup"
 _ALERT_AUDIO_REFRESH_TOKEN_UNSET = object()
@@ -1269,6 +1975,7 @@ _LIVE_FRAME_TAG = "live_frame"
 _LIVE_ASYNC_SIDE_PANEL_TAG = "live_async_side_panels"
 _LIVE_ASYNC_DEFAULT_STATUS_TAG = "live_async_default_status"
 _LIVE_ASYNC_DISCARD_TAG = "live_async_discards"
+_LIVE_DISCARD_ANALYSIS_OVERLAY_TAG = "live_discard_analysis_overlay"
 _LIVE_DETAIL_OVERLAY_TAG = "live_detail_overlays"
 _LIVE_ASYNC_HAND_TAG = "live_async_hand"
 _LIVE_NAGA_AUTO_PANEL_TAG = "live_naga_auto_panel"
@@ -1318,6 +2025,8 @@ PYSTYLE_AUTO_BUTTON_X = 82
 PYSTYLE_AUTO_BUTTON_Y = 8
 BETAORI_AUTO_BUTTON_X = 82
 BETAORI_AUTO_BUTTON_Y = 36
+ALERT_SOUND_BUTTON_X = 8
+ALERT_SOUND_BUTTON_Y = 92
 BRIDGE_TOGGLE_CONTROLS_MARGIN_RIGHT = 14
 BRIDGE_TOGGLE_CONTROLS_MARGIN_BOTTOM = 12
 BRIDGE_ACTION_CONTROLS_MARGIN_ABOVE_HAND = 10
@@ -1772,6 +2481,33 @@ def _log_manual_ui_reinit(canvas: tkinter.Canvas, reason: str) -> None:
         f"current_refresh_token={current_refresh_token} "
         f"last_completed_refresh_token={last_completed_refresh_token}"
     )
+
+
+def _force_live_snapshot_refresh_after_bridge_map(canvas: tkinter.Canvas) -> bool:
+    """Force the table snapshot provider to publish the browser-map state immediately."""
+
+    table_snapshot_reinit_action = getattr(canvas, "table_snapshot_reinit_action", None)
+    if not callable(table_snapshot_reinit_action):
+        return False
+    try:
+        next_refresh_token = table_snapshot_reinit_action()
+    except Exception as exc:  # noqa: BLE001 - bridge map success should not break the status tick.
+        error_text = f"{type(exc).__name__}: {exc}"
+        if getattr(canvas, "last_bridge_map_reinit_error_text", None) != error_text:
+            canvas.last_bridge_map_reinit_error_text = error_text
+            print(f"Bridge map live snapshot refresh skipped: {error_text}")
+        return False
+    if next_refresh_token is None:
+        return False
+    canvas.current_refresh_token = next_refresh_token
+    canvas.bridge_snapshot_source_refresh_token = next_refresh_token
+    canvas.last_refresh_token_change_monotonic_s = time.monotonic()
+    canvas.last_bridge_map_reinit_error_text = None
+    _play_huuuro_alert_sound_if_needed(canvas, "bridge", next_refresh_token)
+    redraw_action = getattr(canvas, "redraw_action", None)
+    if callable(redraw_action):
+        redraw_action()
+    return True
 
 
 def _resolve_auto_ui_reinit_stall(
@@ -3067,6 +3803,14 @@ def _split_live_refresh_token(
     return refresh_token[0], normalized_async_token
 
 
+def _live_alert_audio_base_token(refresh_token: object | None) -> object | None:
+    """Return the live-state part of a refresh token, ignoring async redraw-only tokens."""
+
+    base_token, _recommendation_token, _extra_token = _split_combined_refresh_token(refresh_token)
+    live_token, _async_token = _split_live_refresh_token(base_token)
+    return live_token if live_token is not None else base_token
+
+
 def _should_use_hand_response_only_refresh(
     previous_refresh_token: object | None,
     next_refresh_token: object | None,
@@ -3143,6 +3887,49 @@ def _should_play_low_ev_self_hand_alert_sound_for_round(
     return normalized_round_token != str(last_low_ev_sound_round_token or "").strip()
 
 
+def _alert_sound_is_enabled(canvas: tkinter.Canvas) -> bool:
+    """Return whether user-controlled alert audio is currently enabled.
+
+    Older direct callers may not provide the UI-owned flag, so they retain the legacy enabled
+    behavior. ``create_canvas`` always initializes the real application canvas explicitly from
+    ``ALERT_SOUND_DEFAULT_ENABLED`` before the first redraw.
+    """
+
+    return bool(getattr(canvas, "alert_sound_enabled", True))
+
+
+def _play_alert_sound_enabled_confirmation_worker() -> None:
+    """Play the short ascending chime that confirms alert audio is enabled."""
+
+    if winsound is None:
+        return
+    for frequency_hz, duration_ms in ALERT_SOUND_ENABLED_CONFIRMATION_TONES:
+        try:
+            winsound.Beep(frequency_hz, duration_ms)
+        except (RuntimeError, OSError):
+            try:
+                winsound.MessageBeep()
+            except (RuntimeError, OSError):
+                pass
+            break
+    _play_alert_sound_asset(ALERT_SOUND_ENABLED_CONFIRMATION_ASSET)
+
+
+def _play_alert_sound_enabled_confirmation(canvas: tkinter.Canvas) -> None:
+    """Emit one volume-check sound without changing any alert transition latch."""
+
+    if winsound is None:
+        bell = getattr(canvas, "bell", None)
+        if not callable(bell):
+            return
+        try:
+            bell()
+        except tkinter.TclError:
+            return
+        return
+    _queue_alert_sound_job(_play_alert_sound_enabled_confirmation_worker)
+
+
 def _play_alert_sound_asset(asset_name: str) -> bool:
     """Play one bundled WAV alert sound when the platform supports it."""
 
@@ -3157,14 +3944,99 @@ def _play_alert_sound_asset(asset_name: str) -> bool:
     sound_path = ALERT_SOUND_ASSET_DIR / f"{normalized_name}.wav"
     if not sound_path.exists():
         return False
-    flags = int(getattr(winsound, "SND_FILENAME", 0x00020000)) | int(
-        getattr(winsound, "SND_ASYNC", 0x0001)
-    )
+    # Playback already runs on the shared alert-sound worker.  Keep PlaySound synchronous here so
+    # queued WAV assets do not interrupt each other when alerts arrive at the same time.
+    flags = int(getattr(winsound, "SND_FILENAME", 0x00020000))
     try:
         play_sound(str(sound_path), flags)
     except (RuntimeError, OSError):
         return False
     return True
+
+
+def _remember_huuuro_alert_sound_signature(
+    canvas: tkinter.Canvas,
+    signature: tuple[object, object | None],
+) -> bool:
+    """Return whether one huuuro source/token signature has not sounded yet."""
+
+    sounded_signatures = list(getattr(canvas, "huuuro_alert_sound_signatures", []) or [])
+    if signature in sounded_signatures:
+        return False
+    sounded_signatures.append(signature)
+    if len(sounded_signatures) > HUUURO_ALERT_SOUND_SIGNATURE_LIMIT:
+        sounded_signatures = sounded_signatures[-HUUURO_ALERT_SOUND_SIGNATURE_LIMIT:]
+    canvas.huuuro_alert_sound_signatures = sounded_signatures
+    canvas.last_huuuro_alert_sound_signature = signature
+    if signature[0] == SPECTATOR_MODE_ALERT_EVENT_TYPE:
+        canvas.last_spectator_mode_alert_sound_signature = signature
+    return True
+
+
+def _play_huuuro_alert_sound_worker(_signature: object | None = None) -> None:
+    """Emit the Bridge/WGC/INITBYLOG voice alert from the shared sound worker."""
+
+    if winsound is None:
+        return
+    if _play_alert_sound_asset(HUUURO_ALERT_SOUND_ASSET):
+        return
+    for frequency_hz, duration_ms in ((740, 80), (980, 120)):
+        try:
+            winsound.Beep(frequency_hz, duration_ms)
+        except RuntimeError:
+            try:
+                winsound.MessageBeep()
+            except RuntimeError:
+                return
+
+
+def _play_huuuro_alert_sound_if_needed(
+    canvas: tkinter.Canvas,
+    alert_source: str,
+    refresh_token: object | None,
+) -> None:
+    """Play "huuuro" once for each Bridge/WGC/INITBYLOG live source token."""
+
+    normalized_source = str(alert_source or "").strip().lower()
+    if normalized_source not in HUUURO_ALERT_SOUND_EVENT_TYPES:
+        return
+    signature = (
+        normalized_source,
+        _live_alert_audio_base_token(refresh_token),
+    )
+    if not _remember_huuuro_alert_sound_signature(canvas, signature):
+        return
+    if not _alert_sound_is_enabled(canvas):
+        return
+    if winsound is None:
+        bell = getattr(canvas, "bell", None)
+        if not callable(bell):
+            return
+        try:
+            bell()
+        except tkinter.TclError:
+            return
+        return
+    _queue_alert_sound_job(_play_huuuro_alert_sound_worker, signature)
+
+
+def _play_spectator_mode_alert_sound_worker(_signature: object | None = None) -> None:
+    """Backward-compatible worker name for the old INITBYLOG alert."""
+
+    _play_huuuro_alert_sound_worker(_signature)
+
+
+def _play_spectator_mode_alert_sound_if_needed(
+    canvas: tkinter.Canvas,
+    latest_event_type: str,
+    refresh_token: object | None,
+) -> None:
+    """Backward-compatible INITBYLOG alert entry point."""
+
+    normalized_event_type = str(latest_event_type or "").strip().lower()
+    if normalized_event_type != SPECTATOR_MODE_ALERT_EVENT_TYPE:
+        return
+    _play_huuuro_alert_sound_if_needed(canvas, normalized_event_type, refresh_token)
 
 
 def _self_hand_alert_sound_asset_name(alert_kind: str) -> str:
@@ -3219,6 +4091,8 @@ def _play_self_hand_value_alert_sound_if_needed(
         getattr(canvas, "last_self_low_ev_sound_round_token", "") or ""
     ).strip()
     canvas.last_self_hand_value_alert_kind = current_kind
+    if not _alert_sound_is_enabled(canvas):
+        return
     if not _should_play_self_hand_value_alert_sound(previous_kind, current_kind):
         return
     if not _should_play_low_ev_self_hand_alert_sound_for_round(
@@ -3403,6 +4277,8 @@ def create_canvas(
     current_player_push_alert_percentages = _normalize_player_push_alert_percentages(
         player_push_alert_percentages
     )
+    current_meld_tiles = list(meld_tiles) if meld_tiles is not None else []
+    current_dora_indicator_tiles = list(dora_indicator_tiles) if dora_indicator_tiles is not None else []
     current_player_alert_indicators_by_seat = _normalize_player_alert_indicators_by_seat(
         player_alert_indicators_by_seat
     )
@@ -3411,6 +4287,11 @@ def create_canvas(
             current_opponent_suji_panel_summaries,
             current_player_push_alert_percentages,
         )
+    current_player_alert_indicators_by_seat = _merge_haya_discard_alert_indicators_by_seat(
+        current_player_alert_indicators_by_seat,
+        discard_map,
+        current_dora_indicator_tiles,
+    )
     current_player_score_diffs_by_seat = _normalize_player_score_diffs_by_seat(
         player_score_diffs_by_seat
     )
@@ -3418,8 +4299,6 @@ def create_canvas(
         discard_red_tint_indices_by_seat
     )
     current_player_names_by_seat = _normalize_player_names_by_seat(player_names_by_seat)
-    current_meld_tiles = list(meld_tiles) if meld_tiles is not None else []
-    current_dora_indicator_tiles = list(dora_indicator_tiles) if dora_indicator_tiles is not None else []
     current_round_info_panel = (
         round_info_panel
         if round_info_panel is not None
@@ -3548,6 +4427,8 @@ def create_canvas(
     board_canvas.last_self_hand_value_alert_kind = HAND_SELF_ALERT_KIND_NONE
     board_canvas.last_self_low_ev_sound_round_token = ""
     board_canvas.last_self_hand_alert_sound_monotonic_s = 0.0
+    board_canvas.alert_sound_enabled = ALERT_SOUND_DEFAULT_ENABLED
+    board_canvas.alert_sound_button = None
     board_canvas.last_player_panel_alert_keys_by_seat = {
         seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
@@ -3556,6 +4437,11 @@ def create_canvas(
     }
     board_canvas.last_player_panel_sounded_alert_keys_by_seat = {
         seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    board_canvas.last_player_panel_sound_kind_gate_discard_index = None
+    board_canvas.last_player_panel_sound_kinds_for_discard = frozenset()
+    board_canvas.last_player_panel_push_sound_window_end_by_seat = {
+        seat: None for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
     board_canvas.last_player_panel_remain_sound_level_by_seat = {
         seat: 0 for seat in HAND_DANGER_BAR_SEAT_ORDER
@@ -3583,6 +4469,10 @@ def create_canvas(
         for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
     board_canvas.player_push_marker_latches_by_seat = _empty_player_push_marker_indices_by_seat()
+    board_canvas.player_alert_indicator_latches_by_seat = {}
+    board_canvas.player_alert_indicator_latch_global_discard_index = None
+    board_canvas.round_discard_map_cache = _empty_round_discard_map_cache()
+    board_canvas.round_discard_map_cache_identity = _round_discard_cache_identity(round_identity)
     board_canvas.current_player_alert_indicators_by_seat = current_player_alert_indicators_by_seat
     board_canvas.hand_recommendation_request_action = hand_recommendation_request_action
     board_canvas.hand_recommendation_reset_action = hand_recommendation_reset_action
@@ -3600,6 +4490,9 @@ def create_canvas(
     board_canvas.current_round_identity = round_identity
     board_canvas.current_refresh_token = refresh_token
     board_canvas.last_alert_audio_refresh_token = _ALERT_AUDIO_REFRESH_TOKEN_UNSET
+    board_canvas.huuuro_alert_sound_signatures = []
+    board_canvas.last_huuuro_alert_sound_signature = None
+    board_canvas.last_spectator_mode_alert_sound_signature = None
     board_canvas.layout_tuning_settings = _load_layout_tuning_settings()
     board_canvas.layout_resolved_component_offsets = _normalize_component_offsets(
         board_canvas.layout_tuning_settings.component_offsets
@@ -3626,6 +4519,7 @@ def create_canvas(
     board_canvas.last_completed_redraw_monotonic_s = 0.0
     board_canvas.last_auto_reinit_monotonic_s = 0.0
     board_canvas.last_auto_reinit_reason = None
+
     board_canvas.last_refresh_token_change_monotonic_s = time.monotonic()
     board_canvas.uncompleted_refresh_token_started_monotonic_s = 0.0
     board_canvas.last_completed_redraw_refresh_token = refresh_token
@@ -3703,6 +4597,15 @@ def create_canvas(
         dynamic_discard_map = (
             table_snapshot.discard_map if table_snapshot is not None else discard_map
         )
+        dynamic_dora_indicator_tiles = (
+            list(table_snapshot.dora_indicator_tiles)
+            if table_snapshot is not None
+            else (
+                list(dora_indicator_tiles_provider())
+                if dora_indicator_tiles_provider is not None
+                else current_dora_indicator_tiles
+            )
+        )
         dynamic_hand_tiles = (
             list(table_snapshot.hand_tiles)
             if table_snapshot is not None
@@ -3735,8 +4638,25 @@ def create_canvas(
                 None,
             )
         if getattr(board_canvas, "current_round_identity", None) != dynamic_round_identity:
-            _reset_round_ui_state(board_canvas)
+            next_cache_identity = _round_discard_cache_identity(dynamic_round_identity)
+            preserve_discard_state = _same_round_discard_cache_identity(
+                getattr(board_canvas, "current_round_identity", None),
+                dynamic_round_identity,
+            )
+            _reset_round_ui_state(
+                board_canvas,
+                preserve_round_discard_cache=preserve_discard_state,
+                preserve_discard_render_cache=preserve_discard_state,
+                preserve_player_panel_sound_state=preserve_discard_state,
+            )
+            board_canvas.round_discard_map_cache_identity = next_cache_identity
             board_canvas.current_round_identity = dynamic_round_identity
+        dynamic_discard_map, retained_previous_discard_count = (
+            _merge_discard_map_with_round_cache(
+                board_canvas,
+                dynamic_discard_map,
+            )
+        )
         dynamic_melds_by_player = (
             _normalize_meld_map(table_snapshot.melds_by_player)
             if table_snapshot is not None
@@ -3810,6 +4730,11 @@ def create_canvas(
                 if hand_danger_percentages_provider is not None
                 else current_hand_danger_percentages
             )
+        )
+        dynamic_suji_analysis_is_current = (
+            bool(getattr(table_snapshot, "suji_analysis_is_current", True))
+            if table_snapshot is not None
+            else True
         )
         recommendation_timeout_elapsed = False
         recommendation_error_fallback_active = False
@@ -3913,6 +4838,7 @@ def create_canvas(
             dynamic_hand_recommendation_request_context,
             dynamic_hand_danger_percentages,
             dynamic_self_melds,
+            hand_danger_percentages_are_current=dynamic_suji_analysis_is_current,
             recommendation_timeout_elapsed=(
                 recommendation_timeout_elapsed if (hand_response_panel_visible or auto_mode_uses_recommendation) else False
             ),
@@ -3977,6 +4903,16 @@ def create_canvas(
                 dynamic_opponent_suji_panel_summaries,
                 dynamic_player_push_alert_percentages,
             )
+        dynamic_player_alert_indicators_by_seat = _merge_haya_discard_alert_indicators_by_seat(
+            dynamic_player_alert_indicators_by_seat,
+            dynamic_discard_map,
+            dynamic_dora_indicator_tiles,
+        )
+        dynamic_player_alert_indicators_by_seat = _resolve_player_alert_indicators_for_render(
+            board_canvas,
+            dynamic_player_alert_indicators_by_seat,
+            latest_global_discard_index=latest_global_discard_index,
+        )
         dynamic_player_score_diffs_by_seat = (
             _normalize_player_score_diffs_by_seat(table_snapshot.player_score_diffs_by_seat)
             if table_snapshot is not None
@@ -4007,15 +4943,6 @@ def create_canvas(
             if table_snapshot is not None
             else (list(meld_tiles_provider()) if meld_tiles_provider is not None else current_meld_tiles)
         )
-        dynamic_dora_indicator_tiles = (
-            list(table_snapshot.dora_indicator_tiles)
-            if table_snapshot is not None
-            else (
-                list(dora_indicator_tiles_provider())
-                if dora_indicator_tiles_provider is not None
-                else current_dora_indicator_tiles
-            )
-        )
         dynamic_round_info_panel = (
             table_snapshot.round_info_panel
             if table_snapshot is not None
@@ -4036,6 +4963,22 @@ def create_canvas(
             if table_snapshot is not None and AWASEUCHI_MARKERS_ENABLED
             else []
         )
+        dynamic_latest_event_type = (
+            str(getattr(table_snapshot, "latest_event_type", "") or "").strip().lower()
+            if table_snapshot is not None
+            else ""
+        )
+        dynamic_recent_event_types = (
+            tuple(
+                str(event_type or "").strip().lower()
+                for event_type in getattr(table_snapshot, "recent_event_types", ())
+            )
+            if table_snapshot is not None
+            else ()
+        )
+        board_canvas.current_latest_event_type = dynamic_latest_event_type
+        board_canvas.current_recent_event_types = dynamic_recent_event_types
+
         dynamic_visible_summary = (
             table_snapshot.visible_summary
             if table_snapshot is not None
@@ -4045,6 +4988,13 @@ def create_canvas(
                 else visible_summary
             )
         )
+        if retained_previous_discard_count:
+            dynamic_visible_summary = collect_visible_tile_summary(
+                dynamic_discard_map,
+                dynamic_hand_tiles,
+                dynamic_meld_tiles,
+                dynamic_dora_indicator_tiles,
+            )
         dynamic_table_situation_auto_scores_by_seat = (
             getattr(table_snapshot, "table_situation_auto_scores_by_seat", None)
             if table_snapshot is not None
@@ -4150,6 +5100,11 @@ def create_canvas(
         _place_bridge_action_controls_frame(board_canvas)
         _append_phase_timing(redraw_phase_timings, "overlay", phase_started_at)
         phase_started_at = time.perf_counter()
+        _play_huuuro_alert_sound_if_needed(
+            board_canvas,
+            dynamic_latest_event_type,
+            getattr(board_canvas, "current_refresh_token", None),
+        )
         if _should_evaluate_alert_audio_for_refresh_token(
             board_canvas,
             getattr(board_canvas, "current_refresh_token", None),
@@ -4158,19 +5113,22 @@ def create_canvas(
                 board_canvas,
                 dynamic_self_hand_value_alert,
             )
-            _play_player_panel_alert_sound_if_needed(
-                board_canvas,
-                dynamic_opponent_suji_panel_summaries,
-                dynamic_player_push_alert_percentages,
-                alert_indicators_by_seat=dynamic_player_alert_indicators_by_seat,
-                latest_discard_actor_seat=latest_global_discard_actor_seat,
-            )
+            if dynamic_suji_analysis_is_current:
+                _play_player_panel_alert_sound_if_needed(
+                    board_canvas,
+                    dynamic_opponent_suji_panel_summaries,
+                    dynamic_player_push_alert_percentages,
+                    alert_indicators_by_seat=dynamic_player_alert_indicators_by_seat,
+                    latest_discard_actor_seat=latest_global_discard_actor_seat,
+                    latest_global_discard_index=latest_global_discard_index,
+                )
             _play_meld_dora_alert_sound_if_needed(
                 board_canvas,
                 dynamic_melds_by_player,
                 dynamic_dora_indicator_tiles,
             )
         _append_phase_timing(redraw_phase_timings, "alert_audio", phase_started_at)
+        phase_started_at = time.perf_counter()
         live_async_layout = getattr(board_canvas, "last_render_layout", None)
         if isinstance(live_async_layout, dict):
             board_canvas.live_async_render_state = LiveAsyncRenderState(
@@ -4206,6 +5164,35 @@ def create_canvas(
                     dynamic_same_jun_marker_indices_by_seat
                 ),
             )
+            if _defer_called_discard_canvas_repair_if_needed(
+                board_canvas,
+                dynamic_discard_map,
+            ):
+                repair_request_signature = (
+                    "called_discard_canvas_repair_redraw_request",
+                    getattr(board_canvas, "current_refresh_token", None),
+                    getattr(board_canvas, "current_round_identity", None),
+                    tuple(
+                        getattr(
+                            board_canvas,
+                            "last_called_discard_canvas_repair_stats",
+                            {},
+                        ).get("missing_after", ())
+                    ),
+                )
+                if (
+                    getattr(
+                        board_canvas,
+                        "last_called_discard_canvas_repair_redraw_request_signature",
+                        None,
+                    )
+                    != repair_request_signature
+                ):
+                    board_canvas.last_called_discard_canvas_repair_redraw_request_signature = (
+                        repair_request_signature
+                    )
+                    request_redraw(replace_pending=True)
+        _append_phase_timing(redraw_phase_timings, "live_async_state", phase_started_at)
         board_canvas.last_redraw_phase_timings = tuple(redraw_phase_timings)
 
     def _run_redraw_safely() -> None:
@@ -4395,6 +5382,9 @@ def create_canvas(
                             _normalize_hand_danger_percentages(percentages)
                             for percentages in getattr(partial_snapshot, "hand_danger_percentages", ())
                         ]
+                        partial_suji_analysis_is_current = bool(
+                            getattr(partial_snapshot, "suji_analysis_is_current", True)
+                        )
                         dynamic_opponent_suji_panel_summaries = _normalize_opponent_suji_panel_summaries(
                             getattr(partial_snapshot, "opponent_suji_panel_summaries", {})
                         )
@@ -4439,6 +5429,38 @@ def create_canvas(
                                     dynamic_player_push_alert_percentages,
                                 )
                             )
+                        dynamic_player_alert_indicators_by_seat = (
+                            _merge_haya_discard_alert_indicators_by_seat(
+                                dynamic_player_alert_indicators_by_seat,
+                                getattr(partial_snapshot, "discard_map", None),
+                                getattr(
+                                    partial_snapshot,
+                                    "dora_indicator_tiles",
+                                    (),
+                                ),
+                            )
+                        )
+                        dynamic_player_alert_indicators_by_seat = (
+                            _resolve_player_alert_indicators_for_render(
+                                board_canvas,
+                                dynamic_player_alert_indicators_by_seat,
+                                latest_global_discard_index=latest_global_discard_index,
+                            )
+                        )
+                        board_canvas.current_latest_event_type = (
+                            str(getattr(partial_snapshot, "latest_event_type", "") or "")
+                            .strip()
+                            .lower()
+                        )
+                        board_canvas.current_recent_event_types = tuple(
+                            str(event_type or "").strip().lower()
+                            for event_type in getattr(
+                                partial_snapshot,
+                                "recent_event_types",
+                                (),
+                            )
+                        )
+
                         if not _redraw_live_async_regions_if_possible(
                             board_canvas,
                             discard_map=getattr(partial_snapshot, "discard_map", None),
@@ -4465,16 +5487,29 @@ def create_canvas(
                         ):
                             request_redraw()
                         else:
-                            if _should_evaluate_alert_audio_for_refresh_token(
+                            _play_huuuro_alert_sound_if_needed(
                                 board_canvas,
+                                getattr(board_canvas, "current_latest_event_type", ""),
                                 next_refresh_token,
+                            )
+                            if (
+                                partial_suji_analysis_is_current
+                                and _should_evaluate_alert_audio_for_refresh_token(
+                                    board_canvas,
+                                    next_refresh_token,
+                                )
                             ):
                                 _play_player_panel_alert_sound_if_needed(
                                     board_canvas,
                                     dynamic_opponent_suji_panel_summaries,
                                     dynamic_player_push_alert_percentages,
-                                    alert_indicators_by_seat=dynamic_player_alert_indicators_by_seat,
+                                    alert_indicators_by_seat=getattr(
+                                        board_canvas,
+                                        "current_player_alert_indicators_by_seat",
+                                        dynamic_player_alert_indicators_by_seat,
+                                    ),
                                     latest_discard_actor_seat=latest_global_discard_actor_seat,
+                                    latest_global_discard_index=latest_global_discard_index,
                                 )
                             _mark_ui_refresh_completed(
                                 board_canvas,
@@ -4570,6 +5605,7 @@ def create_canvas(
         if redraw_job is not None:
             board_canvas.after_cancel(redraw_job)
             redraw_job = None
+
         memo_background_poll_job = getattr(board_canvas, "memo_background_poll_job", None)
         if memo_background_poll_job is not None:
             board_canvas.after_cancel(memo_background_poll_job)
@@ -4643,6 +5679,9 @@ def create_canvas(
             == HAND_AUTO_MODE_KIND_BETAORI
         )
         _set_hand_auto_mode(not is_current, HAND_AUTO_MODE_KIND_BETAORI)
+
+    def handle_alert_sound_toggle() -> None:
+        _toggle_alert_sound(board_canvas)
 
     def handle_inferred_visible_tile_panel_toggle() -> None:
         if not _inferred_visible_runtime_enabled(board_canvas):
@@ -4776,7 +5815,27 @@ def create_canvas(
     betaori_auto_mode_button.place(x=BETAORI_AUTO_BUTTON_X, y=BETAORI_AUTO_BUTTON_Y)
     board_canvas.hand_pystyle_auto_mode_button = pystyle_auto_mode_button
     board_canvas.hand_betaori_auto_mode_button = betaori_auto_mode_button
+    alert_sound_button = tkinter.Button(
+        root,
+        text="アラート音 OFF",
+        command=handle_alert_sound_toggle,
+        relief=tkinter.FLAT,
+        bd=1,
+        bg=HAND_AUTO_BUTTON_OFF_FILL,
+        fg=HAND_AUTO_BUTTON_TEXT,
+        activebackground=HAND_AUTO_BUTTON_OFF_FILL,
+        activeforeground=HAND_AUTO_BUTTON_TEXT,
+        font=("Yu Gothic UI", 8, "bold"),
+        padx=8,
+        pady=2,
+        highlightthickness=0,
+        width=11,
+    )
+    alert_sound_button.place(x=ALERT_SOUND_BUTTON_X, y=ALERT_SOUND_BUTTON_Y)
+    alert_sound_button.lift()
+    board_canvas.alert_sound_button = alert_sound_button
     _refresh_hand_auto_mode_button_widget(board_canvas)
+    _refresh_alert_sound_button_widget(board_canvas)
     _refresh_table_situation_visibility_button_widget(board_canvas)
     if _inferred_visible_runtime_enabled(board_canvas):
         inferred_visible_tile_panel_button = tkinter.Button(
@@ -6578,10 +7637,59 @@ def _hide_detail_memo_editor(canvas: tkinter.Canvas) -> None:
     canvas.detail_memo_active_key = None
 
 
-def _reset_round_ui_state(canvas: tkinter.Canvas) -> None:
+def _reset_round_ui_state(
+    canvas: tkinter.Canvas,
+    *,
+    preserve_round_discard_cache: bool = False,
+    preserve_discard_render_cache: bool = False,
+    preserve_player_panel_sound_state: bool = False,
+) -> None:
     """Reset transient UI state when a new INIT creates a different round."""
 
     _save_detail_memo_if_needed(canvas)
+    preserved_round_discard_map_cache = (
+        _copy_discard_map_for_round_cache(getattr(canvas, "round_discard_map_cache", None))
+        if preserve_round_discard_cache
+        else _empty_round_discard_map_cache()
+    )
+    preserved_player_panel_alert_keys_by_seat = getattr(
+        canvas,
+        "last_player_panel_alert_keys_by_seat",
+        {seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER},
+    )
+    preserved_player_panel_audible_alert_keys_by_seat = getattr(
+        canvas,
+        "last_player_panel_audible_alert_keys_by_seat",
+        {seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER},
+    )
+    preserved_player_panel_sounded_alert_keys_by_seat = getattr(
+        canvas,
+        "last_player_panel_sounded_alert_keys_by_seat",
+        {seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER},
+    )
+    preserved_player_panel_sound_kind_gate_discard_index = getattr(
+        canvas,
+        "last_player_panel_sound_kind_gate_discard_index",
+        None,
+    )
+    preserved_player_panel_sound_kinds_for_discard = getattr(
+        canvas,
+        "last_player_panel_sound_kinds_for_discard",
+        frozenset(),
+    )
+    preserved_player_panel_push_sound_window_end_by_seat = getattr(
+        canvas,
+        "last_player_panel_push_sound_window_end_by_seat",
+        {seat: None for seat in HAND_DANGER_BAR_SEAT_ORDER},
+    )
+    preserved_player_panel_remain_sound_level_by_seat = getattr(
+        canvas,
+        "last_player_panel_remain_sound_level_by_seat",
+        {seat: 0 for seat in HAND_DANGER_BAR_SEAT_ORDER},
+    )
+    preserved_player_panel_alert_sound_monotonic_s = float(
+        getattr(canvas, "last_player_panel_alert_sound_monotonic_s", 0.0) or 0.0
+    )
     canvas.detail_panel_state = DetailPanelState()
     current_auto_mode_state = getattr(canvas, "hand_auto_mode_state", HandAutoModeState())
     # New rounds should not keep stale recommendation popups unless recommendation auto
@@ -6596,27 +7704,63 @@ def _reset_round_ui_state(canvas: tkinter.Canvas) -> None:
     canvas.hand_response_button_spec = None
     canvas.hand_betaori_response_button_spec = None
     canvas.hand_response_render_state = None
+    canvas.live_async_render_state = None
     canvas.side_panel_render_cache = None
     canvas.default_status_render_cache = None
     canvas.table_frame_render_cache = None
-    _reset_discard_render_cache(canvas)
+    if not preserve_discard_render_cache:
+        _reset_discard_render_cache(canvas)
     _reset_hand_auto_mode_volatile_state(canvas)
     canvas.last_self_hand_value_alert_kind = HAND_SELF_ALERT_KIND_NONE
     canvas.last_self_low_ev_sound_round_token = ""
     canvas.last_self_hand_alert_sound_monotonic_s = 0.0
-    canvas.last_player_panel_alert_keys_by_seat = {
-        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
-    }
-    canvas.last_player_panel_audible_alert_keys_by_seat = {
-        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
-    }
-    canvas.last_player_panel_sounded_alert_keys_by_seat = {
-        seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER
-    }
-    canvas.last_player_panel_remain_sound_level_by_seat = {
-        seat: 0 for seat in HAND_DANGER_BAR_SEAT_ORDER
-    }
-    canvas.last_player_panel_alert_sound_monotonic_s = 0.0
+    canvas.huuuro_alert_sound_signatures = []
+    canvas.last_huuuro_alert_sound_signature = None
+    canvas.last_spectator_mode_alert_sound_signature = None
+    if preserve_player_panel_sound_state:
+        canvas.last_player_panel_alert_keys_by_seat = dict(
+            preserved_player_panel_alert_keys_by_seat
+        )
+        canvas.last_player_panel_audible_alert_keys_by_seat = dict(
+            preserved_player_panel_audible_alert_keys_by_seat
+        )
+        canvas.last_player_panel_sounded_alert_keys_by_seat = dict(
+            preserved_player_panel_sounded_alert_keys_by_seat
+        )
+        canvas.last_player_panel_sound_kind_gate_discard_index = (
+            preserved_player_panel_sound_kind_gate_discard_index
+        )
+        canvas.last_player_panel_sound_kinds_for_discard = frozenset(
+            preserved_player_panel_sound_kinds_for_discard
+        )
+        canvas.last_player_panel_push_sound_window_end_by_seat = dict(
+            preserved_player_panel_push_sound_window_end_by_seat
+        )
+        canvas.last_player_panel_remain_sound_level_by_seat = dict(
+            preserved_player_panel_remain_sound_level_by_seat
+        )
+        canvas.last_player_panel_alert_sound_monotonic_s = (
+            preserved_player_panel_alert_sound_monotonic_s
+        )
+    else:
+        canvas.last_player_panel_alert_keys_by_seat = {
+            seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+        }
+        canvas.last_player_panel_audible_alert_keys_by_seat = {
+            seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+        }
+        canvas.last_player_panel_sounded_alert_keys_by_seat = {
+            seat: frozenset() for seat in HAND_DANGER_BAR_SEAT_ORDER
+        }
+        canvas.last_player_panel_sound_kind_gate_discard_index = None
+        canvas.last_player_panel_sound_kinds_for_discard = frozenset()
+        canvas.last_player_panel_push_sound_window_end_by_seat = {
+            seat: None for seat in HAND_DANGER_BAR_SEAT_ORDER
+        }
+        canvas.last_player_panel_remain_sound_level_by_seat = {
+            seat: 0 for seat in HAND_DANGER_BAR_SEAT_ORDER
+        }
+        canvas.last_player_panel_alert_sound_monotonic_s = 0.0
     canvas.last_meld_dora_alert_counts_by_seat = {
         int(player): 0 for player in Player
     }
@@ -6658,6 +7802,9 @@ def _reset_round_ui_state(canvas: tkinter.Canvas) -> None:
         for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
     canvas.player_push_marker_latches_by_seat = _empty_player_push_marker_indices_by_seat()
+    canvas.player_alert_indicator_latches_by_seat = {}
+    canvas.player_alert_indicator_latch_global_discard_index = None
+    canvas.round_discard_map_cache = preserved_round_discard_map_cache
     _hide_detail_memo_editor(canvas)
 
 
@@ -6727,6 +7874,45 @@ def _refresh_hand_auto_mode_button_widget(canvas: tkinter.Canvas) -> None:
             activeforeground=foreground,
             disabledforeground=foreground,
         )
+
+
+def _resolve_alert_sound_button_presentation(enabled: bool) -> tuple[str, str]:
+    """Return the label and background for the user-controlled alert-audio button."""
+
+    if enabled:
+        return ("アラート音 ON", HAND_AUTO_BUTTON_ON_FILL)
+    return ("アラート音 OFF", HAND_AUTO_BUTTON_OFF_FILL)
+
+
+def _refresh_alert_sound_button_widget(canvas: tkinter.Canvas) -> None:
+    """Refresh the alert-audio button without forcing a table redraw."""
+
+    button_widget = getattr(canvas, "alert_sound_button", None)
+    if button_widget is None:
+        return
+    label, background = _resolve_alert_sound_button_presentation(
+        _alert_sound_is_enabled(canvas)
+    )
+    button_widget.configure(
+        text=label,
+        state=tkinter.NORMAL,
+        bg=background,
+        fg=HAND_AUTO_BUTTON_TEXT,
+        activebackground=background,
+        activeforeground=HAND_AUTO_BUTTON_TEXT,
+        disabledforeground=HAND_AUTO_BUTTON_TEXT,
+    )
+
+
+def _toggle_alert_sound(canvas: tkinter.Canvas) -> bool:
+    """Toggle session-local alert audio and return the new enabled state."""
+
+    next_enabled = not _alert_sound_is_enabled(canvas)
+    canvas.alert_sound_enabled = next_enabled
+    _refresh_alert_sound_button_widget(canvas)
+    if next_enabled:
+        _play_alert_sound_enabled_confirmation(canvas)
+    return next_enabled
 
 
 def _refresh_table_situation_visibility_button_widget(canvas: tkinter.Canvas) -> None:
@@ -7233,13 +8419,61 @@ def _start_tracked_background_thread(
     return worker_thread
 
 
+def _alert_sound_signature_part(value: object) -> object:
+    """Return a hashable, stable-enough value for one queued sound argument."""
+
+    try:
+        hash(value)
+    except TypeError:
+        return repr(value)
+    return value
+
+
+def _alert_sound_job_signature(
+    target: Callable[..., object],
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+) -> tuple[object, ...]:
+    """Return the duplicate-suppression signature for one alert sound job."""
+
+    return (
+        getattr(target, "__module__", ""),
+        getattr(target, "__qualname__", repr(target)),
+        tuple(_alert_sound_signature_part(arg) for arg in args),
+        tuple(
+            sorted(
+                (str(key), _alert_sound_signature_part(value))
+                for key, value in kwargs.items()
+            )
+        ),
+    )
+
+
+def _mark_alert_sound_job_started(signature: tuple[object, ...]) -> None:
+    """Move one sound job from queued to active when the worker hands it to playback."""
+
+    with _ALERT_SOUND_WORKER_LOCK:
+        _ALERT_SOUND_QUEUED_SIGNATURES.discard(signature)
+        _ALERT_SOUND_ACTIVE_SIGNATURES.add(signature)
+
+
+def _mark_alert_sound_job_finished(signature: tuple[object, ...]) -> None:
+    """Clear one active sound job after playback returns."""
+
+    with _ALERT_SOUND_WORKER_LOCK:
+        _ALERT_SOUND_ACTIVE_SIGNATURES.discard(signature)
+
+
 def _alert_sound_worker_loop(
-    job_queue: queue.Queue[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]],
+    job_queue: queue.Queue[
+        tuple[tuple[object, ...], Callable[..., object], tuple[object, ...], dict[str, object]]
+    ],
 ) -> None:
     """Run alert sound playback jobs away from the Tk redraw thread."""
 
     while True:
-        target, args, kwargs = job_queue.get()
+        signature, target, args, kwargs = job_queue.get()
+        _mark_alert_sound_job_started(signature)
         begin_thread_activity_notice("alert sound")
         try:
             target(*args, **kwargs)
@@ -7247,18 +8481,19 @@ def _alert_sound_worker_loop(
             print(f"Alert sound skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
         finally:
             finish_thread_activity_notice("alert sound")
+            _mark_alert_sound_job_finished(signature)
             job_queue.task_done()
 
 
 def _ensure_alert_sound_worker() -> queue.Queue[
-    tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
+    tuple[tuple[object, ...], Callable[..., object], tuple[object, ...], dict[str, object]]
 ]:
     """Return the process-wide alert sound queue, starting its worker when needed."""
 
     global _ALERT_SOUND_JOB_QUEUE, _ALERT_SOUND_WORKER_THREAD
     with _ALERT_SOUND_WORKER_LOCK:
         if _ALERT_SOUND_JOB_QUEUE is None:
-            _ALERT_SOUND_JOB_QUEUE = queue.Queue(maxsize=ALERT_SOUND_WORKER_QUEUE_MAXSIZE)
+            _ALERT_SOUND_JOB_QUEUE = queue.Queue()
         if (
             _ALERT_SOUND_WORKER_THREAD is None
             or not _ALERT_SOUND_WORKER_THREAD.is_alive()
@@ -7273,21 +8508,6 @@ def _ensure_alert_sound_worker() -> queue.Queue[
         return _ALERT_SOUND_JOB_QUEUE
 
 
-def _drop_oldest_alert_sound_job(
-    job_queue: queue.Queue[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]],
-) -> None:
-    """Discard one stale queued sound so alerts do not play late under burst load."""
-
-    try:
-        job_queue.get_nowait()
-    except queue.Empty:
-        return
-    try:
-        job_queue.task_done()
-    except ValueError:
-        return
-
-
 def _queue_alert_sound_job(
     target: Callable[..., object],
     *args: object,
@@ -7298,17 +8518,24 @@ def _queue_alert_sound_job(
     if winsound is None:
         return False
     job_queue = _ensure_alert_sound_worker()
-    job = (target, tuple(args), dict(kwargs))
+    job_args = tuple(args)
+    job_kwargs = dict(kwargs)
+    signature = _alert_sound_job_signature(target, job_args, job_kwargs)
+    with _ALERT_SOUND_WORKER_LOCK:
+        if (
+            signature in _ALERT_SOUND_QUEUED_SIGNATURES
+            or signature in _ALERT_SOUND_ACTIVE_SIGNATURES
+        ):
+            return False
+        _ALERT_SOUND_QUEUED_SIGNATURES.add(signature)
+    job = (signature, target, job_args, job_kwargs)
     try:
         job_queue.put_nowait(job)
         return True
     except queue.Full:
-        _drop_oldest_alert_sound_job(job_queue)
-    try:
-        job_queue.put_nowait(job)
-    except queue.Full:
+        with _ALERT_SOUND_WORKER_LOCK:
+            _ALERT_SOUND_QUEUED_SIGNATURES.discard(signature)
         return False
-    return True
 
 
 def _clear_thread_activity_notice_if_expired(canvas: tkinter.Canvas) -> None:
@@ -8565,6 +9792,7 @@ def _drain_bridge_background_result_queue(canvas: tkinter.Canvas) -> bool:
                 _cancel_bridge_table_snapshot_retry(canvas)
                 canvas.bridge_table_snapshot_retry_count = 0
                 _set_bridge_feedback(canvas, _format_bridge_success_feedback(kind, nested_result), is_error=False)
+                _force_live_snapshot_refresh_after_bridge_map(canvas)
             if kind in {"discard", "control"}:
                 canvas.bridge_last_snapshot_started_monotonic_s = 0.0
                 _request_bridge_ui_snapshot(canvas, force=True)
@@ -8758,6 +9986,7 @@ def _maybe_start_hand_auto_discard(
     hand_danger_percentages: Sequence[HandDangerPercentages],
     self_melds: Sequence[Meld] = (),
     *,
+    hand_danger_percentages_are_current: bool = True,
     recommendation_timeout_elapsed: bool = False,
     recommendation_error_fallback_active: bool = False,
 ) -> None:
@@ -8772,6 +10001,15 @@ def _maybe_start_hand_auto_discard(
     if not auto_mode_state.enabled or auto_mode_state.in_flight:
         return
     current_mode = str(getattr(auto_mode_state, "mode", HAND_AUTO_MODE_KIND_RECOMMENDATION))
+    danger_dependent_action = (
+        current_mode == HAND_AUTO_MODE_KIND_BETAORI
+        or (
+            current_mode == HAND_AUTO_MODE_KIND_RECOMMENDATION
+            and (recommendation_timeout_elapsed or recommendation_error_fallback_active)
+        )
+    )
+    if danger_dependent_action and not hand_danger_percentages_are_current:
+        return
     bridge_status = _bridge_status_snapshot(canvas)
     if not _is_bridge_ready_for_hand_auto(bridge_status):
         return
@@ -11837,13 +13075,21 @@ def _render_table_using_cached_layout_if_possible(
     ):
         return False, (0.0, 0.0, 0.0, 0.0)
 
+    # Cached-layout redraws are still full table refreshes for dynamic data.  Normalize the
+    # incoming river through the same base-river store used by full redraws before any draw call;
+    # otherwise a same-round short projection can replace slot 0 and make the called tile vanish.
+    discard_map, retained_previous_discard_count = _merge_discard_map_with_round_cache(
+        canvas,
+        discard_map,
+    )
+
     render_phase_timings: list[PhaseTiming] = []
     _reset_transient_canvas_draw_state(canvas)
     _delete_canvas_items_by_tags(canvas, _LIVE_LAYOUT_DRAG_TAG)
     canvas.current_hand_rect = tuple(float(value) for value in hand_rect)
 
     phase_started_at = time.perf_counter()
-    if visible_summary is None:
+    if visible_summary is None or retained_previous_discard_count:
         visible_summary = collect_visible_tile_summary(
             discard_map,
             hand_tiles,
@@ -11884,28 +13130,6 @@ def _render_table_using_cached_layout_if_possible(
     _append_phase_timing(render_phase_timings, "summaries", phase_started_at)
 
     phase_started_at = time.perf_counter()
-    _redraw_side_panels_if_needed(
-        canvas,
-        img_table,
-        layout,
-        discard_map,
-        melds_by_player,
-        dora_indicator_tiles,
-        visible_summary,
-        visible_inference_summary,
-        hand_tiles,
-        hand_draw_tile,
-        hand_danger_percentages,
-        opponent_suji_panel_summaries,
-        player_push_alert_percentages,
-        player_alert_indicators_by_seat,
-        player_score_diffs_by_seat,
-        player_names_by_seat,
-        getattr(canvas, "detail_panel_state", DetailPanelState()),
-    )
-    _append_phase_timing(render_phase_timings, "side_panels", phase_started_at)
-
-    phase_started_at = time.perf_counter()
     table_frame_signature = _build_table_frame_render_signature(
         canvas,
         layout=layout,
@@ -11922,6 +13146,7 @@ def _render_table_using_cached_layout_if_possible(
         pass
     else:
         _delete_canvas_items_by_tags(canvas, _LIVE_FRAME_TAG)
+        _invalidate_discard_layers_for_table_frame_redraw(canvas)
         frame_previous_items = _capture_canvas_item_ids(canvas)
         _draw_table_frame(
             canvas,
@@ -11968,6 +13193,28 @@ def _render_table_using_cached_layout_if_possible(
         previous_item_count=discard_previous_items,
     )
     _append_phase_timing(render_phase_timings, "discards", phase_started_at)
+
+    phase_started_at = time.perf_counter()
+    _redraw_side_panels_if_needed(
+        canvas,
+        img_table,
+        layout,
+        discard_map,
+        melds_by_player,
+        dora_indicator_tiles,
+        visible_summary,
+        visible_inference_summary,
+        hand_tiles,
+        hand_draw_tile,
+        hand_danger_percentages,
+        opponent_suji_panel_summaries,
+        player_push_alert_percentages,
+        player_alert_indicators_by_seat,
+        player_score_diffs_by_seat,
+        player_names_by_seat,
+        getattr(canvas, "detail_panel_state", DetailPanelState()),
+    )
+    _append_phase_timing(render_phase_timings, "side_panels", phase_started_at)
 
     phase_started_at = time.perf_counter()
     _delete_canvas_items_by_tags(canvas, _LIVE_DETAIL_OVERLAY_TAG)
@@ -12061,6 +13308,17 @@ def _render_table(
     """プレイヤーパネルと詳細領域を含む卓全体を描画する。"""
     render_phase_timings: list[PhaseTiming] = []
     phase_started_at = time.perf_counter()
+    discard_map, retained_previous_discard_count = _merge_discard_map_with_round_cache(
+        canvas,
+        discard_map,
+    )
+    if retained_previous_discard_count:
+        visible_summary = collect_visible_tile_summary(
+            discard_map,
+            hand_tiles,
+            meld_tiles,
+            dora_indicator_tiles,
+        )
     # Full redraws still clear the board, but keep the delete scoped to known live-render tags.
     _delete_canvas_items_by_tags(
         canvas,
@@ -12069,6 +13327,7 @@ def _render_table(
         _LIVE_ASYNC_SIDE_PANEL_TAG,
         _LIVE_ASYNC_DEFAULT_STATUS_TAG,
         _LIVE_ASYNC_DISCARD_TAG,
+        _LIVE_DISCARD_ANALYSIS_OVERLAY_TAG,
         _LIVE_DETAIL_OVERLAY_TAG,
         _LIVE_ASYNC_HAND_TAG,
         _HAND_RESPONSE_UI_TAG,
@@ -12165,28 +13424,6 @@ def _render_table(
     _append_phase_timing(render_phase_timings, "summaries", phase_started_at)
 
     phase_started_at = time.perf_counter()
-    _redraw_side_panels_if_needed(
-        canvas,
-        img_table,
-        layout,
-        discard_map,
-        melds_by_player,
-        dora_indicator_tiles,
-        visible_summary,
-        visible_inference_summary,
-        hand_tiles,
-        hand_draw_tile,
-        hand_danger_percentages,
-        opponent_suji_panel_summaries,
-        player_push_alert_percentages,
-        player_alert_indicators_by_seat,
-        player_score_diffs_by_seat,
-        player_names_by_seat,
-        getattr(canvas, "detail_panel_state", DetailPanelState()),
-        force_redraw=True,
-    )
-    _append_phase_timing(render_phase_timings, "side_panels", phase_started_at)
-    phase_started_at = time.perf_counter()
     frame_previous_items = _capture_canvas_item_ids(canvas)
     _draw_table_frame(
         canvas,
@@ -12238,6 +13475,28 @@ def _render_table(
         previous_item_count=discard_previous_items,
     )
     _append_phase_timing(render_phase_timings, "discards", phase_started_at)
+    phase_started_at = time.perf_counter()
+    _redraw_side_panels_if_needed(
+        canvas,
+        img_table,
+        layout,
+        discard_map,
+        melds_by_player,
+        dora_indicator_tiles,
+        visible_summary,
+        visible_inference_summary,
+        hand_tiles,
+        hand_draw_tile,
+        hand_danger_percentages,
+        opponent_suji_panel_summaries,
+        player_push_alert_percentages,
+        player_alert_indicators_by_seat,
+        player_score_diffs_by_seat,
+        player_names_by_seat,
+        getattr(canvas, "detail_panel_state", DetailPanelState()),
+        force_redraw=True,
+    )
+    _append_phase_timing(render_phase_timings, "side_panels", phase_started_at)
     phase_started_at = time.perf_counter()
     detail_previous_items = _capture_canvas_item_ids(canvas)
     _draw_table_situation_seat_panels(canvas, layout)
@@ -12982,8 +14241,15 @@ def _log_slow_discard_redraw(
             f" skipped={int(stats.get('skipped', 0))}"
             f" changed={int(stats.get('changed', 0))}"
             f" stale_deleted={int(stats.get('stale_deleted', 0))}"
+            f" stale_retained={int(stats.get('stale_retained', 0))}"
             f" missing_image_refs={int(stats.get('missing_image_refs', 0))}"
             f" missing_image_items={int(stats.get('missing_image_items', 0))}"
+        )
+    overlay_stats = getattr(canvas, "last_discard_analysis_overlay_stats", {})
+    if isinstance(overlay_stats, Mapping):
+        stats_text += (
+            f" overlay_skipped={bool(overlay_stats.get('skipped', False))}"
+            f" overlay_items={int(overlay_stats.get('items', 0))}"
         )
     message = (
         "UI discards slow: "
@@ -14558,6 +15824,385 @@ def _build_player_panel_alert_indicators_by_seat(
     }
 
 
+def _tile37_inner_number_rank(tile_37: object | None) -> int | None:
+    """Return a suited rank for one 37-id tile when it is a number tile."""
+
+    try:
+        normalized_tile = int(tile_37)
+    except (TypeError, ValueError):
+        return None
+    if normalized_tile in {10, 20, 30}:
+        return 5
+    if 1 <= normalized_tile <= 9:
+        return normalized_tile
+    if 11 <= normalized_tile <= 19:
+        return normalized_tile - 10
+    if 21 <= normalized_tile <= 29:
+        return normalized_tile - 20
+    return None
+
+
+def _discard_tile37_for_haya_alert(discard: object) -> int | None:
+    """Return one discard's UI 37-id tile for fast central-number alert checks."""
+
+    for attribute_name in ("tile_id", "tile_37", "ui_tile_37"):
+        tile_value = getattr(discard, attribute_name, None)
+        if callable(tile_value):
+            try:
+                tile_value = tile_value()
+            except TypeError:
+                tile_value = None
+        if tile_value is None:
+            continue
+        try:
+            return int(tile_value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _is_haya_alert_discard(discard: object) -> bool:
+    """Return whether one latest discard should produce the `haya` audio alert."""
+
+    try:
+        thinking_time_ms = float(getattr(discard, "thinking_time_ms", None))
+    except (TypeError, ValueError):
+        return False
+    if not 0.0 <= thinking_time_ms <= PLAYER_PANEL_HAYA_ALERT_MAX_THINKING_TIME_MS:
+        return False
+    rank = _tile37_inner_number_rank(_discard_tile37_for_haya_alert(discard))
+    return rank is not None and 3 <= rank <= 7
+
+
+def _is_oso_alert_discard(discard: object, local_index: int) -> bool:
+    """Return whether one latest discard should produce the `oso` audio alert."""
+
+    if local_index <= 0:
+        return False
+    try:
+        thinking_time_ms = float(getattr(discard, "thinking_time_ms", None))
+    except (TypeError, ValueError):
+        return False
+    if thinking_time_ms < PLAYER_PANEL_OSO_ALERT_MIN_THINKING_TIME_MS:
+        return False
+    rank = _tile37_inner_number_rank(_discard_tile37_for_haya_alert(discard))
+    return rank in {1, 2, 8, 9}
+
+
+def _is_dora_alert_discard(
+    discard: object,
+    dora_tile34_indices: Collection[int],
+) -> bool:
+    """Return whether one latest discard is a visible dora discard."""
+
+    tile_37 = _discard_tile37_for_haya_alert(discard)
+    if tile_37 is None:
+        return False
+    try:
+        normalized_tile_37 = int(tile_37)
+    except (TypeError, ValueError):
+        return False
+    if normalized_tile_37 in RED_DORA_TILE_IDS_37:
+        return True
+    tile_34_index = tile37_to_tile34_index(normalized_tile_37)
+    return tile_34_index is not None and int(tile_34_index) in dora_tile34_indices
+
+
+def _build_haya_discard_alert_indicators_by_seat(
+    discard_map: Mapping[object, Iterable[object]] | None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Build per-opponent `haya` indicators from each seat's latest discard."""
+
+    indicators_by_seat: dict[int, tuple[PlayerAlertIndicator, ...]] = {
+        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        try:
+            player = Player(int(seat))
+        except ValueError:
+            continue
+        discards = _discard_list_for_player(discard_map, player)
+        if not discards:
+            continue
+        latest_discard = discards[-1]
+        if not _is_haya_alert_discard(latest_discard):
+            continue
+        tile_37 = _discard_tile37_for_haya_alert(latest_discard)
+        local_index = len(discards) - 1
+        indicators_by_seat[seat] = (
+            PlayerAlertIndicator(
+                color=PLAYER_ALERT_YELLOW,
+                label="haya",
+                key=f"{PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX}{local_index}:{tile_37}",
+            ),
+        )
+    return indicators_by_seat
+
+
+def _build_oso_discard_alert_indicators_by_seat(
+    discard_map: Mapping[object, Iterable[object]] | None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Build per-opponent `oso` indicators from each seat's latest discard."""
+
+    indicators_by_seat: dict[int, tuple[PlayerAlertIndicator, ...]] = {
+        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        try:
+            player = Player(int(seat))
+        except ValueError:
+            continue
+        discards = _discard_list_for_player(discard_map, player)
+        if not discards:
+            continue
+        latest_discard = discards[-1]
+        local_index = len(discards) - 1
+        if not _is_oso_alert_discard(latest_discard, local_index):
+            continue
+        tile_37 = _discard_tile37_for_haya_alert(latest_discard)
+        indicators_by_seat[seat] = (
+            PlayerAlertIndicator(
+                color=PLAYER_ALERT_YELLOW,
+                label="oso",
+                key=f"{PLAYER_PANEL_OSO_ALERT_KEY_PREFIX}{local_index}:{tile_37}",
+            ),
+        )
+    return indicators_by_seat
+
+
+def _build_dora_discard_alert_indicators_by_seat(
+    discard_map: Mapping[object, Iterable[object]] | None,
+    dora_indicator_tiles: Sequence[int] | None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Build per-opponent `dora` indicators from each seat's latest discard."""
+
+    indicators_by_seat: dict[int, tuple[PlayerAlertIndicator, ...]] = {
+        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    dora_tile34_indices = _dora_tile34_indices_from_indicator_tiles(dora_indicator_tiles or ())
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        try:
+            player = Player(int(seat))
+        except ValueError:
+            continue
+        discards = _discard_list_for_player(discard_map, player)
+        if not discards:
+            continue
+        latest_discard = discards[-1]
+        if not _is_dora_alert_discard(latest_discard, dora_tile34_indices):
+            continue
+        tile_37 = _discard_tile37_for_haya_alert(latest_discard)
+        local_index = len(discards) - 1
+        indicators_by_seat[seat] = (
+            PlayerAlertIndicator(
+                color=PLAYER_ALERT_YELLOW,
+                label="dora",
+                key=f"{PLAYER_PANEL_DORA_ALERT_KEY_PREFIX}{local_index}:{tile_37}",
+            ),
+        )
+    return indicators_by_seat
+
+
+def _finite_nonnegative_float(value: object) -> float | None:
+    """Return a finite nonnegative float, or None when the value is unusable."""
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0.0:
+        return None
+    return number
+
+
+def _first_row_fast_trend_baseline_ms(
+    previous_first_row_average_ms_by_seat: Mapping[int, Iterable[object]] | None,
+    seat: int,
+) -> float | None:
+    """Return the prior-round first-row baseline for one seat."""
+
+    if not isinstance(previous_first_row_average_ms_by_seat, Mapping):
+        return None
+    raw_values = previous_first_row_average_ms_by_seat.get(seat)
+    if raw_values is None:
+        raw_values = previous_first_row_average_ms_by_seat.get(Player(seat))
+    try:
+        values = [
+            normalized
+            for raw_value in raw_values or ()
+            if (normalized := _finite_nonnegative_float(raw_value)) is not None
+        ]
+    except TypeError:
+        return None
+    if len(values) < PLAYER_PANEL_FIRST_ROW_FAST_TREND_MIN_PREVIOUS_ROUNDS:
+        return None
+    return sum(values) / len(values)
+
+
+def _first_row_fast_trend_current_average_ms(
+    discards: Iterable[object],
+) -> float | None:
+    """Return the current-round first-row average at the latest discard timing."""
+
+    try:
+        discard_list = list(discards)
+    except TypeError:
+        return None
+    local_index = len(discard_list) - 1
+    if local_index + 1 < PLAYER_PANEL_FIRST_ROW_FAST_TREND_MIN_LOCAL_DISCARD_COUNT:
+        return None
+    if local_index >= DISCARD_ROW_TILE_COUNT:
+        return None
+    current_window = discard_list[: local_index + 1]
+    values = [
+        normalized
+        for discard in current_window
+        if (
+            normalized := _finite_nonnegative_float(
+                getattr(discard, "thinking_time_ms", None)
+            )
+        )
+        is not None
+    ]
+    if len(values) != len(current_window):
+        return None
+    return sum(values) / len(values)
+
+
+def _build_first_row_fast_trend_alert_indicators_by_seat(
+    discard_map: Mapping[object, Iterable[object]] | None,
+    previous_first_row_average_ms_by_seat: Mapping[int, Iterable[object]] | None,
+    *,
+    hanchan_round_ordinal: int | None = None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Build per-opponent first-row fast-trend indicators for the current round."""
+
+    indicators_by_seat: dict[int, tuple[PlayerAlertIndicator, ...]] = {
+        seat: tuple() for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    try:
+        round_ordinal = int(hanchan_round_ordinal) if hanchan_round_ordinal is not None else None
+    except (TypeError, ValueError):
+        round_ordinal = None
+    if round_ordinal is not None and round_ordinal < 3:
+        return indicators_by_seat
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        try:
+            player = Player(int(seat))
+        except ValueError:
+            continue
+        baseline_ms = _first_row_fast_trend_baseline_ms(
+            previous_first_row_average_ms_by_seat,
+            seat,
+        )
+        if baseline_ms is None:
+            continue
+        current_average_ms = _first_row_fast_trend_current_average_ms(
+            _discard_list_for_player(discard_map, player)
+        )
+        if current_average_ms is None or current_average_ms >= baseline_ms:
+            continue
+        indicators_by_seat[seat] = (
+            PlayerAlertIndicator(
+                color=PLAYER_ALERT_YELLOW,
+                label=PLAYER_PANEL_FIRST_ROW_FAST_TREND_LABEL,
+                key=f"{PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX}active",
+            ),
+        )
+    return indicators_by_seat
+
+
+def build_first_row_fast_trend_alert_indicators_by_seat(
+    current_round: object | None,
+    previous_first_row_average_ms_by_seat: Mapping[int, Iterable[object]] | None,
+    *,
+    hanchan_round_ordinal: int | None = None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Public wrapper for first-row fast-trend player-panel alert rows."""
+
+    discard_map = getattr(current_round, "discards", None) if current_round is not None else None
+    if hanchan_round_ordinal is None and current_round is not None:
+        try:
+            hanchan_round_ordinal = int(getattr(current_round, "hanchan_round_ordinal", 0) or 0)
+        except (TypeError, ValueError):
+            hanchan_round_ordinal = None
+    return _build_first_row_fast_trend_alert_indicators_by_seat(
+        discard_map,
+        previous_first_row_average_ms_by_seat,
+        hanchan_round_ordinal=hanchan_round_ordinal,
+    )
+
+
+def _merge_haya_discard_alert_indicators_by_seat(
+    alert_indicators_by_seat: PlayerAlertIndicatorsBySeat | None,
+    discard_map: Mapping[object, Iterable[object]] | None,
+    dora_indicator_tiles: Sequence[int] | None = None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Return alert indicators with stale timed-discard rows replaced by the latest discard."""
+
+    normalized_indicators = _normalize_player_alert_indicators_by_seat(
+        alert_indicators_by_seat
+    )
+    dora_indicators_by_seat = _build_dora_discard_alert_indicators_by_seat(
+        discard_map,
+        dora_indicator_tiles,
+    )
+    haya_indicators_by_seat = _build_haya_discard_alert_indicators_by_seat(discard_map)
+    oso_indicators_by_seat = _build_oso_discard_alert_indicators_by_seat(discard_map)
+    merged: dict[int, tuple[PlayerAlertIndicator, ...]] = {}
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        base_indicators = tuple(
+            indicator
+            for indicator in normalized_indicators.get(seat, ())
+            if not (
+                str(getattr(indicator, "key", "") or "").startswith(
+                    PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX
+                )
+                or str(getattr(indicator, "key", "") or "").startswith(
+                    PLAYER_PANEL_OSO_ALERT_KEY_PREFIX
+                )
+                or str(getattr(indicator, "key", "") or "").startswith(
+                    PLAYER_PANEL_DORA_ALERT_KEY_PREFIX
+                )
+            )
+        )
+        merged[seat] = (
+            *base_indicators,
+            *tuple(dora_indicators_by_seat.get(seat, ())),
+            *tuple(haya_indicators_by_seat.get(seat, ())),
+            *tuple(oso_indicators_by_seat.get(seat, ())),
+        )
+    return merged
+
+
+def merge_first_row_fast_trend_alert_indicators_by_seat(
+    alert_indicators_by_seat: PlayerAlertIndicatorsBySeat | None,
+    fast_trend_indicators_by_seat: PlayerAlertIndicatorsBySeat | None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Return alert indicators with stale first-row fast-trend rows replaced."""
+
+    normalized_indicators = _normalize_player_alert_indicators_by_seat(
+        alert_indicators_by_seat
+    )
+    normalized_fast_trend_indicators = _normalize_player_alert_indicators_by_seat(
+        fast_trend_indicators_by_seat
+    )
+    merged: dict[int, tuple[PlayerAlertIndicator, ...]] = {}
+    for seat in HAND_DANGER_BAR_SEAT_ORDER:
+        base_indicators = tuple(
+            indicator
+            for indicator in normalized_indicators.get(seat, ())
+            if not str(getattr(indicator, "key", "") or "").startswith(
+                PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX
+            )
+        )
+        merged[seat] = (
+            *base_indicators,
+            *tuple(normalized_fast_trend_indicators.get(seat, ())),
+        )
+    return merged
+
+
 def build_player_panel_alert_indicators_by_seat(
     summaries_by_seat: OpponentSujiPanelSummaries,
     push_alerts_by_seat: PlayerPushAlertPercentages,
@@ -14608,11 +16253,69 @@ def _normalize_player_alert_indicators_by_seat(
     return normalized
 
 
+def _player_alert_indicators_have_visible_rows(
+    indicators_by_seat: PlayerAlertIndicatorsBySeat | None,
+) -> bool:
+    """Return whether any seat has visible player-panel alert rows."""
+
+    if not isinstance(indicators_by_seat, Mapping):
+        return False
+    return any(tuple(indicators or ()) for indicators in indicators_by_seat.values())
+
+
+def _resolve_player_alert_indicators_for_render(
+    canvas: tkinter.Canvas,
+    indicators_by_seat: PlayerAlertIndicatorsBySeat | None,
+    *,
+    latest_global_discard_index: int | None,
+) -> dict[int, tuple[PlayerAlertIndicator, ...]]:
+    """Latch alert rows across short async gaps so side panels do not flicker blank."""
+
+    normalized = _normalize_player_alert_indicators_by_seat(indicators_by_seat)
+    if _player_alert_indicators_have_visible_rows(normalized):
+        canvas.player_alert_indicator_latches_by_seat = normalized
+        canvas.player_alert_indicator_latch_global_discard_index = latest_global_discard_index
+        return normalized
+
+    previous = _normalize_player_alert_indicators_by_seat(
+        getattr(canvas, "player_alert_indicator_latches_by_seat", {})
+    )
+    previous = {
+        seat: tuple(
+            indicator
+            for indicator in indicators
+            if not str(getattr(indicator, "key", "") or "").startswith(
+                PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX
+            )
+        )
+        for seat, indicators in previous.items()
+    }
+    if not _player_alert_indicators_have_visible_rows(previous):
+        canvas.player_alert_indicator_latches_by_seat = normalized
+        canvas.player_alert_indicator_latch_global_discard_index = latest_global_discard_index
+        return normalized
+
+    previous_index = getattr(canvas, "player_alert_indicator_latch_global_discard_index", None)
+    try:
+        previous_index_int = int(previous_index)
+        latest_index_int = int(latest_global_discard_index)
+    except (TypeError, ValueError):
+        return previous
+    if latest_index_int <= previous_index_int + PLAYER_ALERT_INDICATOR_EMPTY_HOLD_DISCARD_COUNT:
+        return previous
+
+    canvas.player_alert_indicator_latches_by_seat = normalized
+    canvas.player_alert_indicator_latch_global_discard_index = latest_global_discard_index
+    return normalized
+
+
 def _player_panel_alert_sound_priority(alert_key: str) -> int:
     """Return player-panel alert sound priority before per-alert sound gating."""
 
     if alert_key == "remain_purple" or alert_key.startswith("push:"):
         return 3
+    if alert_key.startswith(PLAYER_PANEL_DORA_ALERT_KEY_PREFIX):
+        return 2
     if alert_key in {"remain_red", "menzen_red", "hand_pattern_red"}:
         return 2
     if alert_key in {
@@ -14621,7 +16324,13 @@ def _player_panel_alert_sound_priority(alert_key: str) -> int:
         "suit_bias",
         "ryanmen_chi_37",
         "tenpai_near",
-    } or alert_key.startswith("push_release"):
+    } or alert_key.startswith("push_release") or alert_key.startswith(
+        PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX
+    ) or alert_key.startswith(
+        PLAYER_PANEL_OSO_ALERT_KEY_PREFIX
+    ) or alert_key.startswith(
+        PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX
+    ):
         return 1
     return 0
 
@@ -14662,16 +16371,13 @@ def _player_panel_remain_sound_level(
     return 0
 
 
-def _player_panel_remain_sound_key(level: int) -> str:
-    """Map one remain sound level to the alert key used for the sound."""
+def _should_play_player_panel_remain_white_to_yellow_sound(
+    previous_level: int,
+    current_level: int,
+) -> bool:
+    """Return whether Remain just crossed from normal/white into yellow."""
 
-    if level >= 3:
-        return "remain_purple"
-    if level == 2:
-        return "remain_red"
-    if level == 1:
-        return "remain_yellow"
-    return ""
+    return previous_level == 0 and current_level == 1
 
 
 def _is_push_alert_sound_key(alert_key: str) -> bool:
@@ -14679,6 +16385,26 @@ def _is_push_alert_sound_key(alert_key: str) -> bool:
 
     normalized_key = str(alert_key or "").strip().lower()
     return normalized_key.startswith("push:") or normalized_key.startswith("push_release")
+
+
+def _is_push_start_alert_sound_key(alert_key: str) -> bool:
+    """Return whether one alert key is a Push-start sound, excluding Push release."""
+
+    normalized_key = str(alert_key or "").strip().lower()
+    return normalized_key.startswith("push:")
+
+
+def _is_timed_discard_alert_sound_key(alert_key: str) -> bool:
+    """Return whether one alert key belongs to latest-discard action alerts."""
+
+    normalized_key = str(alert_key or "").strip().lower()
+    return normalized_key.startswith(
+        PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX
+    ) or normalized_key.startswith(
+        PLAYER_PANEL_OSO_ALERT_KEY_PREFIX
+    ) or normalized_key.startswith(
+        PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX
+    ) or normalized_key.startswith(PLAYER_PANEL_DORA_ALERT_KEY_PREFIX)
 
 
 def _push_alert_sound_is_enabled(push_alert_data: Mapping[str, object] | None) -> bool:
@@ -14738,6 +16464,50 @@ def _normalize_player_panel_sounded_alert_keys_by_seat(
     return normalized
 
 
+def _normalize_player_panel_push_sound_window_end_by_seat(
+    window_end_by_seat: Mapping[int, object] | None,
+) -> dict[int, int | None]:
+    """Normalize per-seat global discard indexes until which Push sound is muted."""
+
+    normalized: dict[int, int | None] = {
+        seat: None for seat in HAND_DANGER_BAR_SEAT_ORDER
+    }
+    if not isinstance(window_end_by_seat, Mapping):
+        return normalized
+    for raw_seat, raw_window_end in window_end_by_seat.items():
+        try:
+            seat = int(raw_seat)
+        except (TypeError, ValueError):
+            continue
+        if seat not in normalized:
+            continue
+        try:
+            normalized[seat] = int(raw_window_end)
+        except (TypeError, ValueError):
+            normalized[seat] = None
+    return normalized
+
+
+def _push_alert_sound_discard_index(
+    alert_key: str,
+    push_alert_data: Mapping[str, object] | None = None,
+) -> int | None:
+    """Return the global discard index represented by one Push sound key/payload."""
+
+    normalized_key = str(alert_key or "").strip().lower()
+    if normalized_key.startswith("push:"):
+        try:
+            return int(normalized_key.split(":", 1)[1])
+        except (TypeError, ValueError):
+            pass
+    if isinstance(push_alert_data, Mapping):
+        try:
+            return int(push_alert_data.get("discard_index"))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _highest_priority_player_panel_alert_key(alert_keys: Sequence[str] | None) -> str:
     """Return one seat's current highest-priority audible alert key, or ``""`` when muted."""
 
@@ -14760,11 +16530,18 @@ def _player_panel_alert_sound_tone(alert_key: str) -> tuple[int, int]:
         return 520, 110
     if "red" in normalized_key:
         return 760, 90
-    if "yellow" in normalized_key or normalized_key in {
-        "suit_bias",
-        "ryanmen_chi_37",
-        "tenpai_near",
-    }:
+    if (
+        "yellow" in normalized_key
+        or normalized_key in {
+            "suit_bias",
+            "ryanmen_chi_37",
+            "tenpai_near",
+        }
+        or normalized_key.startswith(PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX)
+        or normalized_key.startswith(PLAYER_PANEL_OSO_ALERT_KEY_PREFIX)
+        or normalized_key.startswith(PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX)
+        or normalized_key.startswith(PLAYER_PANEL_DORA_ALERT_KEY_PREFIX)
+    ):
         return 960, 70
     if "green" in normalized_key or normalized_key.startswith("push_release"):
         return 1200, 60
@@ -14788,6 +16565,14 @@ def _player_panel_alert_sound_asset_name(alert_key: str) -> str:
         return "alert_push"
     if normalized_key.startswith("push_release"):
         return "alert_push_release"
+    if normalized_key.startswith(PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX):
+        return "alert_panel_haya"
+    if normalized_key.startswith(PLAYER_PANEL_OSO_ALERT_KEY_PREFIX):
+        return "alert_panel_oso"
+    if normalized_key.startswith(PLAYER_PANEL_DORA_ALERT_KEY_PREFIX):
+        return "alert_panel_dora"
+    if normalized_key.startswith(PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX):
+        return "alert_panel_fast_trend"
     if normalized_key == "remain_purple":
         return "alert_panel_remain_purple"
     if normalized_key == "remain_red":
@@ -14798,15 +16583,78 @@ def _player_panel_alert_sound_asset_name(alert_key: str) -> str:
         return "alert_panel_purple"
     if "red" in normalized_key:
         return "alert_panel_red"
-    if "yellow" in normalized_key or normalized_key in {
-        "suit_bias",
-        "ryanmen_chi_37",
-        "tenpai_near",
-    }:
+    if (
+        "yellow" in normalized_key
+        or normalized_key in {
+            "suit_bias",
+            "ryanmen_chi_37",
+            "tenpai_near",
+        }
+        or normalized_key.startswith(PLAYER_PANEL_HAYA_ALERT_KEY_PREFIX)
+        or normalized_key.startswith(PLAYER_PANEL_OSO_ALERT_KEY_PREFIX)
+        or normalized_key.startswith(PLAYER_PANEL_FIRST_ROW_FAST_TREND_ALERT_KEY_PREFIX)
+        or normalized_key.startswith(PLAYER_PANEL_DORA_ALERT_KEY_PREFIX)
+    ):
         return "alert_panel_yellow"
     if "green" in normalized_key:
         return "alert_panel_green"
     return "alert_panel_default"
+
+
+def _player_panel_alert_sound_kind(alert_key: str) -> str:
+    """Return the per-discard de-duplication bucket for one player-panel sound."""
+
+    return _player_panel_alert_sound_asset_name(alert_key)
+
+
+def _normalize_player_panel_sound_gate_discard_index(value: object) -> int | None:
+    """Return a comparable global discard index for per-discard sound gating."""
+
+    try:
+        normalized_index = int(value)
+    except (TypeError, ValueError):
+        return None
+    if normalized_index < 0:
+        return None
+    return normalized_index
+
+
+def _normalize_player_panel_sound_kinds_for_discard(value: object) -> frozenset[str]:
+    """Normalize the sound-kind set already used for the current discard."""
+
+    if isinstance(value, str):
+        values: Iterable[object] = (value,)
+    elif isinstance(value, Iterable):
+        values = value
+    else:
+        values = ()
+    return frozenset(
+        str(raw_value or "").strip()
+        for raw_value in values
+        if str(raw_value or "").strip()
+    )
+
+
+def _dedupe_player_panel_alert_sound_candidates_for_discard(
+    candidates: Sequence[tuple[int, str]],
+    *,
+    previous_sound_kinds_for_discard: Collection[str] = frozenset(),
+) -> tuple[list[tuple[int, str]], frozenset[str]]:
+    """Keep at most one sound per asset/kind for one discard event."""
+
+    sounded_kinds = {
+        str(raw_kind or "").strip()
+        for raw_kind in previous_sound_kinds_for_discard
+        if str(raw_kind or "").strip()
+    }
+    deduped_candidates: list[tuple[int, str]] = []
+    for seat, alert_key in candidates:
+        sound_kind = _player_panel_alert_sound_kind(alert_key)
+        if not sound_kind or sound_kind in sounded_kinds:
+            continue
+        sounded_kinds.add(sound_kind)
+        deduped_candidates.append((seat, alert_key))
+    return deduped_candidates, frozenset(sounded_kinds)
 
 
 def _play_player_panel_alert_sound_worker(alert_key: str) -> None:
@@ -14835,6 +16683,7 @@ def _play_player_panel_alert_sound_if_needed(
     *,
     alert_indicators_by_seat: PlayerAlertIndicatorsBySeat | None = None,
     latest_discard_actor_seat: int | None = None,
+    latest_global_discard_index: int | None = None,
 ) -> None:
     """Play one short sound only when a seat's audible alert appears or upgrades."""
 
@@ -14867,6 +16716,11 @@ def _play_player_panel_alert_sound_if_needed(
     )
     previous_sounded_alert_keys_by_seat = _normalize_player_panel_sounded_alert_keys_by_seat(
         getattr(canvas, "last_player_panel_sounded_alert_keys_by_seat", {})
+    )
+    previous_push_sound_window_end_by_seat = (
+        _normalize_player_panel_push_sound_window_end_by_seat(
+            getattr(canvas, "last_player_panel_push_sound_window_end_by_seat", {})
+        )
     )
     normalized_push_alerts_by_seat = _normalize_player_push_alert_percentages(
         push_alerts_by_seat
@@ -14906,6 +16760,7 @@ def _play_player_panel_alert_sound_if_needed(
         for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
     canvas.last_player_panel_sounded_alert_keys_by_seat = sounded_alert_keys_by_seat
+    updated_push_sound_window_end_by_seat = dict(previous_push_sound_window_end_by_seat)
     current_remain_sound_level_by_seat: dict[int, int] = {}
     upgraded_alert_keys: list[tuple[int, str]] = []
     for seat in HAND_DANGER_BAR_SEAT_ORDER:
@@ -14921,72 +16776,154 @@ def _play_player_panel_alert_sound_if_needed(
             current_alert_keys_by_seat.get(seat, ())
         )
         current_remain_sound_level_by_seat[seat] = current_remain_level
-        if current_remain_level > previous_remain_level:
-            remain_sound_key = _player_panel_remain_sound_key(current_remain_level)
+        if _should_play_player_panel_remain_white_to_yellow_sound(
+            previous_remain_level,
+            current_remain_level,
+        ):
+            remain_sound_key = "remain_yellow"
             if (
                 remain_sound_key
                 and remain_sound_key not in sounded_alert_keys_by_seat.get(seat, frozenset())
             ):
                 upgraded_alert_keys.append((seat, remain_sound_key))
+        previous_highest_audible_key = _highest_priority_player_panel_alert_key(
+            previous_audible_alert_keys_by_seat.get(seat, ())
+        )
+        previous_push_was_audible = _is_push_start_alert_sound_key(
+            previous_highest_audible_key
+        )
         previous_total_priority = max(
             previous_remain_level,
-            _player_panel_alert_sound_priority(
-                _highest_priority_player_panel_alert_key(
-                    previous_audible_alert_keys_by_seat.get(seat, ())
+            _player_panel_alert_sound_priority(previous_highest_audible_key),
+        )
+        push_sound_window_end = previous_push_sound_window_end_by_seat.get(seat)
+        for current_key in current_audible_alert_keys_by_seat.get(seat, ()):
+            # If the latest event is our own discard, stale opponent action alerts can still exist
+            # for display history, but they should not be announced as a fresh opponent action.
+            suppress_action_sound_for_self_discard = (
+                current_key
+                and (
+                    _is_push_alert_sound_key(current_key)
+                    or _is_timed_discard_alert_sound_key(current_key)
                 )
-            ),
-        )
-        current_key = _highest_priority_player_panel_alert_key(
-            current_audible_alert_keys_by_seat.get(seat, ())
-        )
-        # If the latest event is our own discard, an old opponent Push latch can still exist for
-        # display history, but it should not be announced as a fresh opponent action.
-        suppress_push_sound_for_self_discard = (
-            current_key
-            and _is_push_alert_sound_key(current_key)
-            and latest_discard_actor_seat is not None
-            and int(latest_discard_actor_seat) == int(Player.JICHA)
-        )
-        if (
-            current_key
-            and not suppress_push_sound_for_self_discard
-            and _player_panel_alert_sound_priority(current_key) > previous_total_priority
-            and current_key not in sounded_alert_keys_by_seat.get(seat, frozenset())
-        ):
-            upgraded_alert_keys.append((seat, current_key))
+                and latest_discard_actor_seat is not None
+                and int(latest_discard_actor_seat) == int(Player.JICHA)
+            )
+            current_push_discard_index = _push_alert_sound_discard_index(
+                current_key,
+                normalized_push_alerts_by_seat.get(seat, {}),
+            )
+            current_latest_global_index = latest_global_discard_index
+            if current_latest_global_index is None:
+                current_latest_global_index = current_push_discard_index
+            if (
+                _is_push_start_alert_sound_key(current_key)
+                and push_sound_window_end is None
+                and current_push_discard_index is not None
+                and (suppress_action_sound_for_self_discard or previous_push_was_audible)
+            ):
+                push_sound_window_end = (
+                    current_push_discard_index
+                    + PLAYER_PUSH_ALERT_PERSIST_DISCARD_WINDOW
+                )
+                updated_push_sound_window_end_by_seat[seat] = push_sound_window_end
+            suppress_continued_push_sound = False
+            if (
+                _is_push_start_alert_sound_key(current_key)
+                and push_sound_window_end is not None
+                and current_latest_global_index is not None
+                and current_latest_global_index <= push_sound_window_end
+            ):
+                suppress_continued_push_sound = True
+            if (
+                current_key
+                and not suppress_action_sound_for_self_discard
+                and not suppress_continued_push_sound
+                and _player_panel_alert_sound_priority(current_key) > previous_total_priority
+                and current_key not in sounded_alert_keys_by_seat.get(seat, frozenset())
+            ):
+                upgraded_alert_keys.append((seat, current_key))
     canvas.last_player_panel_remain_sound_level_by_seat = current_remain_sound_level_by_seat
-    if not upgraded_alert_keys:
+    if not _alert_sound_is_enabled(canvas):
+        canvas.last_player_panel_push_sound_window_end_by_seat = (
+            updated_push_sound_window_end_by_seat
+        )
         return
-    highest_priority_seat, highest_priority_key = max(
+    if not upgraded_alert_keys:
+        canvas.last_player_panel_push_sound_window_end_by_seat = (
+            updated_push_sound_window_end_by_seat
+        )
+        return
+    queued_alert_keys = sorted(
         upgraded_alert_keys,
         key=lambda item: _player_panel_alert_sound_priority(str(item[1])),
+        reverse=True,
     )
-    now_monotonic_s = time.monotonic()
+    sound_gate_discard_index = _normalize_player_panel_sound_gate_discard_index(
+        latest_global_discard_index
+    )
+    previous_sound_gate_discard_index = _normalize_player_panel_sound_gate_discard_index(
+        getattr(canvas, "last_player_panel_sound_kind_gate_discard_index", None)
+    )
+    previous_sound_kinds_for_discard = frozenset()
     if (
-        now_monotonic_s
-        - float(getattr(canvas, "last_player_panel_alert_sound_monotonic_s", 0.0) or 0.0)
-        < PLAYER_PANEL_ALERT_SOUND_MIN_INTERVAL_S
+        sound_gate_discard_index is not None
+        and sound_gate_discard_index == previous_sound_gate_discard_index
     ):
+        previous_sound_kinds_for_discard = (
+            _normalize_player_panel_sound_kinds_for_discard(
+                getattr(canvas, "last_player_panel_sound_kinds_for_discard", frozenset())
+            )
+        )
+    queued_alert_keys, sound_kinds_for_discard = (
+        _dedupe_player_panel_alert_sound_candidates_for_discard(
+            queued_alert_keys,
+            previous_sound_kinds_for_discard=previous_sound_kinds_for_discard,
+        )
+    )
+    if not queued_alert_keys:
+        canvas.last_player_panel_push_sound_window_end_by_seat = (
+            updated_push_sound_window_end_by_seat
+        )
+        if sound_gate_discard_index is not None:
+            canvas.last_player_panel_sound_kind_gate_discard_index = sound_gate_discard_index
+            canvas.last_player_panel_sound_kinds_for_discard = sound_kinds_for_discard
         return
-    canvas.last_player_panel_alert_sound_monotonic_s = now_monotonic_s
     updated_sounded_alert_keys_by_seat = {
         seat: set(sounded_alert_keys_by_seat.get(seat, frozenset()))
         for seat in HAND_DANGER_BAR_SEAT_ORDER
     }
-    updated_sounded_alert_keys_by_seat.setdefault(highest_priority_seat, set()).add(
-        highest_priority_key
-    )
+    for upgraded_seat, upgraded_key in queued_alert_keys:
+        updated_sounded_alert_keys_by_seat.setdefault(upgraded_seat, set()).add(upgraded_key)
+        if _is_push_start_alert_sound_key(upgraded_key):
+            push_discard_index = _push_alert_sound_discard_index(
+                upgraded_key,
+                normalized_push_alerts_by_seat.get(upgraded_seat, {}),
+            )
+            if push_discard_index is not None:
+                updated_push_sound_window_end_by_seat[upgraded_seat] = (
+                    push_discard_index + PLAYER_PUSH_ALERT_PERSIST_DISCARD_WINDOW
+                )
     canvas.last_player_panel_sounded_alert_keys_by_seat = {
         seat: frozenset(keys)
         for seat, keys in updated_sounded_alert_keys_by_seat.items()
     }
+    canvas.last_player_panel_push_sound_window_end_by_seat = (
+        updated_push_sound_window_end_by_seat
+    )
+    if sound_gate_discard_index is not None:
+        canvas.last_player_panel_sound_kind_gate_discard_index = sound_gate_discard_index
+        canvas.last_player_panel_sound_kinds_for_discard = sound_kinds_for_discard
+    canvas.last_player_panel_alert_sound_monotonic_s = time.monotonic()
     if winsound is None:
         try:
-            canvas.bell()
+            for _seat, _key in queued_alert_keys:
+                canvas.bell()
         except tkinter.TclError:
             return
         return
-    _queue_alert_sound_job(_play_player_panel_alert_sound_worker, highest_priority_key)
+    for _seat, upgraded_key in queued_alert_keys:
+        _queue_alert_sound_job(_play_player_panel_alert_sound_worker, upgraded_key)
 
 
 def _meld_dora_alert_sound_tones() -> tuple[tuple[int, int], ...]:
@@ -15040,6 +16977,8 @@ def _play_meld_dora_alert_sound_if_needed(
         dora_indicator_tiles,
     )
     canvas.last_meld_dora_alert_counts_by_seat = current_counts_by_seat
+    if not _alert_sound_is_enabled(canvas):
+        return
     should_play = any(
         _meld_dora_alert_count_level(current_counts_by_seat, player) >= MELD_DORA_ALERT_THRESHOLD
         and _meld_dora_alert_count_level(previous_counts_by_seat, player) < MELD_DORA_ALERT_THRESHOLD
@@ -17078,6 +19017,31 @@ def _discard_tile34_index(discard: object) -> int | None:
     return None
 
 
+def _awaseuchi_discard_is_tedashi(discard: object) -> bool:
+    """Return whether one retained river discard is a tedashi source."""
+
+    draw_type = getattr(discard, "draw_type", None)
+    if draw_type is not None:
+        try:
+            return int(draw_type) == int(DrawType.TEDASHI)
+        except (TypeError, ValueError):
+            pass
+    return not bool(getattr(discard, "tsumogiri", False))
+
+
+def _awaseuchi_event_is_discard(event_kind: str) -> bool:
+    """Return whether one normalized awaseuchi event is a discard."""
+
+    return event_kind in {"discard", "tedashi_discard", "tsumogiri_discard"}
+
+
+def _awaseuchi_event_is_tedashi_source(event_kind: str) -> bool:
+    """Return whether one normalized discard can arm later awaseuchi matches."""
+
+    # `discard` is retained as a compatibility spelling for hand-built event-stream fixtures.
+    return event_kind in {"discard", "tedashi_discard"}
+
+
 def _event_global_order_index(event: object, fallback_index: int) -> int:
     """Return a stable global-order index for one round event."""
 
@@ -17110,10 +19074,15 @@ def _awaseuchi_discard_event_entry(
 
     tile_34_index = _discard_tile34_index(discard)
     tile_34_indices = (tile_34_index,) if tile_34_index is not None else ()
+    event_kind = (
+        "tedashi_discard"
+        if _awaseuchi_discard_is_tedashi(discard)
+        else "tsumogiri_discard"
+    )
     return (
         _discard_global_order_index(discard, fallback_index),
         0,
-        "discard",
+        event_kind,
         seat,
         local_index,
         tile_34_indices,
@@ -17213,6 +19182,7 @@ def _same_jun_discard_last_signature(discard_sequence: Sequence[object]) -> tupl
         normalized_event_index = None
     return (
         _discard_tile34_index(last_discard),
+        _awaseuchi_discard_is_tedashi(last_discard),
         normalized_round_discard_index,
         normalized_event_index,
     )
@@ -17359,7 +19329,7 @@ def _same_jun_candidate_state_from_event_stream(
     *,
     recent_public_event_window: int = AWASEUCHI_PROVISIONAL_PUBLIC_EVENT_WINDOW,
 ) -> tuple[dict[int, frozenset[int]], tuple[tuple[str, int | None, tuple[int, ...]], ...]]:
-    """Return provisional awaseuchi matches plus the recent-public tail needed for append updates."""
+    """Return matches plus the recent discard-history tail needed for append updates."""
 
     recent_window = max(0, int(recent_public_event_window))
     if recent_window <= 0:
@@ -17367,27 +19337,29 @@ def _same_jun_candidate_state_from_event_stream(
             {int(player): frozenset() for player in Player},
             (),
         )
-    recent_public_events: deque[tuple[str, int | None, tuple[int, ...]]] = deque(maxlen=recent_window)
+    recent_discard_events: deque[tuple[str, int | None, tuple[int, ...]]] = deque(
+        maxlen=recent_window
+    )
     candidate_matches_by_seat: dict[int, set[int]] = {int(player): set() for player in Player}
     for _order, _priority, event_kind, seat, local_index, tile_34_indices in event_stream:
-        if event_kind == "discard" and seat is not None and local_index is not None:
-            for recent_event_kind, recent_seat, recent_tile_34_indices in recent_public_events:
-                if (
-                    recent_event_kind in {"discard", "meld"}
-                    and recent_seat is not None
-                    and recent_seat == seat
-                ):
+        if not _awaseuchi_event_is_discard(event_kind):
+            continue
+        if seat is not None and local_index is not None:
+            for recent_event_kind, recent_seat, recent_tile_34_indices in recent_discard_events:
+                if not _awaseuchi_event_is_tedashi_source(recent_event_kind):
+                    continue
+                if recent_seat is None or recent_seat == seat:
                     continue
                 if any(tile_34_index in recent_tile_34_indices for tile_34_index in tile_34_indices):
                     candidate_matches_by_seat[seat].add(local_index)
                     break
-        recent_public_events.append((event_kind, seat, tile_34_indices))
+        recent_discard_events.append((event_kind, seat, tile_34_indices))
     return (
         {
             seat: frozenset(local_indexes)
             for seat, local_indexes in candidate_matches_by_seat.items()
         },
-        tuple(recent_public_events),
+        tuple(recent_discard_events),
     )
 
 
@@ -17398,7 +19370,7 @@ def _extend_same_jun_candidate_state(
     *,
     recent_public_event_window: int = AWASEUCHI_PROVISIONAL_PUBLIC_EVENT_WINDOW,
 ) -> tuple[dict[int, frozenset[int]], tuple[tuple[str, int | None, tuple[int, ...]], ...]]:
-    """Extend provisional awaseuchi state using only newly appended public events."""
+    """Extend awaseuchi state using only newly appended retained river discards."""
 
     recent_window = max(0, int(recent_public_event_window))
     if recent_window <= 0:
@@ -17410,29 +19382,29 @@ def _extend_same_jun_candidate_state(
         int(player): set(previous_matches_by_seat.get(int(player), ())) if previous_matches_by_seat else set()
         for player in Player
     }
-    recent_public_events: deque[tuple[str, int | None, tuple[int, ...]]] = deque(
+    recent_discard_events: deque[tuple[str, int | None, tuple[int, ...]]] = deque(
         previous_recent_public_events or (),
         maxlen=recent_window,
     )
     for _order, _priority, event_kind, seat, local_index, tile_34_indices in new_events:
-        if event_kind == "discard" and seat is not None and local_index is not None:
-            for recent_event_kind, recent_seat, recent_tile_34_indices in recent_public_events:
-                if (
-                    recent_event_kind in {"discard", "meld"}
-                    and recent_seat is not None
-                    and recent_seat == seat
-                ):
+        if not _awaseuchi_event_is_discard(event_kind):
+            continue
+        if seat is not None and local_index is not None:
+            for recent_event_kind, recent_seat, recent_tile_34_indices in recent_discard_events:
+                if not _awaseuchi_event_is_tedashi_source(recent_event_kind):
+                    continue
+                if recent_seat is None or recent_seat == seat:
                     continue
                 if any(tile_34_index in recent_tile_34_indices for tile_34_index in tile_34_indices):
                     candidate_matches_by_seat[seat].add(local_index)
                     break
-        recent_public_events.append((event_kind, seat, tile_34_indices))
+        recent_discard_events.append((event_kind, seat, tile_34_indices))
     return (
         {
             seat: frozenset(local_indexes)
             for seat, local_indexes in candidate_matches_by_seat.items()
         },
-        tuple(recent_public_events),
+        tuple(recent_discard_events),
     )
 
 
@@ -17450,6 +19422,7 @@ def _same_jun_match_cache_signature(
                 (
                     _discard_global_order_index(discard, local_index),
                     _discard_tile34_index(discard),
+                    _awaseuchi_discard_is_tedashi(discard),
                 )
                 for local_index, discard in enumerate(discard_map.get(player, ()))
             ),
@@ -17543,7 +19516,7 @@ def _same_jun_candidate_discard_indices_by_seat_from_event_stream(
     *,
     recent_public_event_window: int = AWASEUCHI_PROVISIONAL_PUBLIC_EVENT_WINDOW,
 ) -> dict[int, frozenset[int]]:
-    """Return provisional awaseuchi candidates using only the newest public events."""
+    """Return awaseuchi candidates using the newest retained river discards."""
 
     candidate_matches, _recent_public_tail = _same_jun_candidate_state_from_event_stream(
         event_stream,
@@ -17559,7 +19532,7 @@ def _same_jun_candidate_discard_indices_by_seat(
     *,
     recent_public_event_window: int = AWASEUCHI_PROVISIONAL_PUBLIC_EVENT_WINDOW,
 ) -> dict[int, frozenset[int]]:
-    """Return provisional awaseuchi candidates from the recent public event window."""
+    """Return awaseuchi candidates from the recent discard-count window."""
 
     return _same_jun_candidate_discard_indices_by_seat_from_event_stream(
         _same_jun_public_event_stream(discard_map, melds_by_player, round_events),
@@ -17597,7 +19570,7 @@ def _same_jun_match_discard_indices_by_seat(
     melds_by_player: Mapping[Player, Iterable[Meld]] | None = None,
     round_events: Sequence[object] | None = None,
 ) -> dict[int, frozenset[int]]:
-    """Return confirmed awaseuchi matches using the full public event history."""
+    """Return confirmed awaseuchi matches using the retained global discard history."""
 
     return _same_jun_match_discard_indices_by_seat_from_event_stream(
         _same_jun_public_event_stream(discard_map, melds_by_player, round_events)
@@ -17607,50 +19580,19 @@ def _same_jun_match_discard_indices_by_seat(
 def _same_jun_match_discard_indices_by_seat_from_event_stream(
     event_stream: Sequence[tuple[int, int, str, int | None, int | None, tuple[int, ...]]],
 ) -> dict[int, frozenset[int]]:
-    """Return discards that match pending per-seat awaseuchi flags.
+    """Return discards matching another seat's recent tedashi of the same tile34.
 
-    Only publicly visible count increases arm flags: discards, newly exposed meld tiles,
-    and dora-indicator reveals. Private draws are intentionally excluded.
-    A player's own discard does not arm that same player's flag.
-    Meld visibility is an exception: the acting player's own flag is not armed by that self-exposure.
-    Visible-count increase events turn one tile34 flag on for every seat.
-    Each seat keeps those flags only until its own next discard completes.
-    When that discard matches any pending flag, the discard receives the awaseuchi marker,
-    then the seat's pending flags are cleared.
+    The retained global river history is scanned in discard order. Only another seat's
+    tedashi can arm a match. The source remains eligible for five subsequent discard
+    increases, including across an intervening discard by the target seat. Meld and dora
+    events neither arm a match nor consume the discard-count window. The target discard
+    itself may be tedashi or tsumogiri.
     """
-    pending_tile34_flags_by_seat: dict[int, set[int]] = {int(player): set() for player in Player}
-    same_jun_matches_by_seat: dict[int, set[int]] = {int(player): set() for player in Player}
-    all_seats = tuple(int(player) for player in Player)
-    for _order, _priority, event_kind, seat, local_index, tile_34_indices in event_stream:
-        if event_kind == "discard":
-            if seat is None:
-                continue
-            current_pending_flags = pending_tile34_flags_by_seat[seat]
-            # A seat checks the currently pending flags exactly when its discard completes.
-            if local_index is not None and any(
-                tile_34_index in current_pending_flags for tile_34_index in tile_34_indices
-            ):
-                same_jun_matches_by_seat[seat].add(local_index)
-            # Regardless of match/miss, the seat's one-shot pending flags expire on this discard.
-            current_pending_flags.clear()
-            for tile_34_index in tile_34_indices:
-                # A discard becomes publicly visible to every other seat, but not to the discarder.
-                for target_seat in all_seats:
-                    if target_seat == seat:
-                        continue
-                    pending_tile34_flags_by_seat[target_seat].add(tile_34_index)
-            continue
-        for tile_34_index in tile_34_indices:
-            for target_seat in all_seats:
-                # Meld self-exposure is already known to the acting seat, so only other seats arm here.
-                if event_kind == "meld" and seat is not None and target_seat == seat:
-                    continue
-                pending_tile34_flags_by_seat[target_seat].add(tile_34_index)
 
-    return {
-        seat: frozenset(local_indexes)
-        for seat, local_indexes in same_jun_matches_by_seat.items()
-    }
+    return _same_jun_candidate_discard_indices_by_seat_from_event_stream(
+        event_stream,
+        recent_public_event_window=AWASEUCHI_DISCARD_HISTORY_WINDOW,
+    )
 
 
 def _same_jun_confirmation_cache_key(
@@ -18351,11 +20293,13 @@ def _should_draw_push_discard_marker(
     local_index: int,
     marker_indices: Collection[int],
 ) -> bool:
-    """Return whether one discard should show the river `P` marker."""
+    """Return whether a second-or-later-row discard should show the river `P` marker."""
 
     try:
         normalized_local_index = int(local_index)
     except (TypeError, ValueError):
+        return False
+    if normalized_local_index < DISCARD_ROW_TILE_COUNT:
         return False
     global_index = _discard_global_index(discard, normalized_local_index)
     return global_index in marker_indices
@@ -18431,22 +20375,26 @@ def _draw_same_jun_match_marker(
     bottom: float,
     color: str = SAME_JUN_MATCH_DISCARD_MARKER,
 ) -> None:
-    """Draw the awaseuchi marker between visible-count and lag markers."""
+    """Map the `合` awaseuchi label onto the discard image."""
 
-    marker_radius, _visible_count_center, (center_x, center_y), _lag_center = _discard_marker_layout(
+    _marker_radius, _visible_count_center, (center_x, center_y), _lag_center = _discard_marker_layout(
         player,
         left,
         top,
         right,
         bottom,
     )
-    canvas.create_oval(
-        center_x - marker_radius,
-        center_y - marker_radius,
-        center_x + marker_radius,
-        center_y + marker_radius,
-        fill=color,
-        outline="",
+    current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
+    font_size = max(8, int(round(9 * current_ui_scale)))
+    _draw_marker_text_badge(
+        canvas,
+        center_x,
+        center_y,
+        text="合",
+        text_fill=color,
+        background_fill=AWASEUCHI_MARKER_BADGE_FILL,
+        font=("Yu Gothic UI", font_size, "bold"),
+        angle=float(PLAYER_ROTATIONS[player]),
     )
 
 
@@ -18586,7 +20534,7 @@ def _draw_called_discard_border(
     right: float,
     bottom: float,
 ) -> None:
-    """Draw a red frame around a discard consumed by a call."""
+    """Draw a yellow frame around a discard consumed by a call."""
 
     canvas.create_rectangle(
         left + 1,
@@ -19710,6 +21658,270 @@ def _draw_melds(
     )
 
 
+def _rgb_tuple_to_hex(color: tuple[int, int, int]) -> str:
+    """Return a Tk-compatible #RRGGBB string for one RGB tuple."""
+
+    red, green, blue = (max(0, min(255, int(component))) for component in color)
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+def _discard_analysis_overlay_geometry(canvas: tkinter.Canvas) -> dict[tuple[int, int], dict[str, object]]:
+    """Return the base-river geometry map used by delayed calculation overlays."""
+
+    geometry = getattr(canvas, "discard_analysis_overlay_geometry_by_key", None)
+    if isinstance(geometry, dict):
+        return geometry
+    geometry = {}
+    canvas.discard_analysis_overlay_geometry_by_key = geometry
+    return geometry
+
+
+def _draw_discard_tint_overlay(
+    canvas: tkinter.Canvas,
+    left: float,
+    top: float,
+    right: float,
+    bottom: float,
+    tint_kind: str,
+) -> None:
+    """Draw a lightweight overlay tint without rebuilding the underlying tile image."""
+
+    if tint_kind == "red":
+        fill = _rgb_tuple_to_hex(DISCARD_RED_TINT_COLOR)
+        stipple = "gray25"
+    elif tint_kind == "brown":
+        fill = _rgb_tuple_to_hex(DISCARD_BROWN_TINT_COLOR)
+        stipple = "gray25"
+    elif tint_kind == "four_visible":
+        fill = _rgb_tuple_to_hex(DISCARD_FOUR_VISIBLE_TINT_COLOR)
+        stipple = "gray25"
+    else:
+        return
+    canvas.create_rectangle(
+        left,
+        top,
+        right,
+        bottom,
+        fill=fill,
+        outline="",
+        stipple=stipple,
+    )
+
+
+def _discard_analysis_overlay_signature(
+    canvas: tkinter.Canvas,
+    discard_map: Mapping[Player, Iterable[Discard]],
+    visible_summary: VisibleTileSummary,
+    discard_red_tint_indices_by_seat: Mapping[int, Collection[int]],
+    push_marker_indices_by_seat: Mapping[int, Collection[int]],
+    same_jun_match_indices_by_seat: Mapping[int, Collection[int]],
+) -> tuple[object, ...]:
+    """Return the render signature for calculation-only river overlays."""
+
+    def _int_value(value: object, default: int = -1) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _sorted_int_tuple(values: Iterable[object]) -> tuple[int, ...]:
+        normalized: list[int] = []
+        for value in values:
+            try:
+                normalized.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return tuple(sorted(normalized))
+
+    geometry_by_key = _discard_analysis_overlay_geometry(canvas)
+    visible_signature = (
+        tuple(
+            int(value or 0)
+            for value in getattr(visible_summary, "visible_counts_34_index", ())
+        ),
+        _int_value(getattr(visible_summary, "visible_red_dora_count", 0), 0),
+        _sorted_int_tuple(getattr(visible_summary, "four_visible_tile34_index_set", ())),
+        _sorted_int_tuple(getattr(visible_summary, "blocked_sequence_tile34_index_set", ())),
+    )
+    entries: list[tuple[object, ...]] = []
+    for player in Player:
+        highlighted_indices = set(discard_red_tint_indices_by_seat.get(int(player), frozenset()))
+        push_indices = set(push_marker_indices_by_seat.get(int(player), frozenset()))
+        same_jun_indices = set(same_jun_match_indices_by_seat.get(int(player), frozenset()))
+        for idx, discard in enumerate(list(discard_map.get(player, []))[:18]):
+            geometry = geometry_by_key.get((int(player), int(idx)))
+            if not isinstance(geometry, dict):
+                continue
+            try:
+                left = round(float(geometry["left"]), 3)
+                top = round(float(geometry["top"]), 3)
+                right = round(float(geometry["right"]), 3)
+                bottom = round(float(geometry["bottom"]), 3)
+            except (KeyError, TypeError, ValueError):
+                continue
+            tile_id = _int_value(getattr(discard, "tile_id", -1))
+            tile_34_index = tile37_to_tile34_index(getattr(discard, "tile_id", None))
+            draw_type = getattr(discard, "draw_type", "")
+            draw_type_name = getattr(draw_type, "name", draw_type)
+            tint_kind = _discard_tile_tint_kind(
+                discard,
+                tile_34_index,
+                should_red_tint=idx in highlighted_indices,
+                visible_summary=visible_summary,
+            )
+            visible_count_marker_kind = _visible_count_kind_for_tile34_index(
+                tile_34_index,
+                visible_summary,
+            )
+            entries.append(
+                (
+                    int(player),
+                    int(idx),
+                    tile_id,
+                    bool(getattr(discard, "called", False)),
+                    str(draw_type_name),
+                    str(tint_kind),
+                    str(visible_count_marker_kind),
+                    bool(_should_draw_discard_visible_count_marker(discard)),
+                    _should_draw_push_discard_marker(discard, idx, push_indices),
+                    idx in same_jun_indices,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                )
+            )
+    return (
+        getattr(canvas, "current_round_identity", None),
+        visible_signature,
+        tuple(entries),
+    )
+
+def _draw_discard_analysis_overlays(
+    canvas: tkinter.Canvas,
+    discard_map: Mapping[Player, Iterable[Discard]],
+    visible_summary: VisibleTileSummary,
+    discard_red_tint_indices_by_seat: Mapping[int, Collection[int]],
+    player_push_alert_percentages: Mapping[int, Mapping[str, object]] | None = None,
+    melds_by_player: Mapping[Player, Iterable[Meld]] | None = None,
+    round_events: Sequence[object] | None = None,
+    *,
+    same_jun_marker_indices_by_seat: Mapping[int, Collection[int]] | None = None,
+) -> None:
+    """Draw calculation-derived river overlays on a separate Canvas layer.
+
+    This function intentionally never creates, deletes, or moves the base discard tile images.
+    Delayed red-tint, visible-count, push-P, and awaseuchi results are mapped onto the latest
+    base-river geometry captured by `_draw_discards`.
+    """
+
+    geometry_by_key = _discard_analysis_overlay_geometry(canvas)
+    if not geometry_by_key:
+        _delete_canvas_items_by_tags(canvas, _LIVE_DISCARD_ANALYSIS_OVERLAY_TAG)
+        canvas.discard_analysis_overlay_signature = None
+        canvas.last_discard_analysis_overlay_stats = {"skipped": False, "items": 0}
+        return
+    push_marker_indices_by_seat = _push_discard_marker_indices_by_seat(player_push_alert_percentages)
+    if AWASEUCHI_MARKERS_ENABLED:
+        same_jun_match_indices_by_seat = (
+            _normalize_same_jun_marker_indices_by_seat(same_jun_marker_indices_by_seat)
+            if same_jun_marker_indices_by_seat is not None
+            else _same_jun_marker_indices_by_seat(
+                canvas,
+                discard_map,
+                melds_by_player,
+                round_events,
+            )
+        )
+    else:
+        same_jun_match_indices_by_seat = {}
+    overlay_signature = _discard_analysis_overlay_signature(
+        canvas,
+        discard_map,
+        visible_summary,
+        discard_red_tint_indices_by_seat,
+        push_marker_indices_by_seat,
+        same_jun_match_indices_by_seat,
+    )
+    if getattr(canvas, "discard_analysis_overlay_signature", None) == overlay_signature:
+        canvas.last_discard_analysis_overlay_stats = {
+            "skipped": True,
+            "items": len(geometry_by_key),
+        }
+        return
+    canvas.discard_analysis_overlay_signature = overlay_signature
+    canvas.last_discard_analysis_overlay_stats = {
+        "skipped": False,
+        "items": len(geometry_by_key),
+    }
+    _delete_canvas_items_by_tags(canvas, _LIVE_DISCARD_ANALYSIS_OVERLAY_TAG)
+    for player in Player:
+        discards = list(discard_map.get(player, []))
+        highlighted_indices = set(discard_red_tint_indices_by_seat.get(int(player), frozenset()))
+        push_indices = set(push_marker_indices_by_seat.get(int(player), frozenset()))
+        same_jun_indices = set(same_jun_match_indices_by_seat.get(int(player), frozenset()))
+        for idx, discard in enumerate(discards[:18]):
+            key = (int(player), int(idx))
+            geometry = geometry_by_key.get(key)
+            if not isinstance(geometry, dict):
+                continue
+            try:
+                left = float(geometry["left"])
+                top = float(geometry["top"])
+                right = float(geometry["right"])
+                bottom = float(geometry["bottom"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            tile_34_index = tile37_to_tile34_index(getattr(discard, "tile_id", None))
+            overlay_canvas = _TaggedCanvasProxy(
+                canvas,
+                _LIVE_DISCARD_ANALYSIS_OVERLAY_TAG,
+                f"{_discard_item_canvas_tag(player, idx)}_analysis_overlay",
+            )
+            tint_kind = _discard_tile_tint_kind(
+                discard,
+                tile_34_index,
+                should_red_tint=idx in highlighted_indices,
+                visible_summary=visible_summary,
+            )
+            _draw_discard_tint_overlay(overlay_canvas, left, top, right, bottom, tint_kind)
+            visible_count_marker_kind = _visible_count_kind_for_tile34_index(
+                tile_34_index,
+                visible_summary,
+            )
+            if (
+                _visible_count_marker_style(visible_count_marker_kind) is not None
+                and _should_draw_discard_visible_count_marker(discard)
+            ):
+                _draw_visible_count_marker(
+                    overlay_canvas,
+                    player,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    visible_count_marker_kind,
+                )
+            if _should_draw_push_discard_marker(discard, idx, push_indices):
+                _draw_push_discard_marker(
+                    overlay_canvas,
+                    player,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                )
+            if idx in same_jun_indices:
+                _draw_same_jun_match_marker(
+                    overlay_canvas,
+                    player,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                )
+
+
 def _draw_discards(
     canvas: tkinter.Canvas,
     img_table: TileImageTable,
@@ -19737,6 +21949,10 @@ def _draw_discards(
             discard_phase_totals[label] = discard_phase_totals.get(label, 0.0) + elapsed_ms
 
     phase_started_at = time.perf_counter()
+    # Full redraw callers clear `_LIVE_ASYNC_DISCARD_TAG` and reset this cache before entering this
+    # function. Cached-layout redraws reuse matching per-slot Canvas items, but each cache hit is
+    # validated against the live Canvas tag so a tile deleted by an earlier full redraw is restored
+    # instead of being skipped.
     canvas.discard_tile_selection_click_specs = []
     # 自家向き牌と横向き牌のサイズから、並べるピッチを作る。
     current_ui_scale = float(getattr(canvas, "current_ui_scale", 1.0))
@@ -19789,44 +22005,28 @@ def _draw_discards(
     _append_draw_phase_timing("setup_geometry", phase_started_at)
 
     phase_started_at = time.perf_counter()
-    visible_count_tiles_34 = (
-        {
-            tile_34: "three" for tile_34 in visible_summary.three_visible_tiles
-        }
-        if THREE_VISIBLE_MARKERS_ENABLED
-        else {}
-    )
-    visible_count_tiles_34.update(
-        {tile_34: "four" for tile_34 in visible_summary.four_visible_tiles}
-    )
     multi_player_lag_tiles_34 = _collect_multi_player_lag_tiles_34(discard_map)
     bridge_status = _bridge_status_snapshot(canvas)
     bridge_toggle_overrides = dict(getattr(canvas, "bridge_toggle_active_overrides", {}))
     naki_disabled_override_active = bridge_toggle_overrides.get(BRIDGE_NAKI_DISABLED_TOGGLE_CONTROL_ID)
     _append_draw_phase_timing("setup_markers", phase_started_at)
 
-    # Awaseuchi flags depend only on public river/meld/dora state. Cache the result per live
-    # refresh token so resize and idle redraws do not rebuild/sort the entire event stream.
-    phase_started_at = time.perf_counter()
-    same_jun_match_indices_by_seat: dict[int, frozenset[int]] = {}
-    if AWASEUCHI_MARKERS_ENABLED:
-        same_jun_match_indices_by_seat = (
-            _normalize_same_jun_marker_indices_by_seat(same_jun_marker_indices_by_seat)
-            if same_jun_marker_indices_by_seat is not None
-            else _same_jun_marker_indices_by_seat(
-                canvas,
-                discard_map,
-                melds_by_player,
-                round_events,
-            )
-        )
-    _append_draw_phase_timing("same_jun", phase_started_at)
-    phase_started_at = time.perf_counter()
-    push_marker_indices_by_seat = _push_discard_marker_indices_by_seat(player_push_alert_percentages)
-    _append_draw_phase_timing("push_markers", phase_started_at)
-
     render_cache = _discard_render_cache(canvas)
     previous_cache_keys = set(render_cache)
+    previous_discard_counts_by_seat: dict[int, int] = {}
+    for cache_key in previous_cache_keys:
+        if not (isinstance(cache_key, tuple) and len(cache_key) == 2):
+            continue
+        try:
+            seat = int(cache_key[0])
+            index = int(cache_key[1])
+        except (TypeError, ValueError):
+            continue
+        previous_discard_counts_by_seat[seat] = max(
+            previous_discard_counts_by_seat.get(seat, 0),
+            index + 1,
+        )
+    current_discard_counts_by_seat: dict[int, int] = {}
     image_refs: dict[tuple[int, int], ImageTk.PhotoImage] = getattr(
         canvas,
         "discard_tile_image_refs",
@@ -19834,23 +22034,29 @@ def _draw_discards(
     )
     if not isinstance(image_refs, dict):
         image_refs = {}
+    live_discard_image_item_tags = _canvas_image_item_tags_with_parent_tag(
+        canvas,
+        _LIVE_ASYNC_DISCARD_TAG,
+    )
     active_cache_keys: set[tuple[int, int]] = set()
+    overlay_geometry_by_key: dict[tuple[int, int], dict[str, object]] = {}
     # These counters are deliberately stored on the Canvas so slow logs can report whether a
     # redraw was actually expensive or merely walked the unchanged river state.
     drawn_count = 0
     skipped_count = 0
     changed_count = 0
     stale_deleted_count = 0
+    stale_retained_count = 0
     missing_image_ref_count = 0
     missing_image_item_count = 0
+    stale_deleted_keys: list[tuple[int, int]] = []
 
     # 各座席について、最大18枚までの捨て牌を 6x3 ベースで配置する。
     for player, layout in layouts.items():
         player_started_at = time.perf_counter()
         discards = list(discard_map.get(player, []))
-        highlighted_indices = discard_red_tint_indices_by_seat.get(int(player), frozenset())
+        current_discard_counts_by_seat[int(player)] = min(len(discards), 18)
         peak_thinking_time_index = _peak_thinking_time_discard_local_index(discards)
-        same_jun_match_indices = same_jun_match_indices_by_seat.get(int(player), frozenset())
         for idx, discard in enumerate(discards[:18]):
             # 6枚ごとに折り返すため、列と行へ変換する。
             col = idx % DISCARD_ROW_TILE_COUNT
@@ -19859,12 +22065,9 @@ def _draw_discards(
             y = layout["origin"][1] + layout["col_step"][1] * col + layout["row_step"][1] * row
             tile_phase_started_at = time.perf_counter()
             discard_tile_34_index = tile37_to_tile34_index(discard.tile_id)
-            discard_tint_kind = _discard_tile_tint_kind(
-                discard,
-                discard_tile_34_index,
-                should_red_tint=idx in highlighted_indices,
-                visible_summary=visible_summary,
-            )
+            # Red/brown/four-visible tints are calculation overlays.  The base river tile image
+            # must not be rebuilt just because a delayed analysis result changed.
+            discard_tint_kind = "none"
             _add_discard_phase_total("tile_tint", tile_phase_started_at)
             tile_phase_started_at = time.perf_counter()
             lower_band_tint_step, upper_band_tint_step = _discard_thinking_time_tint_steps(discard)
@@ -19894,23 +22097,17 @@ def _draw_discards(
                         rect=(left, top, right, bottom),
                     )
                 )
-            discard_tile_34 = tile37_to_tile34(discard.tile_id)
-            visible_count_marker_kind = visible_count_tiles_34.get(discard_tile_34, "none")
-            should_draw_visible_count_marker = (
-                _visible_count_marker_style(visible_count_marker_kind) is not None
-                and _should_draw_discard_visible_count_marker(discard)
-            )
+            # Visible-count markers are analysis overlays, not base river markers.
+            visible_count_marker_kind = "none"
+            should_draw_visible_count_marker = False
             should_draw_lag_marker = (
                 not _is_riseki_completion_discard(discard)
                 and _is_visual_lag_flag(discard.lagged)
                 and not discard.called
             )
-            should_draw_push_marker = _should_draw_push_discard_marker(
-                discard,
-                idx,
-                push_marker_indices_by_seat.get(int(player), frozenset()),
-            )
-            should_draw_same_jun_match_marker = idx in same_jun_match_indices
+            # Push-P and same-jun markers are also drawn on the analysis overlay layer.
+            should_draw_push_marker = False
+            should_draw_same_jun_match_marker = False
             should_draw_peak_thinking_time_marker = idx == peak_thinking_time_index
             discard_border_kind = _discard_border_kind(discard)
             lag_marker_color = _lag_marker_color(
@@ -19939,6 +22136,15 @@ def _draw_discards(
             _add_discard_phase_total("marker_decision", tile_phase_started_at)
             cache_key = (int(player), int(idx))
             active_cache_keys.add(cache_key)
+            overlay_geometry_by_key[cache_key] = {
+                "player": player,
+                "index": int(idx),
+                "left": float(left),
+                "top": float(top),
+                "right": float(right),
+                "bottom": float(bottom),
+                "tile_34_index": discard_tile_34_index,
+            }
             had_image_ref = cache_key in image_refs
             image_refs[cache_key] = tile_image
             item_tag = _discard_item_canvas_tag(player, idx)
@@ -19983,7 +22189,11 @@ def _draw_discards(
             )
             cached_signature = render_cache.get(cache_key)
             if cached_signature == tile_signature:
-                has_image_item = _canvas_has_image_item_with_tag(canvas, item_tag)
+                has_image_item = (
+                    item_tag in live_discard_image_item_tags
+                    if live_discard_image_item_tags is not None
+                    else _canvas_has_image_item_with_tag(canvas, item_tag)
+                )
                 if had_image_ref and has_image_item:
                     skipped_count += 1
                     # Transient hit areas are rebuilt on every redraw.  When Canvas items are reused,
@@ -20097,6 +22307,20 @@ def _draw_discards(
             render_cache[cache_key] = tile_signature
         _append_draw_phase_timing(f"player_{int(player)}", player_started_at)
 
+    canvas.discard_analysis_overlay_geometry_by_key = overlay_geometry_by_key
+    overlay_started_at = time.perf_counter()
+    _draw_discard_analysis_overlays(
+        canvas,
+        discard_map,
+        visible_summary,
+        discard_red_tint_indices_by_seat,
+        player_push_alert_percentages,
+        melds_by_player,
+        round_events,
+        same_jun_marker_indices_by_seat=same_jun_marker_indices_by_seat,
+    )
+    _add_discard_phase_total("analysis_overlay", overlay_started_at)
+
     stale_started_at = time.perf_counter()
     for stale_key in previous_cache_keys - active_cache_keys:
         if not (
@@ -20104,16 +22328,28 @@ def _draw_discards(
             and len(stale_key) == 2
         ):
             continue
+        try:
+            stale_seat = int(stale_key[0])
+            stale_index = int(stale_key[1])
+        except (TypeError, ValueError):
+            continue
         _delete_canvas_items_by_tags(
             canvas,
-            _discard_item_canvas_tag(int(stale_key[0]), int(stale_key[1])),
+            _discard_item_canvas_tag(stale_seat, stale_index),
         )
         # Stale keys happen when the river is shortened by REINIT/bootstrap correction or when a
         # new round clears previous discards before the surrounding full redraw path runs.
         render_cache.pop(stale_key, None)
         image_refs.pop(stale_key, None)
         stale_deleted_count += 1
+        stale_deleted_keys.append((stale_seat, stale_index))
     _add_discard_phase_total("stale_delete", stale_started_at)
+    _maybe_log_called_discard_stale_delete(
+        canvas,
+        stale_deleted_keys=stale_deleted_keys,
+        previous_counts=previous_discard_counts_by_seat,
+        current_counts=current_discard_counts_by_seat,
+    )
     for stale_image_key in set(image_refs) - active_cache_keys:
         image_refs.pop(stale_image_key, None)
     canvas.discard_render_cache_by_key = render_cache
@@ -20123,6 +22359,7 @@ def _draw_discards(
         "drawn": drawn_count,
         "skipped": skipped_count,
         "stale_deleted": stale_deleted_count,
+        "stale_retained": stale_retained_count,
         "changed": changed_count,
         "missing_image_refs": missing_image_ref_count,
         "missing_image_items": missing_image_item_count,
@@ -20133,7 +22370,8 @@ def _draw_discards(
             f"missing_image_refs={missing_image_ref_count} "
             f"missing_image_items={missing_image_item_count} "
             f"active={len(active_cache_keys)} drawn={drawn_count} skipped={skipped_count} "
-            f"changed={changed_count} refresh_token={getattr(canvas, 'current_refresh_token', None)}"
+            f"changed={changed_count} stale_retained={stale_retained_count} "
+            f"refresh_token={getattr(canvas, 'current_refresh_token', None)}"
         )
         print(message)
         _append_ui_diagnostic_log(message)
@@ -20893,14 +23131,14 @@ def _redraw_live_async_regions_if_possible(
         return False
     if not bool(getattr(canvas, "winfo_exists", lambda: False)()):
         return False
-    current_discard_map = (
-        {
-            player: list(discard_map.get(player, discard_map.get(int(player), ())))
-            for player in Player
-        }
-        if isinstance(discard_map, Mapping)
-        else render_state.discard_map
-    )
+    _ = discard_map, push_marker_alert_percentages
+    # Async calculation/alert completions are not authoritative for the river layer.
+    # Keep the discard projection established by the full live redraw path; otherwise a stale or
+    # short partial snapshot can repaint the river immediately after a call and hide called tiles.
+    current_discard_map = {
+        player: list(render_state.discard_map.get(player, ()))
+        for player in Player
+    }
     current_visible_summary = (
         visible_summary
         if visible_summary is not None
@@ -20911,6 +23149,21 @@ def _redraw_live_async_regions_if_possible(
         if round_events is not None
         else render_state.round_events
     )
+    current_player_alert_indicators_by_seat = _merge_haya_discard_alert_indicators_by_seat(
+        player_alert_indicators_by_seat,
+        current_discard_map,
+        render_state.dora_indicator_tiles,
+    )
+    current_same_jun_marker_indices_by_seat = (
+        _normalize_same_jun_marker_indices_by_seat(same_jun_marker_indices_by_seat)
+        if same_jun_marker_indices_by_seat is not None
+        else render_state.same_jun_marker_indices_by_seat
+    )
+    if _defer_called_discard_canvas_repair_if_needed(
+        canvas,
+        current_discard_map,
+    ):
+        return False
 
     visible_inference_summary, inferred_visible_entries = _build_visible_tile_inference_summary_for_canvas(
         canvas,
@@ -20959,6 +23212,17 @@ def _redraw_live_async_regions_if_possible(
     canvas.hand_response_button_spec = None
     canvas.hand_betaori_response_button_spec = None
 
+    _draw_discard_analysis_overlays(
+        canvas,
+        current_discard_map,
+        current_visible_summary,
+        discard_red_tint_indices_by_seat,
+        player_push_alert_percentages,
+        render_state.melds_by_player,
+        current_round_events,
+        same_jun_marker_indices_by_seat=current_same_jun_marker_indices_by_seat,
+    )
+
     _redraw_side_panels_if_needed(
         canvas,
         getattr(canvas, "image_table", getattr(canvas, "base_image_table", None)),
@@ -20973,40 +23237,14 @@ def _redraw_live_async_regions_if_possible(
         hand_danger_percentages,
         opponent_suji_panel_summaries,
         player_push_alert_percentages,
-        player_alert_indicators_by_seat,
+        current_player_alert_indicators_by_seat,
         render_state.player_score_diffs_by_seat,
         render_state.player_names_by_seat,
         detail_panel_state,
     )
 
-    discard_phase_timings: list[PhaseTiming] = []
-    discard_started_at = time.perf_counter()
-    discard_subphase_started_at = time.perf_counter()
-    discard_previous_items = len(_discard_render_cache(canvas))
-    _draw_discards(
-        canvas,
-        getattr(canvas, "image_table", getattr(canvas, "base_image_table", None)),
-        current_discard_map,
-        discard_red_tint_indices_by_seat,
-        layout,
-        current_visible_summary,
-        push_marker_alert_percentages,
-        render_state.melds_by_player,
-        current_round_events,
-        same_jun_marker_indices_by_seat=(
-            same_jun_marker_indices_by_seat
-            if same_jun_marker_indices_by_seat is not None
-            else render_state.same_jun_marker_indices_by_seat
-        ),
-        phase_timings=discard_phase_timings,
-    )
-    _append_phase_timing(discard_phase_timings, "draw_incremental", discard_subphase_started_at)
-    _log_slow_discard_redraw(
-        canvas,
-        elapsed_ms=(time.perf_counter() - discard_started_at) * 1000.0,
-        phase_timings=discard_phase_timings,
-        previous_item_count=discard_previous_items,
-    )
+    # Do not redraw or delete `_LIVE_ASYNC_DISCARD_TAG` from async-only refreshes. River tiles,
+    # including called-discard borders, are updated only by the full/cached-layout table redraws.
 
     _delete_canvas_items_by_tags(canvas, _LIVE_DETAIL_OVERLAY_TAG)
     detail_previous_items = _capture_canvas_item_ids(canvas)
@@ -21043,7 +23281,7 @@ def _redraw_live_async_regions_if_possible(
         previous_item_ids=hand_previous_items,
     )
     canvas.current_player_names_by_seat = render_state.player_names_by_seat
-    canvas.current_player_alert_indicators_by_seat = player_alert_indicators_by_seat
+    canvas.current_player_alert_indicators_by_seat = current_player_alert_indicators_by_seat
     canvas.live_async_render_state = replace(
         render_state,
         discard_map={
@@ -21057,11 +23295,7 @@ def _redraw_live_async_regions_if_possible(
                 auto_table_situation_scores_by_seat
             )
         ),
-        same_jun_marker_indices_by_seat=(
-            _normalize_same_jun_marker_indices_by_seat(same_jun_marker_indices_by_seat)
-            if same_jun_marker_indices_by_seat is not None
-            else render_state.same_jun_marker_indices_by_seat
-        ),
+        same_jun_marker_indices_by_seat=current_same_jun_marker_indices_by_seat,
     )
     return True
 

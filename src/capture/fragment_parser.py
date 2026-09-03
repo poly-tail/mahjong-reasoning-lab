@@ -6,9 +6,16 @@ from io import StringIO
 import json
 import logging
 import re
+import time
 import xml.etree.ElementTree as et
 from typing import Any, Iterable, Literal, Optional
 
+from capture.discard_ledger import DiscardResetReason
+from capture.live_river_store import (
+    RiverMutationError,
+    RiverProjectionSource,
+    RiverResetAuthority,
+)
 from capture.meld_decoder import decode_meld
 from capture.state import (
     CaptureState,
@@ -36,7 +43,8 @@ from capture.state import (
     tenhou_room_class_label,
     tile136_to_tile37,
 )
-from sutehai import Player
+from runtime_paths import DEFAULT_LIVE_CAPTURE_LOG_PATH
+from sutehai import DrawType, Player
 
 # logger の定義。
 logger = logging.getLogger(__name__)
@@ -94,11 +102,24 @@ PARSER_MODE_SPECTATOR_LIVE = "spectator_live"
 PARSER_MODE_XML = "xml_log"
 # SPECTATOR_INIT_TAGS の集合。
 SPECTATOR_INIT_TAGS = {"INITBYLOG", "WGC"}
+DISCARD_RESET_ALLOWED_TAGS = {"INIT", "REINIT"}
 # SNAPSHOT_ROUND_REUSE_MIN_DISCARD_MATCH_RATIO の定義。
 SNAPSHOT_ROUND_REUSE_MIN_DISCARD_MATCH_RATIO = 0.8
 # LAG_THRESHOLD_SECONDS の定義。
 LAG_THRESHOLD_SECONDS = 0.005
 CLIENT_DISCARD_REQUEST_RAW_TAG_PREFIX = "CLIENT_DISCARD_REQUEST:"
+
+
+def _append_parser_diagnostic_log(message: str) -> None:
+    """Append one parser diagnostic line to the live-capture log."""
+
+    try:
+        DEFAULT_LIVE_CAPTURE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with DEFAULT_LIVE_CAPTURE_LOG_PATH.open("a", encoding="utf-8") as handle:
+            now_text = time.strftime("%Y-%m-%d %H:%M:%S")
+            handle.write(f"[{now_text}] {message}\n")
+    except OSError:
+        return
 
 
 @dataclass(frozen=True)
@@ -177,6 +198,8 @@ class SnapshotDiscardComparison:
     snapshot_total_visible_discards: int
     # is_append_only_extension を保持する。
     is_append_only_extension: bool
+    # True when the snapshot is a shorter/equal prefix of the already packet-captured rivers.
+    is_snapshot_prefix_of_current: bool
 
     @property
     def match_ratio(self) -> float:
@@ -508,7 +531,82 @@ def _has_live_session_payload(state: GameState) -> bool:
         or state.live_last_draw_tile_136 is not None
         or bool(state.live_meld_tiles_136)
         or bool(state.live_dora_indicator_tiles_136)
+        or any(
+            int(count or 0) > 0
+            for count in getattr(
+                state.live_river_store,
+                "counts_by_seat",
+                lambda: {},
+            )().values()
+        )
     )
+
+
+def _live_river_has_discards(state: GameState) -> bool:
+    """Return whether the long-lived base river already has authoritative tiles."""
+
+    river_store = getattr(state, "live_river_store", None)
+    if river_store is None:
+        return False
+    try:
+        return any(int(count or 0) > 0 for count in river_store.counts_by_seat().values())
+    except Exception:  # noqa: BLE001 - diagnostics must not break live parsing.
+        return False
+
+
+def _live_river_round_key_tuple(state: GameState) -> tuple[object, object, object, object] | None:
+    """Return the stored LiveRiverStore round key when it is precise enough to compare."""
+
+    river_store = getattr(state, "live_river_store", None)
+    round_key = getattr(river_store, "round_key", None)
+    if not (isinstance(round_key, tuple) and len(round_key) >= 5):
+        return None
+    # build_round_key shape: (game_id, kyoku, honba, kyotaku, oya).
+    key = (round_key[1], round_key[2], round_key[3], round_key[4])
+    if all(value is not None for value in key):
+        return key
+    return None
+
+
+def _snapshot_round_key_tuple(attrs: dict[str, Any]) -> tuple[object, object, object, object] | None:
+    """Return the snapshot round tuple if seed/oya identify a concrete round."""
+
+    seed = parse_csv_int_list(attrs.get("seed"))
+    snapshot_kyoku = seed[0] if len(seed) >= 1 else None
+    snapshot_honba = seed[1] if len(seed) >= 2 else None
+    snapshot_kyotaku = seed[2] if len(seed) >= 3 else None
+    snapshot_oya = _safe_int(attrs.get("oya"))
+    key = (snapshot_kyoku, snapshot_honba, snapshot_kyotaku, snapshot_oya)
+    if all(value is not None for value in key):
+        return key
+    return None
+
+
+def _snapshot_is_confirmed_different_from_live_river(
+    state: GameState,
+    attrs: dict[str, Any],
+) -> bool:
+    """Return whether snapshot metadata proves a different LiveRiverStore round.
+
+    A non-empty LiveRiverStore is the base-river authority.  INITBYLOG/WGC/REINIT
+    snapshots are lossy projections, so they may reset the store only when their
+    metadata proves a different round.  The game id is the strongest proof: East
+    1 in a new hanchan has the same kyoku/honba/oya tuple as the previous hanchan,
+    so comparing only seed/oya would incorrectly keep the previous river.
+    """
+
+    river_store = getattr(state, "live_river_store", None)
+    live_round_key = getattr(river_store, "round_key", None)
+    if isinstance(live_round_key, tuple) and live_round_key:
+        live_game_id = live_round_key[0]
+        snapshot_game_id = attrs.get("log") or attrs.get("id")
+        if live_game_id is not None and snapshot_game_id is not None:
+            if str(live_game_id) != str(snapshot_game_id):
+                return True
+
+    live_key = _live_river_round_key_tuple(state)
+    snapshot_key = _snapshot_round_key_tuple(attrs)
+    return live_key is not None and snapshot_key is not None and live_key != snapshot_key
 
 
 def _reset_live_hanchan_state(
@@ -533,6 +631,15 @@ def _reset_live_hanchan_state(
     previous_room_class_code = state.room_class_code
     previous_room_class_label = state.room_class_label
     state.reset_live_session(preserve_player_metadata=preserve_player_metadata)
+    blocked_live_river_reset = None
+    try:
+        state.reset_live_river_for_authoritative_new_round(
+            authority=RiverResetAuthority.MANUAL_USER_RESET,
+            round_key=None,
+            reset_source="live_hanchan_resync",
+        )
+    except RiverMutationError as exc:
+        blocked_live_river_reset = str(exc)
     state.go_type = previous_go_type
     state.room_class_code = previous_room_class_code
     state.room_class_label = previous_room_class_label
@@ -548,6 +655,7 @@ def _reset_live_hanchan_state(
             "previous_round_id": previous_round_id,
             "previous_signature": list(previous_signature) if previous_signature is not None else None,
             "next_signature": list(next_signature) if next_signature is not None else None,
+            "blocked_live_river_reset": blocked_live_river_reset,
         }
     )
     state.prune_live_history()
@@ -951,9 +1059,28 @@ def _start_round_from_init(
     round_state = state.begin_round(started_from_init_like=True)
     _apply_round_header(state, round_state, attrs, reset_dora=True)
     _sync_round_identity(state, round_state, preserve_existing=False)
+    state.reset_live_river_for_authoritative_new_round(
+        authority=RiverResetAuthority.INIT_NEW_ROUND,
+        round_key=round_state.round_key,
+        allow_non_empty_clear=True,
+        reset_source="parse_init",
+    )
     round_state.raw_attrs = _copy_attr_dict(attrs)
     round_state.raw_init_attrs = _copy_attr_dict(attrs)
+    round_state.snapshot_event_type = "init"
     return round_state
+
+
+def _force_reset_live_state_for_init(state: GameState) -> None:
+    """Drop all live round/table state before applying an authoritative INIT."""
+
+    if state.parser_mode not in {PARSER_MODE_PLAYER_LIVE, PARSER_MODE_SPECTATOR_LIVE}:
+        return
+    state.reset_live_session(
+        preserve_player_metadata=True,
+        force_clear_discard_state=True,
+        preserve_hanchan_metadata=True,
+    )
 
 
 def _mark_round_snapshot_bootstrap(state: GameState, round_state: RoundState) -> None:
@@ -985,7 +1112,6 @@ def _prepare_round_for_reinit(
 def _reset_round_runtime_snapshot(round_state: RoundState) -> None:
     """Clear runtime-mutated fields before applying a REINIT overwrite."""
 
-    round_state.discards = _empty_seat_list_map()
     round_state.melds = _empty_seat_list_map()
     round_state.draws = _empty_seat_list_map()
     round_state.last_draw_tiles_136 = {seat: None for seat in range(SEAT_COUNT)}
@@ -1050,7 +1176,10 @@ def _client_discard_request_can_apply_optimistically(
     if isinstance(thinking_start, tuple) and len(thinking_start) >= 2:
         thinking_source = str(thinking_start[1] or "")
     if thinking_source not in {"call", "draw"}:
-        return False
+        return (
+            not round_state.current_hands_136.get(LOCAL_RELATIVE_SEAT)
+            and not round_state.started_from_init_like
+        )
     concealed_count = len(round_state.current_hands_136.get(LOCAL_RELATIVE_SEAT, ()))
     return concealed_count > 0 and concealed_count % 3 == 2
 
@@ -1066,7 +1195,8 @@ def _client_discard_request_reject_reason(
         return "no_current_round"
     if seat != LOCAL_RELATIVE_SEAT:
         return "not_self_seat"
-    if tile_136 not in round_state.current_hands_136.get(seat, []):
+    known_hand_tiles = round_state.current_hands_136.get(seat, [])
+    if known_hand_tiles and tile_136 not in known_hand_tiles:
         return "tile_not_in_current_hand"
     if _latest_matching_client_discard_request(round_state, seat, tile_136) is not None:
         return "already_pending_confirmation"
@@ -1194,8 +1324,9 @@ def _build_display_hand_tiles(
 def _rebuild_tracker_from_round(state: GameState) -> None:
     """Rebuild the legacy discard tracker from the current round snapshot."""
 
-    for player in Player:
-        state.tracker.discards[player].clear()
+    if _live_river_has_discards(state):
+        _rebuild_tracker_from_live_river_store(state)
+        return
 
     round_state = state.current_round
     if round_state is None:
@@ -1203,19 +1334,29 @@ def _rebuild_tracker_from_round(state: GameState) -> None:
 
     for seat in range(SEAT_COUNT):
         player = Player(seat)
-        for discard in round_state.discards[seat]:
+        tracker_discards = state.tracker.discards[player]
+        for index, discard in enumerate(round_state.discards[seat]):
             tile_id = tile136_to_tile37(discard.tile_136)
             if tile_id is None:
                 continue
-            state.tracker.add_discard(
-                player,
-                tile_id,
-                tsumogiri=discard.tsumogiri,
-                called=discard.called,
-                tag=discard.raw_tag,
-                riichi_marker_before=discard.riichi_marker_before,
-            )
-            tracker_discard = state.tracker.discards[player][-1]
+            if index < len(tracker_discards):
+                tracker_discard = tracker_discards[index]
+                tracker_discard.tile_id = tile_id
+                tracker_discard.draw_type = (
+                    DrawType.TSUMOGIRI if discard.tsumogiri else DrawType.TEDASHI
+                )
+                tracker_discard.called = discard.called
+                tracker_discard.tag = discard.raw_tag
+                tracker_discard.riichi_marker_before = discard.riichi_marker_before
+            else:
+                tracker_discard = state.tracker.add_discard(
+                    player,
+                    tile_id,
+                    tsumogiri=discard.tsumogiri,
+                    called=discard.called,
+                    tag=discard.raw_tag,
+                    riichi_marker_before=discard.riichi_marker_before,
+                )
             tracker_discard.riichi_marker_before = discard.riichi_marker_before
             tracker_discard.thinking_time_ms = discard.thinking_time_ms
             tracker_discard.thinking_time_source = discard.thinking_time_source
@@ -1232,6 +1373,105 @@ def _rebuild_tracker_from_round(state: GameState) -> None:
             # so snapshot rebuilds must preserve stable discard ordering metadata here too.
             tracker_discard.round_discard_index = discard.round_discard_index
             tracker_discard.event_index = discard.event_index
+
+
+def _clear_live_tracker_discards(state: GameState) -> None:
+    """Clear the current-round renderer discard arrays without replacing the tracker object."""
+
+    state.tracker.reset_discards(reason="reinit_different_round")
+
+
+def _rebuild_tracker_from_live_river_store(state: GameState) -> None:
+    """Rebuild the legacy tracker as a derived view of the long-lived base river."""
+
+    river_store = getattr(state, "live_river_store", None)
+    if river_store is None:
+        return
+
+    for seat in range(SEAT_COUNT):
+        player = Player(seat)
+        tracker_discards = state.tracker.discards[player]
+        for index, discard in enumerate(river_store.snapshot_by_seat().get(seat, ())):
+            tile_id = tile136_to_tile37(getattr(discard, "tile_136", None))
+            if tile_id is None:
+                continue
+            discard_tsumogiri = bool(getattr(discard, "tsumogiri", False))
+            discard_called = bool(getattr(discard, "called", False))
+            discard_tag = getattr(discard, "raw_tag", None)
+            discard_riichi_marker_before = bool(
+                getattr(discard, "riichi_marker_before", False)
+            )
+            if index < len(tracker_discards):
+                tracker_discard = tracker_discards[index]
+                tracker_discard.tile_id = tile_id
+                tracker_discard.draw_type = (
+                    DrawType.TSUMOGIRI if discard_tsumogiri else DrawType.TEDASHI
+                )
+                tracker_discard.called = discard_called
+                tracker_discard.tag = discard_tag
+                tracker_discard.riichi_marker_before = discard_riichi_marker_before
+            else:
+                tracker_discard = state.tracker.add_discard(
+                    player,
+                    tile_id,
+                    tsumogiri=discard_tsumogiri,
+                    called=discard_called,
+                    tag=discard_tag,
+                    riichi_marker_before=discard_riichi_marker_before,
+                )
+            tracker_discard.riichi_marker_before = bool(
+                getattr(discard, "riichi_marker_before", False)
+            )
+            tracker_discard.thinking_time_ms = getattr(discard, "thinking_time_ms", None)
+            tracker_discard.thinking_time_source = getattr(discard, "thinking_time_source", None)
+            tracker_discard.thinking_time_before_reach_ms = getattr(
+                discard,
+                "thinking_time_before_reach_ms",
+                None,
+            )
+            tracker_discard.thinking_time_before_reach_source = getattr(
+                discard,
+                "thinking_time_before_reach_source",
+                None,
+            )
+            tracker_discard.self_hand_tiles_before_discard_136 = list(
+                getattr(discard, "self_hand_tiles_before_discard_136", ()) or ()
+            )
+            tracker_discard.lagged = int(getattr(discard, "lagged", 0) or 0)
+            tracker_discard.lag_delay_ms = getattr(discard, "lag_delay_ms", None)
+            tracker_discard.round_discard_index = getattr(discard, "round_discard_index", None)
+            tracker_discard.event_index = int(getattr(discard, "event_index", -1) or -1)
+
+
+def _begin_packet_capture_round(state: GameState) -> RoundState:
+    """Start a drawable provisional round from live packets when INIT/REINIT is unavailable."""
+
+    round_state = state.begin_round(started_from_init_like=False)
+    if _live_river_has_discards(state):
+        # A transient RoundState drop must not turn the next discard/call packet into a river
+        # reset. Only INIT/REINIT may clear the base river once it has tiles.
+        _rebuild_tracker_from_live_river_store(state)
+        return round_state
+    # Packet-first mode has no INIT packet to define the base-river boundary.
+    # Treat this provisional round start as authoritative so an old round's
+    # long-lived river cannot leak into the new packet-created round.
+    state.reset_live_river_for_authoritative_new_round(
+        authority=RiverResetAuthority.INIT_NEW_ROUND,
+        round_key=round_state.round_key,
+        reset_source="packet_first_round",
+    )
+    _rebuild_tracker_from_live_river_store(state)
+    return round_state
+
+
+def _ensure_packet_capture_round(state: GameState) -> RoundState:
+    """Return an open round for packet-first live updates."""
+
+    if state.current_round is None:
+        return _begin_packet_capture_round(state)
+    if state.current_round.result is not None:
+        return _begin_packet_capture_round(state)
+    return state.ensure_round()
 
 
 def _has_seat_payload(attrs: dict[str, Any], prefix: str) -> bool:
@@ -1299,46 +1539,97 @@ def _carry_over_snapshot_discard_metadata(
             _copy_discard_runtime_metadata(existing_discard, snapshot_discards[index])
 
 
+def _snapshot_discard_tile34_for_merge(discard: Discard) -> int | None:
+    """Return the tile kind used to align a full discard history with a visible snapshot."""
+
+    if discard.tile_34 is not None:
+        return int(discard.tile_34)
+    if 0 <= int(discard.tile_136) <= 135:
+        return int(discard.tile_136) // 4
+    return None
+
+
+def _mark_snapshot_omitted_discard_as_called(discard: Discard) -> Discard:
+    """Keep a history slot omitted from REINIT kawa and mark it as called."""
+
+    discard.called = True
+    if getattr(discard, "lagged", None) in (None, 0):
+        discard.lagged = LAG_FLAG_TRUE_CALLED
+    return discard
+
+
+def _snapshot_discard_slot_matches(previous_discard: Discard, snapshot_discard: Discard) -> bool:
+    """Return whether two discard objects represent the same tile kind."""
+
+    previous_tile34 = _snapshot_discard_tile34_for_merge(previous_discard)
+    snapshot_tile34 = _snapshot_discard_tile34_for_merge(snapshot_discard)
+    return (
+        previous_tile34 is not None
+        and snapshot_tile34 is not None
+        and previous_tile34 == snapshot_tile34
+    )
+
+
 def _merge_snapshot_discards_with_previous_history(
     snapshot_discards: list[Discard],
     previous_discards: list[Discard] | None,
 ) -> list[Discard]:
-    """Keep previously called discards in history while overlaying the new visible snapshot.
+    """Merge a lossy REINIT/visible river snapshot into the full discard history.
 
-    Tenhou REINIT rivers only expose still-visible discards. Previously called tiles can therefore
-    disappear from `kawa0..kawa3`, but the internal round history should keep them so lag/call
-    metadata and discard ordering survive browser reload recovery.
+    Tenhou REINIT rivers only expose still-visible discards. Previously called tiles, and
+    sometimes tiles consumed by a call before parser-side `N` handling completes, can disappear
+    from `kawa0..kawa3`. Same-round snapshot data is a projection, not an authoritative
+    replacement for `round_state.discards`.
+
+    The merge keeps same-round history append-only: matched visible slots reuse snapshot objects
+    with previous runtime metadata copied over, omitted previous slots are retained as
+    `called=True`, and snapshot-only tail slots are appended.
     """
 
     if not previous_discards:
         return snapshot_discards
 
-    previous_visible_discards = _visible_snapshot_discards(previous_discards)
-    if len(snapshot_discards) < len(previous_visible_discards):
-        return snapshot_discards
-
-    expected_prefix = [discard.tile_136 for discard in previous_visible_discards]
-    actual_prefix = [discard.tile_136 for discard in snapshot_discards[: len(previous_visible_discards)]]
-    if actual_prefix != expected_prefix:
-        return snapshot_discards
+    previous_list = list(previous_discards)
+    snapshot_list = list(snapshot_discards)
+    if not snapshot_list:
+        return [
+            previous_discard
+            if bool(getattr(previous_discard, "called", False))
+            else _mark_snapshot_omitted_discard_as_called(previous_discard)
+            for previous_discard in previous_list
+        ]
 
     merged_discards: list[Discard] = []
     snapshot_index = 0
-
-    # Rebuild the previous full discard sequence, replacing only the still-visible tiles with the
-    # snapshot copies. Called tiles stay in-place even though REINIT no longer lists them in kawa.
-    for previous_discard in previous_discards:
-        if previous_discard.called:
+    for previous_discard in previous_list:
+        if bool(getattr(previous_discard, "called", False)):
             merged_discards.append(previous_discard)
+            if (
+                snapshot_index < len(snapshot_list)
+                and bool(getattr(snapshot_list[snapshot_index], "called", False))
+                and _snapshot_discard_slot_matches(
+                    previous_discard,
+                    snapshot_list[snapshot_index],
+                )
+            ):
+                snapshot_index += 1
             continue
-        if snapshot_index >= len(snapshot_discards):
-            return snapshot_discards
-        merged_discards.append(snapshot_discards[snapshot_index])
-        snapshot_index += 1
 
-    while snapshot_index < len(snapshot_discards):
-        merged_discards.append(snapshot_discards[snapshot_index])
-        snapshot_index += 1
+        if snapshot_index >= len(snapshot_list):
+            merged_discards.append(_mark_snapshot_omitted_discard_as_called(previous_discard))
+            continue
+
+        snapshot_discard = snapshot_list[snapshot_index]
+        if _snapshot_discard_slot_matches(previous_discard, snapshot_discard):
+            _copy_discard_runtime_metadata(previous_discard, snapshot_discard)
+            merged_discards.append(snapshot_discard)
+            snapshot_index += 1
+            continue
+
+        merged_discards.append(_mark_snapshot_omitted_discard_as_called(previous_discard))
+
+    if snapshot_index < len(snapshot_list):
+        merged_discards.extend(snapshot_list[snapshot_index:])
 
     return merged_discards
 
@@ -1410,28 +1701,54 @@ def _apply_snapshot_kawa_payload(
     *,
     previous_discards: dict[int, list[Discard]] | None,
     clear_existing: bool,
+    projection_source: RiverProjectionSource = RiverProjectionSource.REINIT_SAME_OR_UNKNOWN,
+    seed_live_river: bool = False,
 ) -> None:
     """Apply seat-indexed `kawa0..kawa3` payloads and preserve matching discard metadata."""
 
     if not _has_seat_payload(attrs, "kawa"):
+        _reindex_round_discards(round_state)
         return
     if clear_existing:
-        round_state.discards = _empty_seat_list_map()
+        round_state.reset_discards_for_new_round(
+            reason=DiscardResetReason.REINIT_DIFFERENT_ROUND
+        )
         round_state.reinit_kawa_raw = _empty_seat_list_map()
 
+    updated_seats: set[int] = set()
+    projection_by_seat: dict[int, list[Discard]] = _empty_seat_list_map()
     for source_seat in range(SEAT_COUNT):
         key = f"kawa{source_seat}"
         if key not in attrs:
             continue
         storage_seat = _source_seat_to_storage_seat(state, source_seat)
+        updated_seats.add(storage_seat)
         raw_kawa, discards = _parse_reinit_kawa(attrs.get(key))
         round_state.reinit_kawa_raw[storage_seat] = raw_kawa
-        round_state.discards[storage_seat] = _merge_snapshot_discards_with_previous_history(
-            discards,
-            previous_discards.get(storage_seat) if previous_discards is not None else None,
-        )
+        projection_by_seat[storage_seat] = discards
 
-    _carry_over_snapshot_discard_metadata(round_state, previous_discards)
+    if previous_discards is not None:
+        for seat in range(SEAT_COUNT):
+            if seat not in updated_seats:
+                projection_by_seat[seat] = list(previous_discards.get(seat, []))
+
+    state.live_river_store.store_projection_only(
+        source=projection_source,
+        projection_by_seat=projection_by_seat,
+    )
+    if seed_live_river:
+        for seat in range(SEAT_COUNT):
+            state.live_river_store.append_many(
+                seat=seat,
+                discards=projection_by_seat.get(seat, ()),
+            )
+
+    if seed_live_river:
+        round_state.apply_discard_projection_non_destructive(
+            projection_by_seat=projection_by_seat,
+            source="snapshot_kawa",
+        )
+        _carry_over_snapshot_discard_metadata(round_state, previous_discards)
     _reindex_round_discards(round_state)
 
 
@@ -1666,27 +1983,36 @@ def _mark_called_discard(state: GameState, round_state: RoundState, meld: Meld) 
     if source_seat is None or source_seat == meld.who:
         return
 
-    round_discards = round_state.discards[source_seat]
-    called_round_index: int | None = None
-    for index in range(len(round_discards) - 1, -1, -1):
-        discard = round_discards[index]
-        if discard.tile_136 != meld.called_tile_id or discard.called:
-            continue
-        discard.called = True
-        discard.lagged = LAG_FLAG_TRUE_CALLED
-        called_round_index = index
-        break
+    called_live_index = state.live_river_store.mark_called(
+        source_seat=source_seat,
+        called_tile_136=meld.called_tile_id,
+        called_tile_34=int(meld.called_tile_id) // 4,
+        lagged=LAG_FLAG_TRUE_CALLED,
+    )
+    called_round_index = round_state.mark_discard_called(
+        source_seat=source_seat,
+        called_tile_136=meld.called_tile_id,
+        called_tile_34=int(meld.called_tile_id) // 4,
+        lagged=LAG_FLAG_TRUE_CALLED,
+    )
+    effective_called_index = (
+        called_live_index if called_live_index is not None else called_round_index
+    )
+    live_discards = list(state.live_river_store.snapshot_by_seat().get(source_seat, ()))
 
     tracker_discards = state.tracker.discards[Player(source_seat)]
-    if called_round_index is not None and called_round_index < len(tracker_discards):
-        tracker_discards[called_round_index].called = True
+    if effective_called_index is not None and effective_called_index < len(tracker_discards):
+        tracker_discards[effective_called_index].called = True
+        lag_delay_ms = None
+        if effective_called_index < len(live_discards):
+            lag_delay_ms = getattr(live_discards[effective_called_index], "lag_delay_ms", None)
         _set_discard_lag_metadata(
             state,
             round_state,
             source_seat,
-            called_round_index,
+            effective_called_index,
             lagged=LAG_FLAG_TRUE_CALLED,
-            lag_delay_ms=round_discards[called_round_index].lag_delay_ms,
+            lag_delay_ms=lag_delay_ms,
         )
         return
 
@@ -1800,14 +2126,19 @@ def _compare_snapshot_discards(
     snapshot_total = 0
     matched_prefix_total = 0
     is_append_only_extension = True
+    is_snapshot_prefix_of_current = True
 
     for seat in range(SEAT_COUNT):
+        # Compare by tile kind, not exact 136 id.  REINIT/INITBYLOG snapshots often allocate
+        # a different physical copy of the same tile than the live packet path did; treating that
+        # as a different round makes the parser rebuild the river and is one source of
+        # call-time discard disappearance.  Called discards are omitted from visible snapshots.
         current_tiles = [
-            discard.tile_136
+            int(discard.tile_136) // 4
             for discard in current_round.discards.get(seat, [])
-            if not discard.called
+            if not discard.called and 0 <= int(discard.tile_136) <= 135
         ]
-        snapshot_tiles = list(snapshot_discards.get(seat, []))
+        snapshot_tiles = [int(tile_136) // 4 for tile_136 in snapshot_discards.get(seat, [])]
         current_total += len(current_tiles)
         snapshot_total += len(snapshot_tiles)
 
@@ -1820,12 +2151,15 @@ def _compare_snapshot_discards(
 
         if seat_prefix_length != len(current_tiles) or len(snapshot_tiles) < len(current_tiles):
             is_append_only_extension = False
+        if seat_prefix_length != len(snapshot_tiles):
+            is_snapshot_prefix_of_current = False
 
     return SnapshotDiscardComparison(
         matched_prefix_discards=matched_prefix_total,
         current_total_visible_discards=current_total,
         snapshot_total_visible_discards=snapshot_total,
         is_append_only_extension=is_append_only_extension,
+        is_snapshot_prefix_of_current=is_snapshot_prefix_of_current,
     )
 
 
@@ -1857,8 +2191,10 @@ def _snapshot_can_reuse_current_round(
 
     # Exact prefix reuse is stronger than the coarse ratio heuristic. This keeps the current round
     # alive even early in a hand, where "same prefix + one extra discard" would otherwise score
-    # below the threshold and incorrectly look like a round change.
-    if comparison.is_append_only_extension:
+    # below the threshold and incorrectly look like a round change. A shorter REINIT prefix is also
+    # the same recovery stream: packet-captured rivers must not be discarded just because snapshot
+    # recovery lags behind live drawing.
+    if comparison.is_append_only_extension or comparison.is_snapshot_prefix_of_current:
         return True
     return comparison.match_ratio >= SNAPSHOT_ROUND_REUSE_MIN_DISCARD_MATCH_RATIO
 
@@ -1871,6 +2207,11 @@ def _reinit_requires_new_round(
     """Decide whether a REINIT snapshot belongs to a different round."""
 
     if current_round is None:
+        # A UI/bridge reset can temporarily drop RoundState while the long-lived base river still
+        # contains the active hand. REINIT/WGC/bridge snapshots are visible projections; do not let
+        # them reset/seed the base river unless their complete round key proves a different round.
+        if _live_river_has_discards(state):
+            return _snapshot_is_confirmed_different_from_live_river(state, attrs)
         return True
 
     seed = parse_csv_int_list(attrs.get("seed"))
@@ -1881,13 +2222,43 @@ def _reinit_requires_new_round(
     current_oya = current_round.oya_abs if _is_xml_log_source(state) else current_round.oya
     current_key = (current_round.kyoku_index, current_round.honba, current_oya)
 
-    if any(value is not None for value in snapshot_key) and snapshot_key != current_key:
-        return True
     if current_round.result is not None:
         return True
-    if not _snapshot_can_reuse_current_round(state, current_round, attrs):
+
+    has_snapshot_round_key = all(value is not None for value in snapshot_key)
+    has_current_round_key = all(value is not None for value in current_key)
+
+    # A live round that started from packets can lack kyoku/honba/oya until a later REINIT/WGC
+    # recovery snapshot arrives.  Treat that snapshot as metadata for the current round instead of
+    # starting a new round; otherwise the visible-only kawa payload replaces the packet river and
+    # called discards disappear exactly after a call.
+    if has_snapshot_round_key and has_current_round_key and snapshot_key != current_key:
+        # If the LiveRiverStore already owns a river for an unknown/incomplete RoundState, prefer
+        # the store's key as the reset authority. Otherwise a lossy REINIT/WGC snapshot can wipe a
+        # just-called river because RoundState metadata lagged behind packet capture.
+        if _live_river_has_discards(state):
+            return _snapshot_is_confirmed_different_from_live_river(state, attrs)
         return True
-    return False
+
+    if not _has_seat_payload(attrs, "kawa"):
+        return False
+
+    if has_snapshot_round_key and has_current_round_key and snapshot_key == current_key:
+        return False
+
+    if _snapshot_can_reuse_current_round(state, current_round, attrs):
+        return False
+
+    # If the current round key is incomplete, a mismatch cannot prove a new round.  Stay
+    # conservative and keep the packet-captured history append-only.  True round changes are
+    # handled by INIT/AGARI/RYUUKYOKU boundaries.
+    if not has_current_round_key and (
+        any(current_round.discards.get(seat) for seat in range(SEAT_COUNT))
+        or _live_river_has_discards(state)
+    ):
+        return False
+
+    return True
 
 
 def _validate_tile_ids(tile_ids: Iterable[int], label: str) -> list[str]:
@@ -2111,6 +2482,7 @@ def parse_un(state: GameState, timestamp: Optional[float], parsed: ParsedTag) ->
 def parse_init(state: GameState, timestamp: Optional[float], parsed: ParsedTag) -> Event:
     """Create a new round snapshot from INIT using the active seat view."""
 
+    _force_reset_live_state_for_init(state)
     round_state = _start_round_from_init(state, parsed.attrs)
     _mark_round_snapshot_bootstrap(state, round_state)
     _clear_pending_response_discard(round_state)
@@ -2130,8 +2502,10 @@ def parse_init(state: GameState, timestamp: Optional[float], parsed: ParsedTag) 
         parsed.attrs,
         previous_discards=None,
         clear_existing=False,
+        projection_source=RiverProjectionSource.REINIT_SAME_OR_UNKNOWN,
+        seed_live_river=True,
     )
-    _rebuild_tracker_from_round(state)
+    _rebuild_tracker_from_live_river_store(state)
     for melds in round_state.melds.values():
         for meld in melds:
             _mark_called_discard(state, round_state, meld)
@@ -2149,12 +2523,28 @@ def parse_init(state: GameState, timestamp: Optional[float], parsed: ParsedTag) 
 def parse_reinit(state: GameState, timestamp: Optional[float], parsed: ParsedTag) -> Event:
     """Reconstruct the current round from a REINIT snapshot using the active seat view."""
 
+    reinit_created_new_round = _reinit_requires_new_round(
+        state,
+        state.current_round,
+        parsed.attrs,
+    )
     round_state = _prepare_round_for_reinit(state, parsed.attrs)
+    if reinit_created_new_round:
+        _clear_live_tracker_discards(state)
+        state.live_stable_discard_round_identity = None
+        state.live_stable_discard_map.clear()
+        state.reset_live_river_for_authoritative_new_round(
+            authority=RiverResetAuthority.REINIT_DIFFERENT_ROUND_CONFIRMED,
+            round_key=round_state.round_key,
+            allow_non_empty_clear=True,
+            reset_source="parse_reinit_different_round",
+        )
     _mark_round_snapshot_bootstrap(state, round_state)
     previous_discards = _capture_discard_metadata_seed(round_state)
     _clear_pending_response_discard(round_state)
     _reset_round_runtime_snapshot(round_state)
     round_state.raw_reinit_attrs = _copy_attr_dict(parsed.attrs)
+    round_state.snapshot_event_type = "reinit"
     hand_snapshot = _extract_hand_snapshot(parsed.attrs)
     _apply_reinit_hand_snapshot(state, round_state, hand_snapshot)
     _apply_snapshot_meld_payload(
@@ -2171,6 +2561,8 @@ def parse_reinit(state: GameState, timestamp: Optional[float], parsed: ParsedTag
         parsed.attrs,
         previous_discards=previous_discards,
         clear_existing=False,
+        projection_source=RiverProjectionSource.REINIT_SAME_OR_UNKNOWN,
+        seed_live_river=reinit_created_new_round,
     )
     # REINIT overwrites runtime state, so restore riichi acceptance from the rebuilt snapshot
     # before the danger logic and tracker consumers read this round again.
@@ -2179,7 +2571,7 @@ def parse_reinit(state: GameState, timestamp: Optional[float], parsed: ParsedTag
     # When the REINIT river is just the current river plus a few appended tiles, the discard
     # objects for the shared prefix keep their old lag/thinking metadata via the carry-over path,
     # while the snapshot-only tail is added as fresh state for subsequent live packets to extend.
-    _rebuild_tracker_from_round(state)
+    _rebuild_tracker_from_live_river_store(state)
     for melds in round_state.melds.values():
         for meld in melds:
             _mark_called_discard(state, round_state, meld)
@@ -2222,7 +2614,7 @@ def parse_draw(state: GameState, timestamp: Optional[float], parsed: ParsedTag) 
     source_seat = DRAW_SEAT_MAP[match.group(1).upper()]
     seat = _source_seat_to_storage_seat(state, source_seat)
     tile_136 = _safe_int(match.group(2))
-    round_state = state.ensure_round()
+    round_state = _ensure_packet_capture_round(state)
     _resolve_pending_response_discard(state, round_state, timestamp, resolved_by_call=False)
     if tile_136 is not None:
         round_state.draws[seat].append(tile_136)
@@ -2379,6 +2771,8 @@ def parse_client_discard_request(
         )
 
     round_state = state.current_round
+    if round_state is None or round_state.result is not None:
+        round_state = _begin_packet_capture_round(state)
     reject_reason = _client_discard_request_reject_reason(round_state, seat, tile_136)
     if reject_reason:
         return state.add_event(
@@ -2426,8 +2820,11 @@ def parse_client_discard_request(
         thinking_time_before_reach_ms=thinking_time_before_reach_ms,
         thinking_time_before_reach_source=thinking_time_before_reach_source,
     )
-    round_state.discards[seat].append(discard)
-    discard.round_discard_index = sum(len(discards) for discards in round_state.discards.values()) - 1
+    round_state.append_discard(seat, discard)
+    state.live_river_store.append_discard(seat=seat, discard=discard)
+    discard.round_discard_index = (
+        sum(state.live_river_store.counts_by_seat().values()) - 1
+    )
     _remove_tile_from_hand(round_state.current_hands_136[seat], tile_136)
     round_state.last_draw_tiles_136[seat] = None
 
@@ -2489,7 +2886,7 @@ def parse_discard(state: GameState, timestamp: Optional[float], parsed: ParsedTa
     source_seat = DISCARD_SEAT_MAP[match.group(2).upper()]
     seat = _source_seat_to_storage_seat(state, source_seat)
     tile_136 = int(match.group(3))
-    round_state = state.ensure_round()
+    round_state = _ensure_packet_capture_round(state)
     if _latest_matching_client_discard_request(round_state, seat, tile_136) is not None:
         return _confirm_client_discard_request(
             state,
@@ -2533,8 +2930,11 @@ def parse_discard(state: GameState, timestamp: Optional[float], parsed: ParsedTa
         thinking_time_before_reach_ms=thinking_time_before_reach_ms,
         thinking_time_before_reach_source=thinking_time_before_reach_source,
     )
-    round_state.discards[seat].append(discard)
-    discard.round_discard_index = sum(len(discards) for discards in round_state.discards.values()) - 1
+    round_state.append_discard(seat, discard)
+    state.live_river_store.append_discard(seat=seat, discard=discard)
+    discard.round_discard_index = (
+        sum(state.live_river_store.counts_by_seat().values()) - 1
+    )
     _remove_tile_from_hand(round_state.current_hands_136[seat], tile_136)
     round_state.last_draw_tiles_136[seat] = None
 
@@ -2605,7 +3005,7 @@ def parse_n(state: GameState, timestamp: Optional[float], parsed: ParsedTag) -> 
             attrs=_copy_attrs_with_mapped_seats(state, attrs, "who"),
         )
 
-    round_state = state.ensure_round()
+    round_state = _ensure_packet_capture_round(state)
     try:
         meld = decode_meld(seat, meld_code)
     except ValueError as exc:
@@ -2642,7 +3042,7 @@ def parse_n(state: GameState, timestamp: Optional[float], parsed: ParsedTag) -> 
 def parse_reach(state: GameState, timestamp: Optional[float], parsed: ParsedTag) -> Event:
     """Parse REACH step 1 / 2 and update the round reach state."""
 
-    round_state = state.ensure_round()
+    round_state = _ensure_packet_capture_round(state)
     seat_abs = _safe_int(parsed.attrs.get("who"))
     seat = _source_seat_to_storage_seat(state, seat_abs) if seat_abs is not None else None
     step = _safe_int(parsed.attrs.get("step"))
@@ -2673,7 +3073,7 @@ def parse_reach(state: GameState, timestamp: Optional[float], parsed: ParsedTag)
 def parse_dora(state: GameState, timestamp: Optional[float], parsed: ParsedTag) -> Event:
     """Parse DORA indicator reveals."""
 
-    round_state = state.ensure_round()
+    round_state = _ensure_packet_capture_round(state)
     tile_136 = _safe_int(parsed.attrs.get("hai"))
     if tile_136 is not None and tile_136 not in round_state.dora_indicators_136:
         round_state.dora_indicators_136.append(tile_136)
@@ -2748,20 +3148,63 @@ def parse_spectator_init(state: GameState, timestamp: Optional[float], parsed: P
         key in attrs for key in ("seed", "ten", "oya", "hai", "hai0", "hai1", "hai2", "hai3")
     ) or _has_seat_payload(attrs, "m") or _has_seat_payload(attrs, "kawa")
     if should_touch_round:
-        # INIT-like spectator snapshots should always start fresh. Only REINIT is allowed to
-        # compare against the current round and reuse lag / thinking metadata.
-        state.begin_round(started_from_init_like=True)
-        round_state = state.ensure_round()
-        round_state.started_from_init_like = True
-        _mark_round_snapshot_bootstrap(state, round_state)
-        previous_discards = None
-        _clear_pending_response_discard(round_state)
+        current_round = state.current_round
+        confirmed_different_live_river_round = _snapshot_is_confirmed_different_from_live_river(
+            state,
+            attrs,
+        )
+        if confirmed_different_live_river_round:
+            reuse_existing_round = False
+        else:
+            reuse_existing_round = (
+                _live_river_has_discards(state)
+                or (
+                    current_round is not None
+                    and not _reinit_requires_new_round(state, current_round, attrs)
+                )
+            )
+        if reuse_existing_round:
+            # Spectator INITBYLOG/WGC packets can be same-round snapshots, not true new rounds.
+            # Reusing the round keeps the packet-captured discard history append-only; the kawa
+            # payload is only a visible projection and may omit called tiles.
+            round_state = state.ensure_round()
+            previous_discards = _capture_discard_metadata_seed(round_state)
+            _clear_pending_response_discard(round_state)
+            _reset_round_runtime_snapshot(round_state)
+            round_state.raw_reinit_attrs = _copy_attr_dict(attrs)
+            round_state.snapshot_event_type = parsed.normalized_tag.lower()
+            clear_existing = False
+        else:
+            state.begin_round(started_from_init_like=True)
+            round_state = state.ensure_round()
+            round_state.started_from_init_like = True
+            round_state.snapshot_event_type = parsed.normalized_tag.lower()
+            _mark_round_snapshot_bootstrap(state, round_state)
+            previous_discards = None
+            _clear_pending_response_discard(round_state)
+            clear_existing = True
         if any(key in attrs for key in ("seed", "ten", "oya")):
             _apply_round_header(
                 state,
                 round_state,
                 attrs,
-                reset_dora=parsed.normalized_tag == "INITBYLOG",
+                reset_dora=(parsed.normalized_tag == "INITBYLOG" and not reuse_existing_round),
+            )
+        if not reuse_existing_round:
+            _sync_round_identity(state, round_state, preserve_existing=False)
+            if confirmed_different_live_river_round:
+                reset_authority = RiverResetAuthority.REINIT_DIFFERENT_ROUND_CONFIRMED
+                reset_source = f"parse_{parsed.normalized_tag.lower()}_confirmed_different_round"
+                allow_non_empty_clear = True
+            else:
+                reset_authority = RiverResetAuthority.INIT_NEW_ROUND
+                reset_source = f"parse_{parsed.normalized_tag.lower()}_bootstrap"
+                allow_non_empty_clear = False
+            state.reset_live_river_for_authoritative_new_round(
+                authority=reset_authority,
+                round_key=round_state.round_key,
+                allow_non_empty_clear=allow_non_empty_clear,
+                reset_source=reset_source,
             )
         if "hai" in attrs or _has_seat_payload(attrs, "hai"):
             _apply_reinit_hand_snapshot(state, round_state, _extract_hand_snapshot(attrs))
@@ -2771,21 +3214,31 @@ def parse_spectator_init(state: GameState, timestamp: Optional[float], parsed: P
             attrs,
             timestamp=timestamp,
             raw_tag=parsed.raw_tag,
-            clear_existing=True,
+            clear_existing=clear_existing,
         )
         _apply_snapshot_kawa_payload(
             state,
             round_state,
             attrs,
             previous_discards=previous_discards,
-            clear_existing=True,
+            clear_existing=clear_existing,
+            projection_source=(
+                RiverProjectionSource.WGC
+                if parsed.normalized_tag == "WGC"
+                else RiverProjectionSource.INITBYLOG
+            ),
+            seed_live_river=not reuse_existing_round,
         )
         if _has_seat_payload(attrs, "m") or _has_seat_payload(attrs, "kawa"):
-            _rebuild_tracker_from_round(state)
+            _rebuild_tracker_from_live_river_store(state)
             for melds in round_state.melds.values():
                 for meld in melds:
                     _mark_called_discard(state, round_state, meld)
-        _sync_round_identity(state, round_state, preserve_existing=parsed.normalized_tag != "INITBYLOG")
+        _sync_round_identity(
+            state,
+            round_state,
+            preserve_existing=(parsed.normalized_tag != "INITBYLOG" or reuse_existing_round),
+        )
         _sync_live_state(state)
 
     return state.add_event(
@@ -2876,6 +3329,242 @@ def _parse_chat_like_tag(state: GameState, timestamp: Optional[float], parsed: P
     return state.add_event(timestamp, "chat_like", raw_tag=parsed.raw_tag, attrs=payload)
 
 
+def _counts_total(counts: dict[int, int]) -> int:
+    return sum(int(count or 0) for count in counts.values())
+
+
+def _live_river_counts_by_seat(state: GameState) -> dict[int, int]:
+    river_store = getattr(state, "live_river_store", None)
+    if river_store is None:
+        return {seat: 0 for seat in range(SEAT_COUNT)}
+    try:
+        raw_counts = river_store.counts_by_seat()
+    except Exception:  # noqa: BLE001 - diagnostics guard must not mask parser failures.
+        return {seat: 0 for seat in range(SEAT_COUNT)}
+    return {
+        seat: int(raw_counts.get(seat, 0) or 0)
+        for seat in range(SEAT_COUNT)
+    }
+
+
+def _round_discard_counts_by_seat(round_state: RoundState | None) -> dict[int, int]:
+    if round_state is None:
+        return {seat: 0 for seat in range(SEAT_COUNT)}
+    return {
+        seat: len(round_state.discards.get(seat, ()))
+        for seat in range(SEAT_COUNT)
+    }
+
+
+def _tracker_discard_counts_by_seat(state: GameState) -> dict[int, int]:
+    return {
+        int(player): len(state.tracker.discards.get(player, ()))
+        for player in Player
+    }
+
+
+def _assert_counts_not_shortened(
+    *,
+    before_counts: dict[int, int],
+    after_counts: dict[int, int],
+    context: str,
+    target: str,
+) -> None:
+    for seat in range(SEAT_COUNT):
+        before = int(before_counts.get(seat, 0) or 0)
+        after = int(after_counts.get(seat, 0) or 0)
+        if after < before:
+            raise RiverMutationError(
+                f"{target} shortened outside INIT/REINIT: "
+                f"context={context} seat={seat} before={before} after={after}"
+            )
+
+
+def _assert_counts_unchanged(
+    *,
+    before_counts: dict[int, int],
+    after_counts: dict[int, int],
+    context: str,
+    target: str,
+) -> None:
+    for seat in range(SEAT_COUNT):
+        before = int(before_counts.get(seat, 0) or 0)
+        after = int(after_counts.get(seat, 0) or 0)
+        if after != before:
+            raise RiverMutationError(
+                f"{target} count changed during call event: "
+                f"context={context} seat={seat} before={before} after={after}"
+            )
+
+
+def _truncate_diagnostic_text(value: object, *, limit: int = 700) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _count_change_rows(
+    *,
+    target: str,
+    before_counts: dict[int, int],
+    after_counts: dict[int, int],
+    include_increases: bool,
+) -> list[dict[str, int | str]]:
+    rows: list[dict[str, int | str]] = []
+    for seat in range(SEAT_COUNT):
+        before = int(before_counts.get(seat, 0) or 0)
+        after = int(after_counts.get(seat, 0) or 0)
+        if after == before:
+            continue
+        if after > before and not include_increases:
+            continue
+        rows.append(
+            {
+                "target": target,
+                "seat": seat,
+                "before": before,
+                "after": after,
+                "delta": after - before,
+            }
+        )
+    return rows
+
+
+def _event_diagnostic_summary(event: Event | None) -> dict[str, Any] | None:
+    if event is None:
+        return None
+    return {
+        "event_type": event.event_type,
+        "seat": event.seat,
+        "tile_136": event.tile_136,
+        "raw_tag": _truncate_diagnostic_text(event.raw_tag, limit=240),
+    }
+
+
+def _discard_guard_cause(
+    *,
+    tag_name: str,
+    before_river_epoch: int,
+    after_river_epoch: int,
+    changes: list[dict[str, int | str]],
+) -> str:
+    lowered_tag = str(tag_name or "").lower()
+    if after_river_epoch != before_river_epoch:
+        return "unexpected_base_river_epoch_reset"
+    if lowered_tag == "n":
+        if any(int(row.get("delta", 0) or 0) < 0 for row in changes):
+            return "call_event_shortened_discard_history"
+        if changes:
+            return "call_event_changed_discard_count"
+        return "call_event_river_guard_violation"
+    if any(int(row.get("delta", 0) or 0) < 0 for row in changes):
+        return "non_reset_tag_shortened_discard_history"
+    return "discard_history_guard_violation"
+
+
+def _record_discard_guard_violation(
+    state: GameState,
+    *,
+    timestamp: Optional[float],
+    tag_name: str,
+    raw_fragment: str,
+    guard_stage: str,
+    error_message: str,
+    before_river_epoch: int,
+    before_river_counts: dict[int, int],
+    before_round_state: RoundState | None,
+    before_round_counts: dict[int, int],
+    before_tracker_counts: dict[int, int],
+    before_event_count: int,
+    spectator_confirmed_different_reset_allowed: bool,
+) -> None:
+    """Record why a discard-history guard fired, especially for call-time river loss."""
+
+    after_river_epoch = int(getattr(getattr(state, "live_river_store", None), "epoch", 0) or 0)
+    after_river_counts = _live_river_counts_by_seat(state)
+    after_round_counts = _round_discard_counts_by_seat(before_round_state)
+    after_current_round_counts = _round_discard_counts_by_seat(state.current_round)
+    after_tracker_counts = _tracker_discard_counts_by_seat(state)
+    include_increases = str(tag_name or "").upper() == "N"
+    changes: list[dict[str, int | str]] = []
+    changes.extend(
+        _count_change_rows(
+            target="LiveRiverStore",
+            before_counts=before_river_counts,
+            after_counts=after_river_counts,
+            include_increases=include_increases,
+        )
+    )
+    changes.extend(
+        _count_change_rows(
+            target="round_state.discards",
+            before_counts=before_round_counts,
+            after_counts=after_round_counts,
+            include_increases=include_increases,
+        )
+    )
+    changes.extend(
+        _count_change_rows(
+            target="tracker.discards",
+            before_counts=before_tracker_counts,
+            after_counts=after_tracker_counts,
+            include_increases=include_increases,
+        )
+    )
+    previous_event = state.events[before_event_count - 1] if before_event_count > 0 else None
+    emitted_event = state.events[-1] if len(state.events) > before_event_count else None
+    river_store = getattr(state, "live_river_store", None)
+    diagnostic = {
+        "level": "error",
+        "code": (
+            "called_discard_disappearance_guard"
+            if str(tag_name or "").upper() == "N"
+            else "discard_history_guard_violation"
+        ),
+        "cause": _discard_guard_cause(
+            tag_name=tag_name,
+            before_river_epoch=before_river_epoch,
+            after_river_epoch=after_river_epoch,
+            changes=changes,
+        ),
+        "guard_stage": guard_stage,
+        "tag": tag_name,
+        "timestamp": timestamp,
+        "message": error_message,
+        "raw_fragment": _truncate_diagnostic_text(raw_fragment),
+        "live_river_epoch_before": before_river_epoch,
+        "live_river_epoch_after": after_river_epoch,
+        "live_river_counts_before": dict(before_river_counts),
+        "live_river_counts_after": dict(after_river_counts),
+        "round_discard_counts_before": dict(before_round_counts),
+        "round_discard_counts_after": dict(after_round_counts),
+        "current_round_discard_counts_after": dict(after_current_round_counts),
+        "tracker_discard_counts_before": dict(before_tracker_counts),
+        "tracker_discard_counts_after": dict(after_tracker_counts),
+        "changes": changes,
+        "round_id_before": getattr(before_round_state, "round_id", None),
+        "round_key_before": getattr(before_round_state, "round_key", None),
+        "current_round_id_after": getattr(state.current_round, "round_id", None),
+        "current_round_key_after": getattr(state.current_round, "round_key", None),
+        "live_river_round_key": getattr(river_store, "round_key", None),
+        "latest_event_before_tag": _event_diagnostic_summary(previous_event),
+        "emitted_event": _event_diagnostic_summary(emitted_event),
+        "event_count_before": before_event_count,
+        "event_count_after": len(state.events),
+        "spectator_confirmed_different_reset_allowed": spectator_confirmed_different_reset_allowed,
+    }
+    state.diagnostics.append(diagnostic)
+    try:
+        state.prune_live_history()
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the original guard failure.
+        pass
+    log_payload = json.dumps(diagnostic, ensure_ascii=False, sort_keys=True, default=str)
+    log_message = f"{diagnostic['code']}: {log_payload}"
+    logger.warning("%s", log_message)
+    _append_parser_diagnostic_log(log_message)
+
+
 def parse_fragment(state: CaptureState, timestamp: Optional[float], fragment: str) -> Event | None:
     """Parse and apply a single tag fragment onto the mutable GameState."""
 
@@ -2892,49 +3581,166 @@ def parse_fragment(state: CaptureState, timestamp: Optional[float], fragment: st
     if not tag_name:
         return None
 
+    river_store = getattr(state, "live_river_store", None)
+    before_river_epoch = int(getattr(river_store, "epoch", 0) or 0)
+    before_river_counts = _live_river_counts_by_seat(state)
+    before_round_state = state.current_round
+    before_round_counts = _round_discard_counts_by_seat(before_round_state)
+    before_tracker_counts = _tracker_discard_counts_by_seat(state)
+    before_river_total = _counts_total(before_river_counts)
+    before_event_count = len(state.events)
+    spectator_confirmed_different_reset_allowed = (
+        tag_name in SPECTATOR_INIT_TAGS
+        and before_river_total > 0
+        and _snapshot_is_confirmed_different_from_live_river(state, parsed.attrs)
+    )
+
+    def _finish(event: Event | None) -> Event | None:
+        after_river_epoch = int(getattr(river_store, "epoch", 0) or 0)
+        after_river_counts = _live_river_counts_by_seat(state)
+        after_round_counts = _round_discard_counts_by_seat(before_round_state)
+        after_tracker_counts = _tracker_discard_counts_by_seat(state)
+        try:
+            if (
+                river_store is not None
+                and before_river_total > 0
+                and tag_name not in DISCARD_RESET_ALLOWED_TAGS
+                and not spectator_confirmed_different_reset_allowed
+                and after_river_epoch != before_river_epoch
+            ):
+                raise RiverMutationError(
+                    "base river reset outside INIT/REINIT: "
+                    f"context={tag_name} before_epoch={before_river_epoch} after_epoch={after_river_epoch}"
+                )
+            if tag_name == "N":
+                _assert_counts_unchanged(
+                    before_counts=before_river_counts,
+                    after_counts=after_river_counts,
+                    context=tag_name,
+                    target="LiveRiverStore",
+                )
+                _assert_counts_unchanged(
+                    before_counts=before_round_counts,
+                    after_counts=after_round_counts,
+                    context=tag_name,
+                    target="round_state.discards",
+                )
+                _assert_counts_unchanged(
+                    before_counts=before_tracker_counts,
+                    after_counts=after_tracker_counts,
+                    context=tag_name,
+                    target="tracker.discards",
+                )
+            elif (
+                tag_name not in DISCARD_RESET_ALLOWED_TAGS
+                and not spectator_confirmed_different_reset_allowed
+            ):
+                _assert_counts_not_shortened(
+                    before_counts=before_river_counts,
+                    after_counts=after_river_counts,
+                    context=tag_name,
+                    target="LiveRiverStore",
+                )
+                _assert_counts_not_shortened(
+                    before_counts=before_round_counts,
+                    after_counts=after_round_counts,
+                    context=tag_name,
+                    target="round_state.discards",
+                )
+                _assert_counts_not_shortened(
+                    before_counts=before_tracker_counts,
+                    after_counts=after_tracker_counts,
+                    context=tag_name,
+                    target="tracker.discards",
+                )
+        except RiverMutationError as exc:
+            _record_discard_guard_violation(
+                state,
+                timestamp=timestamp,
+                tag_name=tag_name,
+                raw_fragment=raw_fragment,
+                guard_stage="post_parse",
+                error_message=str(exc),
+                before_river_epoch=before_river_epoch,
+                before_river_counts=before_river_counts,
+                before_round_state=before_round_state,
+                before_round_counts=before_round_counts,
+                before_tracker_counts=before_tracker_counts,
+                before_event_count=before_event_count,
+                spectator_confirmed_different_reset_allowed=spectator_confirmed_different_reset_allowed,
+            )
+            raise
+        return event
+
     # First handle server-style draw/discard names before generic simple tags.
     if DRAW_TAG_NAME_PATTERN.fullmatch(parsed.tag_name):
-        return parse_draw(state, timestamp, parsed)
+        return _finish(parse_draw(state, timestamp, parsed))
     if DISCARD_TAG_NAME_PATTERN.fullmatch(parsed.tag_name):
-        return parse_discard(state, timestamp, parsed)
+        return _finish(parse_discard(state, timestamp, parsed))
 
     if tag_name == "UN":
-        return parse_un(state, timestamp, parsed)
+        return _finish(parse_un(state, timestamp, parsed))
     if tag_name in SPECTATOR_INIT_TAGS:
-        return parse_spectator_init(state, timestamp, parsed)
+        return _finish(parse_spectator_init(state, timestamp, parsed))
     if tag_name == "INIT":
-        return parse_init(state, timestamp, parsed)
+        return _finish(parse_init(state, timestamp, parsed))
     if tag_name == "REINIT":
-        return parse_reinit(state, timestamp, parsed)
+        return _finish(parse_reinit(state, timestamp, parsed))
     if tag_name == "N":
-        return parse_n(state, timestamp, parsed)
+        try:
+            return _finish(parse_n(state, timestamp, parsed))
+        except RiverMutationError as exc:
+            if not any(
+                diagnostic.get("code") == "called_discard_disappearance_guard"
+                and diagnostic.get("event_count_before") == before_event_count
+                for diagnostic in state.diagnostics[-3:]
+                if isinstance(diagnostic, dict)
+            ):
+                _record_discard_guard_violation(
+                    state,
+                    timestamp=timestamp,
+                    tag_name=tag_name,
+                    raw_fragment=raw_fragment,
+                    guard_stage="parse_n",
+                    error_message=str(exc),
+                    before_river_epoch=before_river_epoch,
+                    before_river_counts=before_river_counts,
+                    before_round_state=before_round_state,
+                    before_round_counts=before_round_counts,
+                    before_tracker_counts=before_tracker_counts,
+                    before_event_count=before_event_count,
+                    spectator_confirmed_different_reset_allowed=spectator_confirmed_different_reset_allowed,
+                )
+            raise
     if tag_name == "REACH":
-        return parse_reach(state, timestamp, parsed)
+        return _finish(parse_reach(state, timestamp, parsed))
     if tag_name == "DORA":
-        return parse_dora(state, timestamp, parsed)
+        return _finish(parse_dora(state, timestamp, parsed))
     if tag_name == "AGARI":
-        return parse_agari(state, timestamp, parsed)
+        return _finish(parse_agari(state, timestamp, parsed))
     if tag_name == "RYUUKYOKU":
-        return parse_ryuukyoku(state, timestamp, parsed)
+        return _finish(parse_ryuukyoku(state, timestamp, parsed))
     if tag_name in {"LN", "REJOIN"}:
-        return _record_unknown(
-            state,
-            timestamp,
-            parsed.raw_tag,
-            f"TODO unresolved tag semantics: {tag_name}",
-            parsed.attrs,
+        return _finish(
+            _record_unknown(
+                state,
+                timestamp,
+                parsed.raw_tag,
+                f"TODO unresolved tag semantics: {tag_name}",
+                parsed.attrs,
+            )
         )
 
     if tag_name in {"CHAT", "SAY", "CHATMESSAGE"}:
-        return _parse_chat_like_tag(state, timestamp, parsed)
+        return _finish(_parse_chat_like_tag(state, timestamp, parsed))
     if tag_name in SIMPLE_EVENT_TAGS:
-        return _parse_simple_event(state, timestamp, parsed)
+        return _finish(_parse_simple_event(state, timestamp, parsed))
 
     # Client-originated command packets show up in decrypted CSV captures as plain JSON objects.
     if tag_name in {"D", "E", "F", "G"} and "p" in parsed.attrs:
-        return parse_client_discard_request(state, timestamp, parsed)
+        return _finish(parse_client_discard_request(state, timestamp, parsed))
 
-    return _record_unknown(state, timestamp, parsed.raw_tag, "Unsupported tag", parsed.attrs)
+    return _finish(_record_unknown(state, timestamp, parsed.raw_tag, "Unsupported tag", parsed.attrs))
 
 
 def extract_xml_log_fragments(text: str) -> list[str]:

@@ -4,7 +4,6 @@ import subprocess
 import time
 from pathlib import Path
 
-from capture.fragment_parser import extract_html_xml_fragments, split_tshark_line
 from capture.state import CaptureState
 from capture.storage import initialize_db
 from capture.tshark_capture import (
@@ -56,15 +55,6 @@ def build_pcap_tshark_command(
     return command
 
 
-def _line_has_tag_payload(line: str) -> bool:
-    """Return whether the tshark line contains at least one parseable tag payload."""
-
-    timestamp, payload = split_tshark_line(line)
-    if timestamp is None or not payload:
-        return False
-    return bool(extract_html_xml_fragments(payload))
-
-
 def run_test_capture(
     input_path: str | Path,
     state: CaptureState | None = None,
@@ -101,9 +91,12 @@ def run_test_capture(
         try:
             for line in proc.stdout:
                 try:
-                    if not _line_has_tag_payload(line):
-                        continue
-                    parse_tshark_output_line(state, db, line, debug_tags=debug_tags)
+                    parsed_packet = parse_tshark_output_line(
+                        state,
+                        db,
+                        line,
+                        debug_tags=debug_tags,
+                    )
                 except Exception as exc:  # noqa: BLE001 - one bad replay line must not abort replay.
                     _record_capture_warning(
                         state,
@@ -111,7 +104,8 @@ def run_test_capture(
                         message=f"Pcap replay line processing skipped: {exc}",
                         raw_line=line.rstrip(),
                     )
-                if interval_ms > 0:
+                    parsed_packet = False
+                if parsed_packet and interval_ms > 0:
                     time.sleep(interval_ms / 1000)
         finally:
             if db is not None:

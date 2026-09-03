@@ -28,6 +28,7 @@ from capture.csv_db_schema import (
     build_same_day_player_signature,
     monthly_chunk_token_from_hanchan_id,
 )
+from capture.discard_ledger import DiscardResetReason
 from capture.fragment_parser import load_xml_discard_snapshots
 from capture.state import (
     CaptureState,
@@ -43,6 +44,7 @@ from capture.state import (
     RoundState,
     mark_runtime_thread_progress,
     parse_tenhou_game_type_hex,
+    round_first_row_thinking_average_ms_by_seat,
     tenhou_room_class_label,
     tile136_to_tile37,
     tile136_to_tile34,
@@ -125,6 +127,10 @@ COMPAT_OPTIONAL_MISSING_COLUMNS = frozenset(
         "seat2_player_name",
         "seat3_player_name",
         "oya_player_name",
+        "seat0_first_row_avg_thinking_time_ms",
+        "seat1_first_row_avg_thinking_time_ms",
+        "seat2_first_row_avg_thinking_time_ms",
+        "seat3_first_row_avg_thinking_time_ms",
         "discard_epoch_s",
         "discard_tile_37_text",
         "tsumogiri_flag",
@@ -297,6 +303,23 @@ def _game_type_from_source_url(source_url: str | None) -> int | None:
     if match is None:
         return None
     return parse_tenhou_game_type_hex(match.group(1))
+
+
+def _source_url_from_game_id(game_id: str | None) -> str:
+    """Return a stable Tenhou viewer URL for a known log id, or blank for non-log ids."""
+
+    normalized = _csv_cell(game_id).strip()
+    if not normalized:
+        return ""
+    if normalized.startswith(("http://", "https://")):
+        return normalized
+    if TENHOU_LOG_GAME_TYPE_PATTERN.search(normalized):
+        return f"https://tenhou.net/0/?log={normalized}"
+    return ""
+
+
+def _source_url_from_state(state: CaptureState) -> str:
+    return _source_url_from_game_id(getattr(state, "game_id", None))
 
 
 def _game_type_columns_from_game_type(game_type: int | None) -> dict[str, str]:
@@ -953,7 +976,8 @@ def _clone_round_state_without_discard(
     discard: Discard,
 ) -> RoundState:
     cloned_round_state = copy.deepcopy(round_state)
-    cloned_discards = cloned_round_state.discards.get(seat, [])
+    cloned_discards_by_seat = cloned_round_state.mutable_discard_copy_by_seat()
+    cloned_discards = cloned_discards_by_seat.get(seat, [])
     remove_index = None
     for index in range(len(cloned_discards) - 1, -1, -1):
         candidate = cloned_discards[index]
@@ -973,6 +997,10 @@ def _clone_round_state_without_discard(
         remove_index = len(cloned_discards) - 1
     if remove_index is not None:
         del cloned_discards[remove_index]
+        cloned_round_state.replace_discards_for_reset(
+            discards_by_seat=cloned_discards_by_seat,
+            reason=DiscardResetReason.MANUAL_FULL_RESET,
+        )
     return cloned_round_state
 
 
@@ -1091,6 +1119,10 @@ def _clone_round_state_for_async_persist(round_state: RoundState) -> RoundState:
         snapshot_is_partial=bool(round_state.snapshot_is_partial),
         started_from_init_like=bool(round_state.started_from_init_like),
         snapshot_bootstrap_sequence=int(getattr(round_state, "snapshot_bootstrap_sequence", 0)),
+        hanchan_round_ordinal=int(getattr(round_state, "hanchan_round_ordinal", 0) or 0),
+        first_row_thinking_history_recorded=bool(
+            getattr(round_state, "first_row_thinking_history_recorded", False)
+        ),
         discards={
             seat: [
                 _clone_discard_for_async_persist(discard)
@@ -1179,6 +1211,18 @@ def _snapshot_capture_state_for_async_persist(
             pystyle_self_history_by_round_hand=_clone_plain_value_for_async_persist(
                 state.pystyle_self_history_by_round_hand
             ),
+            hanchan_round_ordinal=int(getattr(state, "hanchan_round_ordinal", 0) or 0),
+            first_row_thinking_avg_history_by_seat={
+                seat: [
+                    float(value)
+                    for value in getattr(
+                        state,
+                        "first_row_thinking_avg_history_by_seat",
+                        {},
+                    ).get(seat, ())
+                ]
+                for seat in range(4)
+            },
         )
     finally:
         state_lock.release()
@@ -2287,25 +2331,36 @@ class CsvDatabase:
         }
 
     def _sync_current_hanchan_room_class_label(self, state: CaptureState) -> None:
-        """Fill the current hanchan row if room metadata arrives after INIT-like storage."""
+        """Fill current hanchan metadata that can arrive after INIT-like storage."""
 
         if self.current_hanchan is None:
             return
         game_type_columns = _game_type_columns_from_state(state)
         room_class_label = _csv_cell(game_type_columns.get("room_class_label", "")).strip()
-        if not room_class_label:
-            return
-        if room_class_label == _csv_cell(self.current_hanchan.room_class_label).strip():
-            return
         hanchan_store = self._store("hanchan_master")
         existing_row = hanchan_store.get((self.current_hanchan.hanchan_id,))
         if existing_row is None:
             return
         updated_row = dict(existing_row)
-        updated_row.update(game_type_columns)
+        changed = False
+        if (
+            room_class_label
+            and room_class_label != _csv_cell(self.current_hanchan.room_class_label).strip()
+        ):
+            updated_row.update(game_type_columns)
+            self.current_hanchan.room_class_label = room_class_label
+            changed = True
+        if not _csv_cell(updated_row.get("source_url", "")).strip():
+            source_url = _source_url_from_state(state)
+            if source_url:
+                updated_row["source_url"] = source_url
+                changed = True
+        if not changed:
+            return
         hanchan_store.upsert(updated_row)
         _remember_hanchan_metadata(self.db_dir, updated_row)
-        self.current_hanchan.room_class_label = room_class_label
+        if state.game_id:
+            self.current_hanchan.game_id = state.game_id
 
     def _ensure_hanchan_context(
         self,
@@ -2346,6 +2401,7 @@ class CsvDatabase:
         player_names = _player_names_by_rel_seat(state)
         signature = build_same_day_player_signature(hanchan_date, player_names)
         hanchan_store = self._store("hanchan_master")
+        existing_by_id: dict[str, str] | None = None
         existing_by_signature = next(
             (
                 row
@@ -2383,6 +2439,11 @@ class CsvDatabase:
         game_type_columns = _game_type_columns_from_state(state)
         if not any(game_type_columns.values()) and existing_by_signature is not None:
             game_type_columns = _game_type_columns_from_hanchan_row(existing_by_signature)
+        existing_source_url = ""
+        if existing_by_signature is not None:
+            existing_source_url = _csv_cell(existing_by_signature.get("source_url", "")).strip()
+        elif existing_by_id is not None:
+            existing_source_url = _csv_cell(existing_by_id.get("source_url", "")).strip()
 
         row = {
             "hanchan_id": hanchan_id,
@@ -2391,7 +2452,7 @@ class CsvDatabase:
             "seat1_player_name": player_names[1] or "",
             "seat2_player_name": player_names[2] or "",
             "seat3_player_name": player_names[3] or "",
-            "source_url": existing_by_signature["source_url"] if existing_by_signature is not None else "",
+            "source_url": existing_source_url or _source_url_from_state(state),
         }
         hanchan_store.upsert(row)
         _remember_hanchan_metadata(self.db_dir, row)
@@ -2427,6 +2488,9 @@ class CsvDatabase:
         kyoku_id = build_kyoku_id(hanchan.hanchan_id, kyoku_info)
         kyoku_store = self._store("kyoku_master")
         player_names = _player_names_by_rel_seat(state)
+        first_row_average_ms_by_seat = round_first_row_thinking_average_ms_by_seat(
+            round_state
+        )
         kyoku_store.upsert(
             {
                 "kyoku_id": kyoku_id,
@@ -2440,6 +2504,10 @@ class CsvDatabase:
                 "seat2_player_name": player_names[2] or "",
                 "seat3_player_name": player_names[3] or "",
                 "oya_player_name": _player_name(state, round_state.oya),
+                "seat0_first_row_avg_thinking_time_ms": first_row_average_ms_by_seat.get(0, ""),
+                "seat1_first_row_avg_thinking_time_ms": first_row_average_ms_by_seat.get(1, ""),
+                "seat2_first_row_avg_thinking_time_ms": first_row_average_ms_by_seat.get(2, ""),
+                "seat3_first_row_avg_thinking_time_ms": first_row_average_ms_by_seat.get(3, ""),
             }
         )
         return kyoku_id, kyoku_info

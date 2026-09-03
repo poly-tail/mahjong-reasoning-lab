@@ -1,6 +1,6 @@
 # 見え枚数パイプライン
 
-更新日: `2026-05-24`
+更新日: `2026-07-26`
 
 ## 3層
 
@@ -22,7 +22,7 @@
 含めないもの:
 
 - lag 推定
-- 同順合わせ打ち判定
+- 合わせ打ち判定
 - manual inferred visible
 
 出力:
@@ -58,12 +58,14 @@ actual visible を書き換えず、画面表示専用の補正として扱う�
 - 河の 4見え tint
 - 自家 `2見え以下字牌`
 
-## 同順合わせ打ち
+## 合わせ打ち
 
-- public discard / meld reveal / dora reveal event stream だけを見る。
-- private hand draw は見ない。
-- provisional hit と confirm worker を分ける。
-- actual visible / inferred visible の ownership は書き換えない。
+- 履歴正本は `LiveRiverStore` 由来の全席 `discard_map` とし、global discard順で見る。
+- 他家の手出しだけを起点にし、その後5回以内の捨て牌増加で同じ34種牌が切られたslotへ表示用フラグを付ける。
+- 途中にtarget seat自身の別打牌があっても窓内なら有効とする。
+- 起点側のツモ切り、副露公開、ドラ表示は起点にせず、副露・ドラ表示は5打牌窓も消費しない。
+- targetは手出し/ツモ切りを問わない。
+- append cacheによる候補抽出と `awaseuchi confirm` workerを分け、actual visible / inferred visibleのownershipは書き換えない。
 
 ## 関連
 

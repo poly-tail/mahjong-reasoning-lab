@@ -4,5 +4,8 @@
 
 - [通常起動チェックリスト](./live_startup_checklist.md)
 - [他環境セットアップ](./other_environment_setup.md)
+- [リポジトリ横断回帰チェックリスト](./regression_checklist.md)
+- [コードレビュー規則](./code_review.md)
 - [Live Capture トラブルシュート](./troubleshooting/live_capture.md)
+- [Live Rendering トラブルシュート](./troubleshooting/live_rendering.md)
 - [rollback 記録](./rollback_log.md)

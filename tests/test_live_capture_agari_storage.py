@@ -122,6 +122,35 @@ class LiveCaptureAgariStorageTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["room_class_label"], "鳳凰卓")
 
+        self.assertEqual(
+            rows[0]["source_url"],
+            "https://tenhou.net/0/?log=2026052115gm-00a9-0000-627a47cd",
+        )
+
+    def test_hanchan_master_source_url_backfills_when_game_id_arrives_after_init(self) -> None:
+        with self._temporary_db_dir() as temp_dir_text:
+            database = CsvDatabase(db_dir=Path(temp_dir_text), bootstrap_logical_tables=())
+            self.addCleanup(database.close)
+            state = CaptureState()
+            state.current_round = RoundState(started_from_init_like=True)
+            for seat, name in enumerate(("self", "shimo", "toi", "kami")):
+                state.players[seat].name = name
+            init_event = Event(timestamp=1779338668.0, event_type="init", raw_tag="INIT")
+            database.persist_event(state, init_event)
+            rows = database._store("hanchan_master").iter_rows()
+            self.assertEqual(rows[0]["source_url"], "")
+
+            state.game_id = "2026052115gm-00a9-0000-627a47cd"
+            go_event = Event(timestamp=1779338669.0, event_type="go", raw_tag="GO")
+            database.persist_event(state, go_event)
+            rows = database._store("hanchan_master").iter_rows()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["source_url"],
+            "https://tenhou.net/0/?log=2026052115gm-00a9-0000-627a47cd",
+        )
+
     def test_hanchan_master_room_class_updates_when_go_arrives_after_init(self) -> None:
         with self._temporary_db_dir() as temp_dir_text:
             database = CsvDatabase(db_dir=Path(temp_dir_text), bootstrap_logical_tables=())
@@ -141,6 +170,48 @@ class LiveCaptureAgariStorageTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["room_class_label"], "鳳凰卓")
+
+    def test_kyoku_master_records_first_row_average_thinking_time(self) -> None:
+        with self._temporary_db_dir() as temp_dir_text:
+            database = CsvDatabase(db_dir=Path(temp_dir_text), bootstrap_logical_tables=())
+            self.addCleanup(database.close)
+            database.current_hanchan = self._sample_hanchan()
+            state = CaptureState()
+            for seat, name in enumerate(("self", "shimo", "toi", "kami")):
+                state.players[seat].name = name
+            round_state = RoundState(
+                kyoku_index=0,
+                honba=0,
+                kyotaku=0,
+                oya=0,
+                started_from_init_like=True,
+            )
+            state.current_round = round_state
+            state.rounds.append(round_state)
+            event = Event(
+                timestamp=1776398761.0,
+                event_type="discard",
+                seat=1,
+                tile_136=8,
+            )
+            state.events.append(event)
+            round_state.events.append(event)
+            for index, thinking_time_ms in enumerate((1000.0, 2000.0, 3000.0)):
+                round_state.discards[1].append(
+                    Discard(
+                        tile_136=8 + index,
+                        round_discard_index=index,
+                        thinking_time_ms=thinking_time_ms,
+                        event_index=0 if index == 2 else -1,
+                    )
+                )
+
+            database.persist_event(state, event)
+            rows = database._store("kyoku_master").iter_rows()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["seat1_first_row_avg_thinking_time_ms"], "2000.0")
+        self.assertEqual(rows[0]["seat0_first_row_avg_thinking_time_ms"], "")
 
     def test_reinit_snapshot_discards_are_persisted_to_discard_fact(self) -> None:
         with self._temporary_db_dir() as temp_dir_text:

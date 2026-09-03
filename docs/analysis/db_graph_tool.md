@@ -81,7 +81,7 @@ python scripts/analyze_player_shanten_thinking.py
 出力:
 
 - `reports/player_shanten_thinking/player_shanten_thinking_summary.csv`
-- `reports/player_shanten_thinking/player_shanten_thinking_report.html`
+- `reports/player_shanten_thinking/index.html`
 - player 別 PNG
 
 詳細: [player_shanten_thinking.md](./player_shanten_thinking.md)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -50,6 +51,8 @@ LIVE_MAX_UNKNOWN_TAG_HISTORY = 256
 LIVE_MAX_DIAGNOSTIC_HISTORY = 256
 # LIVE_MAX_CHAT_HISTORY の定義。
 LIVE_MAX_CHAT_HISTORY = 128
+# 1段目として扱う席ごとの河枚数。
+FIRST_ROW_DISCARD_COUNT = 6
 # Short unresolved lag below this threshold is treated as system-side delay instead of a real skip window.
 TENHOU_ROOM_CLASS_RULES: tuple[tuple[int, str, str], ...] = (
     (0x80, "houou", "鳳凰卓"),
@@ -130,6 +133,18 @@ def default_seat_order() -> list[int]:
     """Return the canonical local-relative seat order: self, shimocha, toimen, kamicha."""
 
     return list(range(SEAT_COUNT))
+
+
+def _new_round_discard_ledger() -> Any:
+    from capture.discard_ledger import RoundDiscardLedger
+
+    return RoundDiscardLedger()
+
+
+def _new_live_river_store() -> Any:
+    from capture.live_river_store import LiveRiverStore
+
+    return LiveRiverStore()
 
 
 def _trim_list_in_place(items: list[Any], limit: int) -> None:
@@ -490,6 +505,13 @@ class RoundState:
     started_from_init_like: bool = False
     # snapshot_bootstrap_sequence increments on INIT/REINIT-style snapshot rebuilds.
     snapshot_bootstrap_sequence: int = 0
+    # snapshot_event_type records the packet kind that last rebuilt this snapshot.
+    snapshot_event_type: str = ""
+    # provisional_round_sequence identifies rounds created from packets before INIT/REINIT arrives.
+    provisional_round_sequence: int = 0
+    # discard_ledger is the append-only authoritative river history for this round.
+    discard_ledger: Any = field(default_factory=_new_round_discard_ledger, init=False, repr=False)
+    _discard_history_initialized: bool = field(default=False, init=False, repr=False)
     # discards の対応表。
     discards: dict[int, list[Discard]] = field(default_factory=lambda: _default_seat_map(list))
     # melds の対応表。
@@ -530,8 +552,89 @@ class RoundState:
     result: Optional[dict[str, Any]] = None
     # reinit_kawa_raw の対応表。
     reinit_kawa_raw: dict[int, list[int]] = field(default_factory=lambda: _default_seat_map(list))
+    # browser_visible_river_projection stores lossy browser-side rivers separately from history.
+    browser_visible_river_projection: dict[int, list[Any]] = field(
+        default_factory=lambda: _default_seat_map(list)
+    )
+    # hanchan_round_ordinal is a 1-based round number within the current hanchan.
+    hanchan_round_ordinal: int = 0
+    # Whether this round has already been folded into the hanchan-level first-row history.
+    first_row_thinking_history_recorded: bool = False
     # validation_issues の一覧。
     validation_issues: list[str] = field(default_factory=list)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "discards" and getattr(self, "_discard_history_initialized", False):
+            from capture.discard_ledger import DiscardMutationError
+
+            raise DiscardMutationError(
+                "round_state.discards cannot be replaced; use RoundDiscardLedger methods"
+            )
+        super().__setattr__(name, value)
+
+    def __post_init__(self) -> None:
+        from capture.discard_ledger import DiscardResetReason, RoundDiscardLedger
+
+        initial_discards = getattr(self, "discards", None)
+        ledger = getattr(self, "discard_ledger", None)
+        if not isinstance(ledger, RoundDiscardLedger):
+            ledger = RoundDiscardLedger()
+        ledger.replace_for_reset(
+            discards_by_seat=initial_discards,
+            reason=DiscardResetReason.MANUAL_FULL_RESET,
+        )
+        object.__setattr__(self, "discard_ledger", ledger)
+        object.__setattr__(self, "discards", ledger.mutable_mapping_view())
+        object.__setattr__(self, "_discard_history_initialized", True)
+
+    def reset_discards_for_new_round(self, *, reason: Any) -> None:
+        self.discard_ledger.reset_for_new_round(reason=reason)
+
+    def replace_discards_for_reset(
+        self,
+        *,
+        discards_by_seat: dict[int, list[Discard]],
+        reason: Any,
+    ) -> None:
+        self.discard_ledger.replace_for_reset(
+            discards_by_seat=discards_by_seat,
+            reason=reason,
+        )
+
+    def append_discard(self, seat: int, discard: Discard) -> None:
+        self.discard_ledger.append_discard(seat, discard)
+
+    def append_discards(self, seat: int, discards: list[Discard]) -> None:
+        self.discard_ledger.append_many(seat, discards)
+
+    def mark_discard_called(
+        self,
+        *,
+        source_seat: int,
+        called_tile_136: int | None = None,
+        called_tile_34: int | None = None,
+        lagged: int | None = None,
+    ) -> int | None:
+        return self.discard_ledger.mark_called(
+            source_seat=source_seat,
+            called_tile_136=called_tile_136,
+            called_tile_34=called_tile_34,
+            lagged=lagged,
+        )
+
+    def apply_discard_projection_non_destructive(
+        self,
+        *,
+        projection_by_seat: dict[int, list[Discard]],
+        source: str,
+    ) -> None:
+        self.discard_ledger.apply_projection_non_destructive(
+            projection_by_seat=projection_by_seat,
+            source=source,
+        )
+
+    def mutable_discard_copy_by_seat(self) -> dict[int, list[Discard]]:
+        return self.discard_ledger.mutable_copy_by_seat()
 
     @property
     def hands_136(self) -> dict[int, list[int]]:
@@ -572,6 +675,28 @@ class RoundState:
     @property
     def reach_accepted(self) -> set[int]:
         return {seat for seat, state in self.reach_state.items() if state == "accepted"}
+
+
+def round_first_row_thinking_average_ms_by_seat(
+    round_state: RoundState | None,
+) -> dict[int, float]:
+    """Return per-seat average thinking time over the first river row."""
+
+    averages_by_seat: dict[int, float] = {}
+    if round_state is None:
+        return averages_by_seat
+    for seat in range(SEAT_COUNT):
+        values: list[float] = []
+        for discard in list(round_state.discards.get(seat, ()))[:FIRST_ROW_DISCARD_COUNT]:
+            try:
+                thinking_time_ms = float(getattr(discard, "thinking_time_ms", None))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(thinking_time_ms) and thinking_time_ms >= 0.0:
+                values.append(thinking_time_ms)
+        if values:
+            averages_by_seat[seat] = round(sum(values) / len(values), 3)
+    return averages_by_seat
 
 
 # GameState を表すデータクラス。
@@ -647,6 +772,18 @@ class GameState:
     live_update_sequence: int = 0
     # live_snapshot_bootstrap_sequence increments when INIT/REINIT-style snapshots rebuild the table.
     live_snapshot_bootstrap_sequence: int = 0
+    # live_provisional_round_sequence increments when packet capture starts a round without INIT.
+    live_provisional_round_sequence: int = 0
+    # UI-facing monotonic river backup for the active live round.
+    live_stable_discard_round_identity: Any = None
+    live_stable_discard_map: dict[Any, list[Any]] = field(default_factory=dict)
+    # Long-lived base river history. It intentionally survives RoundState replacement.
+    live_river_store: Any = field(default_factory=_new_live_river_store)
+    # 1-based round number and per-seat first-row thinking averages retained for this hanchan.
+    hanchan_round_ordinal: int = 0
+    first_row_thinking_avg_history_by_seat: dict[int, list[float]] = field(
+        default_factory=lambda: _default_seat_map(list)
+    )
 
     def __post_init__(self) -> None:
         self.refresh_player_views()
@@ -703,14 +840,33 @@ class GameState:
     def begin_round(self, *, started_from_init_like: bool = False) -> RoundState:
         """Create and register a fresh current round."""
 
+        self._record_current_round_first_row_thinking_history()
+        provisional_round_sequence = 0
+        if not started_from_init_like:
+            self.live_provisional_round_sequence += 1
+            provisional_round_sequence = self.live_provisional_round_sequence
+        self.hanchan_round_ordinal += 1
         self.current_round = RoundState(
             seat_order=list(self.seat_order),
             started_from_init_like=started_from_init_like,
+            provisional_round_sequence=provisional_round_sequence,
+            hanchan_round_ordinal=self.hanchan_round_ordinal,
         )
         self.rounds.append(self.current_round)
         self.sync_current_round_context()
         self.prune_live_history()
         return self.current_round
+
+    def _record_current_round_first_row_thinking_history(self) -> None:
+        """Fold the finished current round's first-row thinking averages into hanchan history."""
+
+        round_state = self.current_round
+        if round_state is None or bool(round_state.first_row_thinking_history_recorded):
+            return
+        averages_by_seat = round_first_row_thinking_average_ms_by_seat(round_state)
+        for seat, average_ms in averages_by_seat.items():
+            self.first_row_thinking_avg_history_by_seat.setdefault(seat, []).append(average_ms)
+        round_state.first_row_thinking_history_recorded = True
 
     def ensure_round(self) -> RoundState:
         """Return the current round, creating one only when necessary."""
@@ -720,32 +876,66 @@ class GameState:
         self.sync_current_round_context()
         return self.current_round
 
-    def reset_live_session(self, *, preserve_player_metadata: bool = True) -> None:
+    def reset_live_session(
+        self,
+        *,
+        preserve_player_metadata: bool = True,
+        force_clear_discard_state: bool = False,
+        preserve_hanchan_metadata: bool = False,
+    ) -> None:
         """Clear in-memory live capture state in place without replacing the tracker object."""
 
-        self.game_id = None
-        self.go_type = None
-        self.room_class_code = None
-        self.room_class_label = None
-        self.rounds.clear()
-        self.current_round = None
-        self.current_dealer_seat = None
-        self.round_key = None
-        self.round_id = None
+        live_river_has_discards = bool(
+            getattr(getattr(self, "live_river_store", None), "has_discards", lambda: False)()
+        )
+        tracker_has_discards = any(
+            len(self.tracker.discards[player]) > 0
+            for player in self.tracker.discards
+        )
+        round_has_discards = (
+            self.current_round is not None
+            and any(
+                len(self.current_round.discards.get(seat, ())) > 0
+                for seat in range(SEAT_COUNT)
+            )
+        )
+        preserve_discard_derived_views = (
+            not force_clear_discard_state
+            and (live_river_has_discards or tracker_has_discards or round_has_discards)
+        )
+        if preserve_hanchan_metadata and (force_clear_discard_state or not preserve_discard_derived_views):
+            self._record_current_round_first_row_thinking_history()
+        if not preserve_hanchan_metadata:
+            self.game_id = None
+            self.go_type = None
+            self.room_class_code = None
+            self.room_class_label = None
+            self.hanchan_round_ordinal = 0
+            self.first_row_thinking_avg_history_by_seat = _default_seat_map(list)
+        if not preserve_discard_derived_views:
+            self.rounds.clear()
+            self.current_round = None
+            self.current_dealer_seat = None
+            self.round_key = None
+            self.round_id = None
         self.raw_events.clear()
         self.unknown_tags.clear()
         self.chats.clear()
         self.last_timestamp = None
         self.seat_order = default_seat_order()
 
-        for discards in self.tracker.discards.values():
-            discards.clear()
+        if force_clear_discard_state:
+            self.tracker.reset_discards(reason="init_new_round")
 
         self.live_hand_tiles_136.clear()
         self.live_last_draw_tile_136 = None
         self.live_meld_tiles_136.clear()
         self.live_dora_indicator_tiles_136.clear()
         self.pystyle_self_history_by_round_hand.clear()
+        self.live_provisional_round_sequence = 0
+        if not preserve_discard_derived_views:
+            self.live_stable_discard_round_identity = None
+            self.live_stable_discard_map.clear()
 
         if not preserve_player_metadata:
             self.players_abs = _default_player_map()
@@ -756,6 +946,29 @@ class GameState:
         self.refresh_player_views()
         self.sync_current_round_context()
         self.mark_live_update()
+
+    def reset_live_river_for_authoritative_new_round(
+        self,
+        *,
+        authority: Any,
+        round_key: Any = None,
+        allow_non_empty_clear: bool = False,
+        reset_source: str | None = None,
+    ) -> None:
+        """Reset the long-lived river only for an explicit authoritative boundary.
+
+        Authority labels are not sufficient by themselves because recovery/bootstrap paths can
+        still use INIT_NEW_ROUND as a generic label.  Clearing an existing base river therefore
+        requires an explicit caller opt-in from the real INIT parser path or a confirmed
+        different-round REINIT path.
+        """
+
+        self.live_river_store.reset_for_authoritative_new_round(
+            authority=authority,
+            round_key=round_key,
+            allow_non_empty_clear=allow_non_empty_clear,
+            reset_source=reset_source,
+        )
 
     def add_event(
         self,

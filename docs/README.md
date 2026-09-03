@@ -35,8 +35,17 @@
 - [プロジェクトガイド](./architecture/project_guide.md)
 - [ソース概要](./architecture/source_overview.md)
 - [データ構造](./architecture/data_structures.md)
+- [ADR](./architecture/adr/README.md)
 - [CSV DB 設計](./reference/csv_db_design.md)
 - [牌 ID リファレンス](./reference/tile_id_reference.md)
+
+## 運用
+
+- [通常起動チェックリスト](./operations/live_startup_checklist.md)
+- [Live Capture トラブルシュート](./operations/troubleshooting/live_capture.md)
+- [Live Rendering トラブルシュート](./operations/troubleshooting/live_rendering.md)
+- [リポジトリ横断回帰チェックリスト](./operations/regression_checklist.md)
+- [コードレビュー規則](./operations/code_review.md)
 
 ## 更新ルール
 
@@ -44,3 +53,4 @@
 - データ構造や DTO を変えたら `specs/` と `reference/` を更新する。
 - 要件・仕様・画面仕様の版を上げたら、各 `current.md` を同じ版へ向ける。
 - 性能調査や分析スクリプトを追加したら `analysis/` に入口を追加する。
+- 設計判断を変更したら `architecture/adr/` を更新する。

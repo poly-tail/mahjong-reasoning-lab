@@ -1,3 +1,4 @@
+import queue
 import unittest
 from unittest.mock import Mock, patch
 
@@ -37,6 +38,7 @@ from ui.table_renderer import (
     _push_discard_marker_indices_by_seat,
     _push_marker_alerts_for_render,
     _player_panel_remain_text_color,
+    _resolve_player_alert_indicators_for_render,
     _handle_detail_memo_save_shortcut,
     _ensure_detail_memo_widgets,
     _resolve_public_honor_shortlist_top,
@@ -938,6 +940,93 @@ class PlayerPanelAlertTest(unittest.TestCase):
             ("remain_red", "push:7"),
         )
 
+    def test_player_panel_alert_indicators_hold_through_short_empty_gap(self) -> None:
+        class CanvasStub:
+            pass
+
+        canvas = CanvasStub()
+        previous_indicators = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_RED,
+                    label="残5",
+                    key="remain_red",
+                ),
+            )
+        }
+
+        first = _resolve_player_alert_indicators_for_render(
+            canvas,
+            previous_indicators,
+            latest_global_discard_index=10,
+        )
+        held = _resolve_player_alert_indicators_for_render(
+            canvas,
+            {1: (), 2: (), 3: ()},
+            latest_global_discard_index=12,
+        )
+
+        self.assertEqual(first, previous_indicators)
+        self.assertEqual(held, previous_indicators)
+
+    def test_first_row_fast_trend_indicator_does_not_latch_after_condition_exits(self) -> None:
+        class CanvasStub:
+            pass
+
+        canvas = CanvasStub()
+        previous_indicators = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="早い傾向",
+                    key="first_row_fast_trend:active",
+                ),
+            )
+        }
+        empty_indicators = {1: (), 2: (), 3: ()}
+
+        _resolve_player_alert_indicators_for_render(
+            canvas,
+            previous_indicators,
+            latest_global_discard_index=10,
+        )
+        cleared = _resolve_player_alert_indicators_for_render(
+            canvas,
+            empty_indicators,
+            latest_global_discard_index=11,
+        )
+
+        self.assertEqual(cleared, empty_indicators)
+
+    def test_player_panel_alert_indicators_clear_after_empty_gap_window(self) -> None:
+        class CanvasStub:
+            pass
+
+        canvas = CanvasStub()
+        previous_indicators = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_RED,
+                    label="残5",
+                    key="remain_red",
+                ),
+            )
+        }
+        empty_indicators = {1: (), 2: (), 3: ()}
+
+        _resolve_player_alert_indicators_for_render(
+            canvas,
+            previous_indicators,
+            latest_global_discard_index=10,
+        )
+        cleared = _resolve_player_alert_indicators_for_render(
+            canvas,
+            empty_indicators,
+            latest_global_discard_index=14,
+        )
+
+        self.assertEqual(cleared, empty_indicators)
+
     def test_player_panel_push_indicator_uses_payload_threshold_percent(self) -> None:
         indicators_by_seat = _build_player_panel_alert_indicators_by_seat(
             {
@@ -1162,9 +1251,9 @@ class PlayerPanelAlertTest(unittest.TestCase):
         precomputed_indicators = {
             1: (
                 PlayerAlertIndicator(
-                    color=PLAYER_ALERT_RED,
-                    label="Remain 5.5",
-                    key="remain_red",
+                    color=PLAYER_ALERT_YELLOW,
+                    label="Remain 11.8",
+                    key="remain_yellow",
                 ),
             ),
         }
@@ -1175,13 +1264,13 @@ class PlayerPanelAlertTest(unittest.TestCase):
         ):
             _play_player_panel_alert_sound_if_needed(
                 canvas,
-                {1: {"denominator_count": 5.5}},
+                {1: {"denominator_count": 11.8}},
                 {1: {}},
                 alert_indicators_by_seat=precomputed_indicators,
             )
 
         self.assertEqual(canvas.bell_calls, 1)
-        self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], ("remain_red",))
+        self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], ("remain_yellow",))
 
     def test_player_panel_alert_sound_stays_silent_when_same_priority_alert_key_is_added(self) -> None:
         class CanvasStub:
@@ -1227,7 +1316,7 @@ class PlayerPanelAlertTest(unittest.TestCase):
             ("remain_yellow", "tenpai_near"),
         )
 
-    def test_player_panel_alert_sound_fires_when_alert_priority_upgrades(self) -> None:
+    def test_player_panel_remain_sound_stays_silent_when_yellow_turns_red(self) -> None:
         class CanvasStub:
             def __init__(self) -> None:
                 self.last_player_panel_alert_keys_by_seat = {
@@ -1260,7 +1349,7 @@ class PlayerPanelAlertTest(unittest.TestCase):
                 alert_indicators_by_seat=precomputed_indicators,
             )
 
-        self.assertEqual(canvas.bell_calls, 1)
+        self.assertEqual(canvas.bell_calls, 0)
         self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], ("remain_red",))
 
     def test_player_panel_alert_sound_queues_worker_when_winsound_is_available(self) -> None:
@@ -1290,14 +1379,14 @@ class PlayerPanelAlertTest(unittest.TestCase):
         ) as queue_sound:
             _play_player_panel_alert_sound_if_needed(
                 canvas,
-                {1: {"denominator_count": 5.5}},
+                {1: {"denominator_count": 11.8}},
                 {1: {}},
                 alert_indicators_by_seat={
                     1: (
                         PlayerAlertIndicator(
-                            color=PLAYER_ALERT_RED,
-                            label="Remain 5.5",
-                            key="remain_red",
+                            color=PLAYER_ALERT_YELLOW,
+                            label="Remain 11.8",
+                            key="remain_yellow",
                         ),
                     )
                 },
@@ -1305,9 +1394,417 @@ class PlayerPanelAlertTest(unittest.TestCase):
 
         self.assertEqual(canvas.bell_calls, 0)
         queue_sound.assert_called_once()
-        self.assertEqual(queue_sound.call_args.args[1], "remain_red")
+        self.assertEqual(queue_sound.call_args.args[1], "remain_yellow")
 
-    def test_player_panel_remain_sound_fires_only_when_thresholds_are_crossed(self) -> None:
+    def test_player_panel_alert_sound_queues_all_simultaneous_candidates(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", object()), patch(
+            "ui.table_renderer._queue_alert_sound_job",
+            return_value=True,
+        ) as queue_sound:
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {},
+                {},
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="Remain 11.8",
+                            key="remain_yellow",
+                        ),
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="dora",
+                            key="dora:0:5",
+                        ),
+                    ),
+                    2: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="haya",
+                            key="haya:0:6",
+                        ),
+                    ),
+                },
+            )
+
+        self.assertEqual(canvas.bell_calls, 0)
+        self.assertEqual(
+            [call.args[1] for call in queue_sound.call_args_list],
+            ["dora:0:5", "haya:0:6", "remain_yellow"],
+        )
+        self.assertEqual(
+            canvas.last_player_panel_sounded_alert_keys_by_seat[1],
+            frozenset({"remain_yellow", "dora:0:5"}),
+        )
+        self.assertEqual(
+            canvas.last_player_panel_sounded_alert_keys_by_seat[2],
+            frozenset({"haya:0:6"}),
+        )
+
+    def test_player_panel_alert_sound_queues_one_same_asset_kind_per_discard(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", object()), patch(
+            "ui.table_renderer._queue_alert_sound_job",
+            return_value=True,
+        ) as queue_sound:
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {},
+                {},
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="dora",
+                            key="dora:0:5",
+                        ),
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_RED,
+                            label="門前 5",
+                            key="menzen_red",
+                        ),
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_RED,
+                            label="染/対々 UP",
+                            key="hand_pattern_red",
+                        ),
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="染/対々 UP",
+                            key="hand_pattern_yellow",
+                        ),
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="思考時間聴牌近",
+                            key="tenpai_near",
+                        ),
+                    ),
+                },
+                latest_global_discard_index=24,
+            )
+
+        self.assertEqual(canvas.bell_calls, 0)
+        self.assertEqual(
+            [call.args[1] for call in queue_sound.call_args_list],
+            ["dora:0:5", "menzen_red", "hand_pattern_yellow"],
+        )
+        self.assertEqual(canvas.last_player_panel_sound_kind_gate_discard_index, 24)
+        self.assertEqual(
+            canvas.last_player_panel_sound_kinds_for_discard,
+            frozenset({"alert_panel_dora", "alert_panel_red", "alert_panel_yellow"}),
+        )
+
+    def test_player_panel_alert_sound_kind_gate_survives_same_discard_recheck(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+                self.reset_visible_sound_state()
+
+            def reset_visible_sound_state(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_sounded_alert_keys_by_seat = {
+                    1: frozenset(),
+                    2: frozenset(),
+                    3: frozenset(),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", object()), patch(
+            "ui.table_renderer._queue_alert_sound_job",
+            return_value=True,
+        ) as queue_sound:
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {},
+                {},
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="染/対々 UP",
+                            key="hand_pattern_yellow",
+                        ),
+                    ),
+                },
+                latest_global_discard_index=24,
+            )
+            canvas.reset_visible_sound_state()
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {},
+                {},
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="思考時間聴牌近",
+                            key="tenpai_near",
+                        ),
+                    ),
+                },
+                latest_global_discard_index=24,
+            )
+            canvas.reset_visible_sound_state()
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {},
+                {},
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="思考時間聴牌近",
+                            key="tenpai_near",
+                        ),
+                    ),
+                },
+                latest_global_discard_index=25,
+            )
+
+        self.assertEqual(canvas.bell_calls, 0)
+        self.assertEqual(
+            [call.args[1] for call in queue_sound.call_args_list],
+            ["hand_pattern_yellow", "tenpai_near"],
+        )
+        self.assertEqual(canvas.last_player_panel_sound_kind_gate_discard_index, 25)
+        self.assertEqual(
+            canvas.last_player_panel_sound_kinds_for_discard,
+            frozenset({"alert_panel_yellow"}),
+        )
+
+    def test_alert_sound_job_queue_keeps_fifo_order_without_dropping(self) -> None:
+        job_queue: queue.Queue[
+            tuple[tuple[object, ...], object, tuple[object, ...], dict[str, object]]
+        ] = queue.Queue()
+
+        def first_job() -> None:
+            return None
+
+        def second_job() -> None:
+            return None
+
+        table_renderer._ALERT_SOUND_QUEUED_SIGNATURES.clear()
+        table_renderer._ALERT_SOUND_ACTIVE_SIGNATURES.clear()
+        try:
+            with patch("ui.table_renderer.winsound", object()), patch(
+                "ui.table_renderer._ensure_alert_sound_worker",
+                return_value=job_queue,
+            ):
+                self.assertTrue(table_renderer._queue_alert_sound_job(first_job, "first"))
+                self.assertTrue(table_renderer._queue_alert_sound_job(second_job, "second"))
+
+            _first_signature, first_target, first_args, _first_kwargs = job_queue.get_nowait()
+            _second_signature, second_target, second_args, _second_kwargs = job_queue.get_nowait()
+        finally:
+            table_renderer._ALERT_SOUND_QUEUED_SIGNATURES.clear()
+            table_renderer._ALERT_SOUND_ACTIVE_SIGNATURES.clear()
+        self.assertIs(first_target, first_job)
+        self.assertEqual(first_args, ("first",))
+        self.assertIs(second_target, second_job)
+        self.assertEqual(second_args, ("second",))
+
+    def test_alert_sound_job_queue_deduplicates_pending_and_active_jobs(self) -> None:
+        job_queue: queue.Queue[
+            tuple[tuple[object, ...], object, tuple[object, ...], dict[str, object]]
+        ] = queue.Queue()
+
+        def sound_job(alert_key: str) -> None:
+            return None
+
+        table_renderer._ALERT_SOUND_QUEUED_SIGNATURES.clear()
+        table_renderer._ALERT_SOUND_ACTIVE_SIGNATURES.clear()
+        try:
+            with patch("ui.table_renderer.winsound", object()), patch(
+                "ui.table_renderer._ensure_alert_sound_worker",
+                return_value=job_queue,
+            ):
+                self.assertTrue(table_renderer._queue_alert_sound_job(sound_job, "dora:0:5"))
+                self.assertFalse(table_renderer._queue_alert_sound_job(sound_job, "dora:0:5"))
+                self.assertEqual(job_queue.qsize(), 1)
+
+                signature, _target, _args, _kwargs = job_queue.get_nowait()
+                table_renderer._mark_alert_sound_job_started(signature)
+                self.assertFalse(table_renderer._queue_alert_sound_job(sound_job, "dora:0:5"))
+                table_renderer._mark_alert_sound_job_finished(signature)
+
+                self.assertTrue(table_renderer._queue_alert_sound_job(sound_job, "dora:0:5"))
+                self.assertEqual(job_queue.qsize(), 1)
+        finally:
+            table_renderer._ALERT_SOUND_QUEUED_SIGNATURES.clear()
+            table_renderer._ALERT_SOUND_ACTIVE_SIGNATURES.clear()
+
+    def test_alert_sound_asset_playback_is_synchronous_for_worker_queue(self) -> None:
+        class WinsoundStub:
+            SND_FILENAME = 0x00020000
+            SND_ASYNC = 0x0001
+
+            def __init__(self) -> None:
+                self.play_sound_calls: list[tuple[str, int]] = []
+
+            def PlaySound(self, path: str, flags: int) -> None:
+                self.play_sound_calls.append((path, flags))
+
+        winsound_stub = WinsoundStub()
+
+        with patch("ui.table_renderer.winsound", winsound_stub):
+            self.assertTrue(table_renderer._play_alert_sound_asset("alert_panel_dora"))
+
+        self.assertEqual(len(winsound_stub.play_sound_calls), 1)
+        _path, flags = winsound_stub.play_sound_calls[0]
+        self.assertTrue(flags & winsound_stub.SND_FILENAME)
+        self.assertFalse(flags & winsound_stub.SND_ASYNC)
+
+    def test_huuuro_sound_fires_once_per_source_and_live_refresh_token(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.huuuro_alert_sound_signatures = []
+                self.last_huuuro_alert_sound_signature = None
+                self.last_spectator_mode_alert_sound_signature = None
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", None):
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "initbylog",
+                (10, 0),
+            )
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "INITBYLOG",
+                (10, 1),
+            )
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "wgc",
+                (10, 1),
+            )
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "bridge",
+                (10, 1),
+            )
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "bridge",
+                (10, 2),
+            )
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "discard",
+                (11, 0),
+            )
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "initbylog",
+                (11, 0),
+            )
+
+        self.assertEqual(canvas.bell_calls, 4)
+
+    def test_huuuro_sound_queues_voice_asset_worker(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.huuuro_alert_sound_signatures = []
+                self.last_huuuro_alert_sound_signature = None
+                self.last_spectator_mode_alert_sound_signature = None
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", object()), patch(
+            "ui.table_renderer._queue_alert_sound_job",
+            return_value=True,
+        ) as queue_sound:
+            table_renderer._play_huuuro_alert_sound_if_needed(
+                canvas,
+                "wgc",
+                ((12, 3), 99),
+            )
+
+        queue_sound.assert_called_once_with(
+            table_renderer._play_huuuro_alert_sound_worker,
+            ("wgc", 12),
+        )
+        self.assertEqual(canvas.bell_calls, 0)
+
+    def test_player_panel_remain_sound_fires_only_when_white_turns_yellow(self) -> None:
         class CanvasStub:
             def __init__(self) -> None:
                 self.last_player_panel_alert_keys_by_seat = {
@@ -1357,7 +1854,7 @@ class PlayerPanelAlertTest(unittest.TestCase):
 
         with patch("ui.table_renderer.winsound", None), patch(
             "ui.table_renderer.time.monotonic",
-            side_effect=[100.0, 101.0, 102.0],
+            return_value=100.0,
         ):
             _play_player_panel_alert_sound_if_needed(
                 canvas,
@@ -1426,8 +1923,87 @@ class PlayerPanelAlertTest(unittest.TestCase):
                 alert_indicators_by_seat=purple_indicators,
             )
 
-        self.assertEqual(canvas.bell_calls, 3)
+        self.assertEqual(canvas.bell_calls, 1)
         self.assertEqual(canvas.last_player_panel_remain_sound_level_by_seat[1], 3)
+
+    def test_player_panel_remain_sound_state_survives_same_round_ui_reset(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_sounded_alert_keys_by_seat = {
+                    1: frozenset(),
+                    2: frozenset(),
+                    3: frozenset(),
+                }
+                self.last_player_panel_push_sound_window_end_by_seat = {
+                    1: None,
+                    2: None,
+                    3: None,
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+        yellow_indicators = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="Remain 18/11.8",
+                    key="remain_yellow",
+                ),
+            ),
+        }
+        summary = {
+            1: {
+                "denominator_count": 18.0,
+                "denominator_count_without_temporary_safe": 11.8,
+            }
+        }
+
+        with patch("ui.table_renderer.winsound", None), patch(
+            "ui.table_renderer.time.monotonic",
+            return_value=100.0,
+        ):
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                summary,
+                {1: {}},
+                alert_indicators_by_seat=yellow_indicators,
+            )
+            table_renderer._reset_round_ui_state(
+                canvas,
+                preserve_player_panel_sound_state=True,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                summary,
+                {1: {}},
+                alert_indicators_by_seat=yellow_indicators,
+            )
+
+        self.assertEqual(canvas.bell_calls, 1)
+        self.assertEqual(canvas.last_player_panel_remain_sound_level_by_seat[1], 1)
+        self.assertEqual(
+            canvas.last_player_panel_sounded_alert_keys_by_seat[1],
+            frozenset({"remain_yellow"}),
+        )
 
     def test_player_panel_remain_sound_uses_displayed_alert_keys_only(self) -> None:
         class CanvasStub:
@@ -1591,7 +2167,72 @@ class PlayerPanelAlertTest(unittest.TestCase):
         self.assertEqual(canvas.bell_calls, 2)
         self.assertEqual(canvas.last_player_panel_remain_sound_level_by_seat[1], 1)
 
-    def test_player_panel_alert_sound_rate_limits_rapid_retriggers(self) -> None:
+    def test_player_panel_remain_sound_ignores_red_reentry_and_downgrade(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+        red_indicators = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_RED,
+                    label="Remain 16/8.9",
+                    key="remain_red",
+                ),
+            ),
+        }
+        yellow_indicators = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="Remain 18/11.8",
+                    key="remain_yellow",
+                ),
+            ),
+        }
+
+        with patch("ui.table_renderer.winsound", None), patch(
+            "ui.table_renderer.time.monotonic",
+            return_value=100.0,
+        ):
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count_without_temporary_safe": 8.9}},
+                {1: {}},
+                alert_indicators_by_seat=red_indicators,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count_without_temporary_safe": 11.8}},
+                {1: {}},
+                alert_indicators_by_seat=yellow_indicators,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count_without_temporary_safe": 8.7}},
+                {1: {}},
+                alert_indicators_by_seat=red_indicators,
+            )
+
+        self.assertEqual(canvas.bell_calls, 0)
+        self.assertEqual(canvas.last_player_panel_remain_sound_level_by_seat[1], 2)
+
+    def test_player_panel_alert_sound_requeues_rapid_retriggers(self) -> None:
         class CanvasStub:
             def __init__(self) -> None:
                 self.last_player_panel_alert_keys_by_seat = {
@@ -1659,7 +2300,7 @@ class PlayerPanelAlertTest(unittest.TestCase):
                 alert_indicators_by_seat=yellow_indicators,
             )
 
-        self.assertEqual(canvas.bell_calls, 1)
+        self.assertEqual(canvas.bell_calls, 2)
 
     def test_player_panel_push_sound_waits_until_second_river_row(self) -> None:
         class CanvasStub:
@@ -1808,6 +2449,176 @@ class PlayerPanelAlertTest(unittest.TestCase):
             frozenset({"push:24"}),
         )
 
+    def test_player_panel_push_sound_is_not_replayed_when_latched_push_refreshes(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", None), patch(
+            "ui.table_renderer.time.monotonic",
+            return_value=100.0,
+        ):
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {
+                    1: {
+                        "seat": 1,
+                        "percentage": 12.3,
+                        "threshold_percent": 9.0,
+                        "discard_index": 24,
+                        "seat_discard_index": 6,
+                    }
+                },
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_PURPLE,
+                            label="Push 12.3%",
+                            key="push:24",
+                        ),
+                    )
+                },
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {
+                    1: {
+                        "seat": 1,
+                        "percentage": 11.0,
+                        "threshold_percent": 9.0,
+                        "discard_index": 26,
+                        "seat_discard_index": 7,
+                    }
+                },
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_PURPLE,
+                            label="Push 11.0%",
+                            key="push:26",
+                        ),
+                    )
+                },
+            )
+
+        self.assertEqual(canvas.bell_calls, 1)
+        self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], ("push:26",))
+        self.assertEqual(canvas.last_player_panel_audible_alert_keys_by_seat[1], ("push:26",))
+
+    def test_player_panel_push_sound_is_not_replayed_after_short_empty_gap(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", None), patch(
+            "ui.table_renderer.time.monotonic",
+            return_value=100.0,
+        ):
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {
+                    1: {
+                        "seat": 1,
+                        "percentage": 12.3,
+                        "threshold_percent": 9.0,
+                        "discard_index": 24,
+                        "seat_discard_index": 6,
+                    }
+                },
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_PURPLE,
+                            label="Push 12.3%",
+                            key="push:24",
+                        ),
+                    )
+                },
+                latest_global_discard_index=24,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {1: {}},
+                alert_indicators_by_seat={1: ()},
+                latest_global_discard_index=25,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {
+                    1: {
+                        "seat": 1,
+                        "percentage": 11.0,
+                        "threshold_percent": 9.0,
+                        "discard_index": 26,
+                        "seat_discard_index": 7,
+                    }
+                },
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_PURPLE,
+                            label="Push 11.0%",
+                            key="push:26",
+                        ),
+                    )
+                },
+                latest_global_discard_index=26,
+            )
+
+        self.assertEqual(canvas.bell_calls, 1)
+        self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], ("push:26",))
+        self.assertEqual(
+            canvas.last_player_panel_push_sound_window_end_by_seat[1],
+            24 + table_renderer.PLAYER_PUSH_ALERT_PERSIST_DISCARD_WINDOW,
+        )
+
     def test_player_panel_self_target_push_sound_still_plays_for_opponent_discard(self) -> None:
         class CanvasStub:
             def __init__(self) -> None:
@@ -1926,7 +2737,209 @@ class PlayerPanelAlertTest(unittest.TestCase):
         self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], ("push:24",))
         self.assertEqual(canvas.last_player_panel_audible_alert_keys_by_seat[1], ("push:24",))
 
-    def test_player_panel_continued_red_alert_sound_is_not_replayed(self) -> None:
+    def test_player_panel_self_discard_push_sound_is_not_delayed_after_gap(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", None), patch(
+            "ui.table_renderer.time.monotonic",
+            return_value=100.0,
+        ):
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {
+                    1: {
+                        "seat": 1,
+                        "percentage": 12.3,
+                        "threshold_percent": 9.0,
+                        "discard_index": 24,
+                        "seat_discard_index": 6,
+                        "target_seats": (2,),
+                    }
+                },
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_PURPLE,
+                            label="Push 12.3%",
+                            key="push:24",
+                        ),
+                    )
+                },
+                latest_discard_actor_seat=int(table_renderer.Player.JICHA),
+                latest_global_discard_index=24,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {1: {}},
+                alert_indicators_by_seat={1: ()},
+                latest_global_discard_index=25,
+            )
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {1: {"denominator_count": 9.0}},
+                {
+                    1: {
+                        "seat": 1,
+                        "percentage": 11.0,
+                        "threshold_percent": 9.0,
+                        "discard_index": 26,
+                        "seat_discard_index": 7,
+                        "target_seats": (2,),
+                    }
+                },
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_PURPLE,
+                            label="Push 11.0%",
+                            key="push:26",
+                        ),
+                    )
+                },
+                latest_discard_actor_seat=int(table_renderer.Player.KAMICHA),
+                latest_global_discard_index=26,
+            )
+
+        self.assertEqual(canvas.bell_calls, 0)
+        self.assertEqual(
+            canvas.last_player_panel_push_sound_window_end_by_seat[1],
+            24 + table_renderer.PLAYER_PUSH_ALERT_PERSIST_DISCARD_WINDOW,
+        )
+
+    def test_player_panel_self_discard_timed_alert_sounds_are_suppressed(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        for alert_key, label in (
+            ("haya:0:5", "haya"),
+            ("oso:1:9", "oso"),
+            ("dora:1:5", "dora"),
+        ):
+            with self.subTest(alert_key=alert_key):
+                canvas = CanvasStub()
+
+                with patch("ui.table_renderer.winsound", None), patch(
+                    "ui.table_renderer.time.monotonic",
+                    return_value=100.0,
+                ):
+                    _play_player_panel_alert_sound_if_needed(
+                        canvas,
+                        {},
+                        {},
+                        alert_indicators_by_seat={
+                            1: (
+                                PlayerAlertIndicator(
+                                    color=PLAYER_ALERT_YELLOW,
+                                    label=label,
+                                    key=alert_key,
+                                ),
+                            )
+                        },
+                        latest_discard_actor_seat=int(table_renderer.Player.JICHA),
+                    )
+
+                self.assertEqual(canvas.bell_calls, 0)
+                self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], (alert_key,))
+                self.assertEqual(
+                    canvas.last_player_panel_audible_alert_keys_by_seat[1],
+                    (alert_key,),
+                )
+
+    def test_player_panel_opponent_discard_timed_alert_sound_can_fire(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.last_player_panel_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_audible_alert_keys_by_seat = {
+                    1: (),
+                    2: (),
+                    3: (),
+                }
+                self.last_player_panel_remain_sound_level_by_seat = {
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                }
+                self.last_player_panel_alert_sound_monotonic_s = 0.0
+                self.bell_calls = 0
+
+            def bell(self) -> None:
+                self.bell_calls += 1
+
+        canvas = CanvasStub()
+
+        with patch("ui.table_renderer.winsound", None), patch(
+            "ui.table_renderer.time.monotonic",
+            return_value=100.0,
+        ):
+            _play_player_panel_alert_sound_if_needed(
+                canvas,
+                {},
+                {},
+                alert_indicators_by_seat={
+                    1: (
+                        PlayerAlertIndicator(
+                            color=PLAYER_ALERT_YELLOW,
+                            label="haya",
+                            key="haya:0:5",
+                        ),
+                    )
+                },
+                latest_discard_actor_seat=int(table_renderer.Player.SHIMOCHA),
+            )
+
+        self.assertEqual(canvas.bell_calls, 1)
+        self.assertEqual(canvas.last_player_panel_alert_keys_by_seat[1], ("haya:0:5",))
+
+    def test_player_panel_red_remain_alert_sound_is_not_played(self) -> None:
         class CanvasStub:
             def __init__(self) -> None:
                 self.last_player_panel_alert_keys_by_seat = {
@@ -1969,7 +2982,7 @@ class PlayerPanelAlertTest(unittest.TestCase):
 
         with patch("ui.table_renderer.winsound", None), patch(
             "ui.table_renderer.time.monotonic",
-            side_effect=[100.0, 101.0],
+            return_value=100.0,
         ):
             _play_player_panel_alert_sound_if_needed(
                 canvas,
@@ -2001,10 +3014,10 @@ class PlayerPanelAlertTest(unittest.TestCase):
                 alert_indicators_by_seat=red_indicators,
             )
 
-        self.assertEqual(canvas.bell_calls, 2)
+        self.assertEqual(canvas.bell_calls, 0)
         self.assertEqual(
             canvas.last_player_panel_sounded_alert_keys_by_seat[1],
-            frozenset({"remain_red"}),
+            frozenset(),
         )
 
     def test_player_panel_push_sound_uses_two_note_sequence(self) -> None:
@@ -2212,6 +3225,330 @@ class PlayerPanelAlertTest(unittest.TestCase):
 
         self.assertEqual(indicators_by_seat[1], ())
 
+    def test_haya_alert_indicator_uses_latest_fast_three_to_seven_number_discard(self) -> None:
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=3,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=2300.0,
+                )
+            ],
+            table_renderer.Player.TOIMEN: [
+                table_renderer.Discard(
+                    tile_id=5,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=900.0,
+                ),
+                table_renderer.Discard(
+                    tile_id=8,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=800.0,
+                ),
+            ],
+            table_renderer.Player.KAMICHA: [
+                table_renderer.Discard(
+                    tile_id=20,
+                    draw_type=table_renderer.DrawType.TSUMOGIRI,
+                    thinking_time_ms=1200.0,
+                )
+            ],
+        }
+
+        indicators_by_seat = table_renderer._build_haya_discard_alert_indicators_by_seat(
+            discard_map
+        )
+
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.SHIMOCHA)][0].label, "haya")
+        self.assertEqual(
+            indicators_by_seat[int(table_renderer.Player.SHIMOCHA)][0].key,
+            "haya:0:3",
+        )
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.TOIMEN)], ())
+        self.assertEqual(
+            indicators_by_seat[int(table_renderer.Player.KAMICHA)][0].key,
+            "haya:0:20",
+        )
+
+    def test_haya_alert_indicator_rejects_slow_or_honor_discards(self) -> None:
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=6,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=2300.1,
+                )
+            ],
+            table_renderer.Player.TOIMEN: [
+                table_renderer.Discard(
+                    tile_id=31,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=500.0,
+                )
+            ],
+            table_renderer.Player.KAMICHA: [
+                table_renderer.Discard(
+                    tile_id=2,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=500.0,
+                )
+            ],
+        }
+
+        indicators_by_seat = table_renderer._build_haya_discard_alert_indicators_by_seat(
+            discard_map
+        )
+
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.SHIMOCHA)], ())
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.TOIMEN)], ())
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.KAMICHA)], ())
+
+    def test_haya_alert_merge_replaces_stale_haya_rows(self) -> None:
+        existing = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="haya",
+                    key="haya:2:6",
+                ),
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="門前 2",
+                    key="menzen_yellow",
+                ),
+            )
+        }
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=8,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=900.0,
+                )
+            ]
+        }
+
+        merged = table_renderer._merge_haya_discard_alert_indicators_by_seat(
+            existing,
+            discard_map,
+        )
+
+        self.assertEqual(tuple(indicator.key for indicator in merged[1]), ("menzen_yellow",))
+
+    def test_oso_alert_indicator_uses_non_first_slow_1289_number_discard(self) -> None:
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=5,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=900.0,
+                ),
+                table_renderer.Discard(
+                    tile_id=1,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=4000.0,
+                ),
+            ],
+            table_renderer.Player.TOIMEN: [
+                table_renderer.Discard(
+                    tile_id=18,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=4200.0,
+                )
+            ],
+            table_renderer.Player.KAMICHA: [
+                table_renderer.Discard(
+                    tile_id=12,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=700.0,
+                ),
+                table_renderer.Discard(
+                    tile_id=29,
+                    draw_type=table_renderer.DrawType.TSUMOGIRI,
+                    thinking_time_ms=4800.0,
+                ),
+            ],
+        }
+
+        indicators_by_seat = table_renderer._build_oso_discard_alert_indicators_by_seat(
+            discard_map
+        )
+
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.SHIMOCHA)][0].label, "oso")
+        self.assertEqual(
+            indicators_by_seat[int(table_renderer.Player.SHIMOCHA)][0].key,
+            "oso:1:1",
+        )
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.TOIMEN)], ())
+        self.assertEqual(
+            indicators_by_seat[int(table_renderer.Player.KAMICHA)][0].key,
+            "oso:1:29",
+        )
+
+    def test_oso_alert_indicator_rejects_first_fast_central_or_honor_discards(self) -> None:
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=5,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=800.0,
+                ),
+                table_renderer.Discard(
+                    tile_id=9,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=3999.9,
+                )
+            ],
+            table_renderer.Player.TOIMEN: [
+                table_renderer.Discard(
+                    tile_id=1,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=800.0,
+                ),
+                table_renderer.Discard(
+                    tile_id=6,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=5000.0,
+                ),
+            ],
+            table_renderer.Player.KAMICHA: [
+                table_renderer.Discard(
+                    tile_id=31,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=500.0,
+                ),
+                table_renderer.Discard(
+                    tile_id=32,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=5000.0,
+                ),
+            ],
+        }
+
+        indicators_by_seat = table_renderer._build_oso_discard_alert_indicators_by_seat(
+            discard_map
+        )
+
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.SHIMOCHA)], ())
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.TOIMEN)], ())
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.KAMICHA)], ())
+
+    def test_timed_discard_alert_merge_replaces_stale_haya_and_oso_rows(self) -> None:
+        existing = {
+            1: (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="haya",
+                    key="haya:2:6",
+                ),
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="oso",
+                    key="oso:4:8",
+                ),
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="dora",
+                    key="dora:5:10",
+                ),
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="髢蜑・2",
+                    key="menzen_yellow",
+                ),
+            )
+        }
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=8,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=900.0,
+                )
+            ]
+        }
+
+        merged = table_renderer._merge_haya_discard_alert_indicators_by_seat(
+            existing,
+            discard_map,
+        )
+
+        self.assertEqual(tuple(indicator.key for indicator in merged[1]), ("menzen_yellow",))
+
+    def test_dora_alert_indicator_uses_latest_discard_matching_indicator_dora(self) -> None:
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=5,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=3200.0,
+                )
+            ],
+            table_renderer.Player.TOIMEN: [
+                table_renderer.Discard(
+                    tile_id=6,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=3200.0,
+                )
+            ],
+        }
+
+        indicators_by_seat = table_renderer._build_dora_discard_alert_indicators_by_seat(
+            discard_map,
+            [4],
+        )
+
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.SHIMOCHA)][0].label, "dora")
+        self.assertEqual(
+            indicators_by_seat[int(table_renderer.Player.SHIMOCHA)][0].key,
+            "dora:0:5",
+        )
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.TOIMEN)], ())
+
+    def test_dora_alert_indicator_treats_red_five_as_dora_without_indicator(self) -> None:
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=10,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=3200.0,
+                )
+            ],
+        }
+
+        indicators_by_seat = table_renderer._build_dora_discard_alert_indicators_by_seat(
+            discard_map,
+            [],
+        )
+
+        self.assertEqual(
+            indicators_by_seat[int(table_renderer.Player.SHIMOCHA)][0].key,
+            "dora:0:10",
+        )
+
+    def test_dora_alert_indicator_uses_only_latest_discard(self) -> None:
+        discard_map = {
+            table_renderer.Player.SHIMOCHA: [
+                table_renderer.Discard(
+                    tile_id=5,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=3200.0,
+                ),
+                table_renderer.Discard(
+                    tile_id=6,
+                    draw_type=table_renderer.DrawType.TEDASHI,
+                    thinking_time_ms=3200.0,
+                ),
+            ],
+        }
+
+        indicators_by_seat = table_renderer._build_dora_discard_alert_indicators_by_seat(
+            discard_map,
+            [4],
+        )
+
+        self.assertEqual(indicators_by_seat[int(table_renderer.Player.SHIMOCHA)], ())
+
     def test_push_alert_persists_for_about_three_turns(self) -> None:
         persisted_alerts = _persist_player_push_alerts(
             {
@@ -2416,6 +3753,112 @@ class PlayerPanelAlertTest(unittest.TestCase):
             ("push:15",),
         )
 
+    def test_first_row_fast_trend_alert_uses_previous_round_average(self) -> None:
+        seat = 1
+        discards_by_seat = {
+            seat: [
+                Discard(tile_136=0, round_discard_index=0, thinking_time_ms=1200.0),
+                Discard(tile_136=4, round_discard_index=1, thinking_time_ms=1400.0),
+                Discard(tile_136=8, round_discard_index=2, thinking_time_ms=1300.0),
+            ]
+        }
+
+        indicators_by_seat = (
+            table_renderer._build_first_row_fast_trend_alert_indicators_by_seat(
+                discards_by_seat,
+                {seat: [3000.0, 2800.0]},
+                hanchan_round_ordinal=3,
+            )
+        )
+
+        self.assertEqual(
+            indicators_by_seat[seat],
+            (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_YELLOW,
+                    label="早い傾向",
+                    key="first_row_fast_trend:active",
+                ),
+            ),
+        )
+
+    def test_first_row_fast_trend_alert_requires_third_round_and_first_row_third_discard(self) -> None:
+        seat = 1
+        previous_history = {seat: [3000.0, 2800.0]}
+        two_discards = {
+            seat: [
+                Discard(tile_136=0, round_discard_index=0, thinking_time_ms=1200.0),
+                Discard(tile_136=4, round_discard_index=1, thinking_time_ms=1400.0),
+            ]
+        }
+        seven_discards = {
+            seat: [
+                Discard(
+                    tile_136=index * 4,
+                    round_discard_index=index,
+                    thinking_time_ms=1200.0,
+                )
+                for index in range(7)
+            ]
+        }
+
+        second_round_indicators = (
+            table_renderer._build_first_row_fast_trend_alert_indicators_by_seat(
+                two_discards,
+                previous_history,
+                hanchan_round_ordinal=2,
+            )
+        )
+        early_indicators = (
+            table_renderer._build_first_row_fast_trend_alert_indicators_by_seat(
+                two_discards,
+                previous_history,
+                hanchan_round_ordinal=3,
+            )
+        )
+        after_first_row_indicators = (
+            table_renderer._build_first_row_fast_trend_alert_indicators_by_seat(
+                seven_discards,
+                previous_history,
+                hanchan_round_ordinal=3,
+            )
+        )
+
+        self.assertEqual(second_round_indicators[seat], tuple())
+        self.assertEqual(early_indicators[seat], tuple())
+        self.assertEqual(after_first_row_indicators[seat], tuple())
+
+    def test_first_row_fast_trend_merge_replaces_stale_indicator(self) -> None:
+        seat = 1
+        merged = table_renderer.merge_first_row_fast_trend_alert_indicators_by_seat(
+            {
+                seat: (
+                    PlayerAlertIndicator(
+                        color=PLAYER_ALERT_YELLOW,
+                        label="早い傾向",
+                        key="first_row_fast_trend:active",
+                    ),
+                    PlayerAlertIndicator(
+                        color=PLAYER_ALERT_RED,
+                        label="Remain 5.0",
+                        key="remain_red",
+                    ),
+                )
+            },
+            {seat: tuple()},
+        )
+
+        self.assertEqual(
+            merged[seat],
+            (
+                PlayerAlertIndicator(
+                    color=PLAYER_ALERT_RED,
+                    label="Remain 5.0",
+                    key="remain_red",
+                ),
+            ),
+        )
+
     def test_push_alert_key_uses_color_based_sound_priority(self) -> None:
         self.assertEqual(_player_panel_alert_sound_priority("push:7"), 3)
         self.assertEqual(_player_panel_alert_sound_priority("push_release:10"), 1)
@@ -2425,6 +3868,9 @@ class PlayerPanelAlertTest(unittest.TestCase):
         self.assertEqual(_player_panel_alert_sound_priority("menzen_yellow"), 0)
         self.assertEqual(_player_panel_alert_sound_priority("menzen_red"), 2)
         self.assertEqual(_player_panel_alert_sound_priority("tenpai_near"), 1)
+        self.assertEqual(_player_panel_alert_sound_priority("oso:1:9"), 1)
+        self.assertEqual(_player_panel_alert_sound_priority("dora:1:5"), 2)
+        self.assertEqual(_player_panel_alert_sound_priority("first_row_fast_trend:active"), 1)
 
     def test_push_discard_marker_stays_latched_for_round_after_panel_alert_expires(self) -> None:
         first_markers = _push_marker_alerts_for_render(
@@ -2503,13 +3949,20 @@ class PlayerPanelAlertTest(unittest.TestCase):
         self.assertEqual(_player_panel_alert_sound_tone("push:7"), (520, 110))
         self.assertEqual(_player_panel_alert_sound_tone("remain_red"), (760, 90))
         self.assertEqual(_player_panel_alert_sound_tone("remain_yellow"), (960, 70))
+        self.assertEqual(_player_panel_alert_sound_tone("haya:0:3"), (960, 70))
+        self.assertEqual(_player_panel_alert_sound_tone("oso:1:9"), (960, 70))
+        self.assertEqual(_player_panel_alert_sound_tone("dora:1:5"), (960, 70))
+        self.assertEqual(
+            _player_panel_alert_sound_tone("first_row_fast_trend:active"),
+            (960, 70),
+        )
         self.assertEqual(_player_panel_alert_sound_tone("push_release:10"), (1200, 60))
         self.assertEqual(
             table_renderer._player_panel_alert_sound_tones("push:7"),
             ((520, 65), (760, 80)),
         )
 
-    def test_remain_alert_sounds_use_r_prefixed_voice_assets(self) -> None:
+    def test_remain_alert_sound_asset_names_remain_available(self) -> None:
         self.assertEqual(
             table_renderer._player_panel_alert_sound_asset_name("remain_purple"),
             "alert_panel_remain_purple",
@@ -2526,6 +3979,24 @@ class PlayerPanelAlertTest(unittest.TestCase):
             table_renderer._player_panel_alert_sound_asset_name("menzen_red"),
             "alert_panel_red",
         )
+        self.assertEqual(
+            table_renderer._player_panel_alert_sound_asset_name("haya:0:3"),
+            "alert_panel_haya",
+        )
+        self.assertEqual(
+            table_renderer._player_panel_alert_sound_asset_name("oso:1:9"),
+            "alert_panel_oso",
+        )
+        self.assertEqual(
+            table_renderer._player_panel_alert_sound_asset_name("dora:1:5"),
+            "alert_panel_dora",
+        )
+        self.assertEqual(
+            table_renderer._player_panel_alert_sound_asset_name(
+                "first_row_fast_trend:active"
+            ),
+            "alert_panel_fast_trend",
+        )
 
     def test_player_panel_non_push_alert_sounds_use_one_note(self) -> None:
         for alert_key in (
@@ -2537,6 +4008,10 @@ class PlayerPanelAlertTest(unittest.TestCase):
             "suit_bias",
             "ryanmen_chi_37",
             "tenpai_near",
+            "haya:0:3",
+            "oso:1:9",
+            "dora:1:5",
+            "first_row_fast_trend:active",
             "push_release:10",
         ):
             with self.subTest(alert_key=alert_key):

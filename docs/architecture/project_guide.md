@@ -1,6 +1,6 @@
 # プロジェクトガイド
 
-更新日: `2026-05-24`
+更新日: `2026-09-03`
 
 ## 目的
 
@@ -17,9 +17,10 @@
 
 ## 直近の重点
 
-- `Push` は panel、音声、河 `P` のタイミングを揃える。
+- `Push` は panel、音声、河 `P` で同じ payload を参照する。panel は判定時から表示し、音声と河 `P` は各席の2段目以降だけ同じタイミングで反映する。
 - panel に出ない自分側 alert は音声対象にしない。
 - `SUMMARY` と `ALERT` の remain 色基準は同一にする。
+- 同一局の heavy suji / 危険度計算中は直前完了 bundle を side panel / hand / analysis overlay の表示専用 fallback として保持し、完了時は async-only partial refresh で差し替える。初回と新局は保持対象外で、stale 値を自動打牌や alert 音声の新規判定へ使わない。
 - 河は全描画せず、表示シグネチャ単位で差分更新する。
 - NAGA は南2以降に下部自動要約を出す。
 - 所属卓分析は `hanchan_master` を正本にする。

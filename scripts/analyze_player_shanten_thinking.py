@@ -76,15 +76,17 @@ def _read_hanchan_master(csv_dir: Path) -> pd.DataFrame:
     )
 
 
-def _prepare_valid_rows(df: pd.DataFrame, *, max_shanten: int) -> pd.DataFrame:
+def _prepare_valid_rows(df: pd.DataFrame, *, min_shanten: int, max_shanten: int) -> pd.DataFrame:
     out = df.copy()
     out["thinking_time_ms"] = pd.to_numeric(out["thinking_time_ms"], errors="coerce")
     out["shanten_after_discard"] = pd.to_numeric(out["shanten_after_discard"], errors="coerce")
+    # 0-shanten discards are excluded by the default CLI range. They often represent wait-selection
+    # or post-ready decisions and were observed to be a shorter-time exception.
     out = out[
         out["thinking_time_ms"].notna()
         & out["shanten_after_discard"].notna()
         & (out["thinking_time_ms"] >= 0)
-        & out["shanten_after_discard"].between(0, max_shanten)
+        & out["shanten_after_discard"].between(min_shanten, max_shanten)
     ].copy()
     out["shanten_after_discard"] = out["shanten_after_discard"].astype(int)
     out["thinking_s"] = out["thinking_time_ms"] / 1000.0
@@ -246,13 +248,17 @@ def _player_summary(valid: pd.DataFrame, *, min_samples: int, min_bins: int) -> 
         med_range = float(np.nanmax(y) - np.nanmin(y)) if len(y) else float("nan")
         med_mean = float(np.nanmean(y)) if len(y) else float("nan")
         med_cv = float(np.nanstd(y, ddof=0) / med_mean) if med_mean > 0 else float("nan")
-        shanten_1 = median_by_shanten.get(1, np.nan)
-        late_shanten = median_by_shanten.reindex([3, 4]).dropna()
-        near_ready_delta = (
-            float(shanten_1 - late_shanten.mean())
-            if pd.notna(shanten_1) and len(late_shanten) > 0
-            else float("nan")
-        )
+
+        def median_delta(left_shanten: int, right_shanten: int) -> float:
+            left = median_by_shanten.get(left_shanten, np.nan)
+            right = median_by_shanten.get(right_shanten, np.nan)
+            if pd.isna(left) or pd.isna(right):
+                return float("nan")
+            return float(left - right)
+
+        # In the default 1..3 report, this is the clearest per-player effect size:
+        # positive means 1-shanten decisions take longer than 3-shanten decisions.
+        shanten_1_minus_3 = median_delta(1, 3)
         room_counts = group["room_class_label"].value_counts()
         rows.append(
             {
@@ -276,7 +282,10 @@ def _player_summary(valid: pd.DataFrame, *, min_samples: int, min_bins: int) -> 
                 "median_s_slope_per_shanten": slope,
                 "median_s_range_across_shanten": med_range,
                 "median_s_cv_across_shanten": med_cv,
-                "near_ready_delta_s": near_ready_delta,
+                "near_ready_delta_s": shanten_1_minus_3,
+                "median_s_1_minus_3_s": shanten_1_minus_3,
+                "median_s_1_minus_2_s": median_delta(1, 2),
+                "median_s_2_minus_3_s": median_delta(2, 3),
                 "n_by_shanten_json": json.dumps(
                     {int(k): int(v) for k, v in shanten_counts.items()},
                     ensure_ascii=False,
@@ -364,13 +373,13 @@ def _save_correlation_ranking(summary: pd.DataFrame, out_path: Path, *, top_n: i
     ax.barh(labels, values, color=colors, alpha=0.88)
     ax.axvline(0, color="#0f172a", linewidth=1)
     ax.grid(axis="x", linestyle="-", linewidth=0.8)
-    ax.set_title("Player-wise correlation: shanten count vs thinking time")
+    ax.set_title("Player-wise correlation: shanten 1-3 vs thinking time")
     ax.set_xlabel("Spearman rho, using log1p(thinking seconds)")
     ax.set_ylabel("")
     ax.text(
         0.01,
         0.01,
-        "Negative: lower shanten tends to take longer. Positive: higher shanten tends to take longer.",
+        "Negative: 1-shanten tends to take longer. Positive: 3-shanten tends to take longer.",
         transform=ax.transAxes,
         ha="left",
         va="bottom",
@@ -395,7 +404,7 @@ def _save_median_heatmap(medians: pd.DataFrame, summary: pd.DataFrame, out_path:
     values = matrix.to_numpy(dtype=float)
     masked = np.ma.masked_invalid(values)
     image = ax.imshow(masked, aspect="auto", cmap="viridis", vmin=0, vmax=np.nanpercentile(values, 95))
-    ax.set_title("Median thinking time by player and shanten")
+    ax.set_title("Median thinking time by player and shanten 1-3")
     ax.set_xlabel("shanten_after_discard")
     ax.set_ylabel("player")
     ax.set_xticks(range(len(matrix.columns)))
@@ -458,7 +467,7 @@ def _save_profile_lines(medians: pd.DataFrame, summary: pd.DataFrame, out_path: 
         label="player median of medians",
     )
     ax.grid(True, axis="y")
-    ax.set_title("Per-player median thinking profile")
+    ax.set_title("Per-player median thinking profile, shanten 1-3")
     ax.set_xlabel("shanten_after_discard")
     ax.set_ylabel("median thinking seconds")
     ax.set_xticks(x)
@@ -491,7 +500,7 @@ def _save_player_variability_boxplot(medians: pd.DataFrame, out_path: Path) -> N
         jitter = rng.normal(loc=idx, scale=0.035, size=len(arr))
         ax.scatter(jitter, arr, s=12, color="#334155", alpha=0.38, linewidth=0)
     ax.grid(True, axis="y")
-    ax.set_title("Player-to-player variability of median thinking time")
+    ax.set_title("Player-to-player variability of median thinking time, shanten 1-3")
     ax.set_xlabel("shanten_after_discard")
     ax.set_ylabel("per-player median thinking seconds")
     fig.tight_layout()
@@ -547,7 +556,110 @@ def _fmt(value: object, digits: int = 3) -> str:
     return f"{val:.{digits}f}"
 
 
-def _write_html_report(
+def _report_lightbox_css() -> str:
+    return """
+    figure img { cursor: zoom-in; }
+    .image-lightbox[hidden] { display: none; }
+    .image-lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      background: rgba(15, 23, 42, 0.86);
+    }
+    .image-lightbox img {
+      max-width: min(96vw, 1480px);
+      max-height: 86vh;
+      width: auto;
+      height: auto;
+      background: white;
+      border-radius: 6px;
+      box-shadow: 0 20px 80px rgba(0, 0, 0, 0.42);
+      cursor: zoom-out;
+    }
+    .image-lightbox button {
+      position: fixed;
+      top: 14px;
+      right: 18px;
+      width: 40px;
+      height: 40px;
+      border: 1px solid rgba(255, 255, 255, 0.52);
+      border-radius: 999px;
+      color: white;
+      background: rgba(15, 23, 42, 0.72);
+      font-size: 24px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .image-lightbox-caption {
+      position: fixed;
+      left: 24px;
+      right: 24px;
+      bottom: 16px;
+      color: white;
+      text-align: center;
+      font-size: 13px;
+    }"""
+
+
+def _report_lightbox_html() -> str:
+    return """
+  <div class="image-lightbox" id="image-lightbox" hidden>
+    <button type="button" id="image-lightbox-close" aria-label="Close">&times;</button>
+    <img id="image-lightbox-img" alt="">
+    <div class="image-lightbox-caption" id="image-lightbox-caption"></div>
+  </div>
+  <script>
+    (() => {
+      const lightbox = document.getElementById("image-lightbox");
+      const lightboxImage = document.getElementById("image-lightbox-img");
+      const caption = document.getElementById("image-lightbox-caption");
+      const closeButton = document.getElementById("image-lightbox-close");
+
+      const close = () => {
+        lightbox.hidden = true;
+        lightboxImage.removeAttribute("src");
+        caption.textContent = "";
+      };
+
+      const open = (image) => {
+        lightboxImage.src = image.currentSrc || image.src;
+        lightboxImage.alt = image.alt || "";
+        const figureCaption = image.closest("figure")?.querySelector("figcaption");
+        caption.textContent = figureCaption?.textContent || image.alt || "";
+        lightbox.hidden = false;
+        closeButton.focus();
+      };
+
+      document.querySelectorAll("figure img").forEach((image) => {
+        image.tabIndex = 0;
+        image.addEventListener("click", () => open(image));
+        image.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") {
+            return;
+          }
+          event.preventDefault();
+          open(image);
+        });
+      });
+      closeButton.addEventListener("click", close);
+      lightbox.addEventListener("click", (event) => {
+        if (event.target === lightbox || event.target === lightboxImage) {
+          close();
+        }
+      });
+      document.addEventListener("keydown", (event) => {
+        if (!lightbox.hidden && event.key === "Escape") {
+          close();
+        }
+      });
+    })();
+  </script>"""
+
+
+def _write_html_report_legacy(
     out_dir: Path,
     *,
     source_files: list[str],
@@ -581,6 +693,9 @@ def _write_html_report(
         rows.append("</tbody></table>")
         return "".join(rows)
 
+    lightbox_css = _report_lightbox_css()
+    lightbox_html = _report_lightbox_html()
+
     html_text = f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -602,6 +717,7 @@ def _write_html_report(
     th {{ background: #e2e8f0; }}
     td:first-child, th:first-child {{ text-align: left; }}
     code {{ font-family: Consolas, monospace; background: #eef2ff; padding: 1px 4px; border-radius: 4px; }}
+{lightbox_css}
   </style>
 </head>
 <body>
@@ -633,6 +749,156 @@ def _write_html_report(
   {table_html(most_variable, ["player_name", "table_affiliation", "n", "hanchan_count", "median_s_range_across_shanten", "median_s_cv_across_shanten", "spearman_shanten_vs_log1p_thinking_s", "median_s_by_shanten_json"])}
   <h2>プレイヤー間バラつき</h2>
   {table_html(variability, ["shanten_after_discard", "player_count", "player_median_of_medians_s", "player_sd_of_medians_s", "player_iqr_of_medians_s", "player_min_median_s", "player_max_median_s"])}
+{lightbox_html}
+</body>
+</html>
+"""
+    (out_dir / "index.html").write_text(html_text, encoding="utf-8")
+
+
+def _write_html_report(
+    out_dir: Path,
+    *,
+    source_files: list[str],
+    all_rows: int,
+    valid_rows: int,
+    min_samples: int,
+    min_shanten: int,
+    max_shanten: int,
+    summary: pd.DataFrame,
+    variability: pd.DataFrame,
+) -> None:
+    corr_column = "spearman_shanten_vs_log1p_thinking_s"
+    corr = (
+        summary[corr_column].dropna()
+        if not summary.empty and corr_column in summary.columns
+        else pd.Series(dtype=float)
+    )
+    strongest_negative = (
+        summary.sort_values(corr_column).head(8)
+        if not summary.empty and corr_column in summary.columns
+        else pd.DataFrame()
+    )
+    strongest_positive = (
+        summary.sort_values(corr_column, ascending=False).head(8)
+        if not summary.empty and corr_column in summary.columns
+        else pd.DataFrame()
+    )
+    most_variable = (
+        summary.sort_values("median_s_range_across_shanten", ascending=False).head(10)
+        if not summary.empty and "median_s_range_across_shanten" in summary.columns
+        else pd.DataFrame()
+    )
+
+    def table_html(frame: pd.DataFrame, columns: list[str]) -> str:
+        if frame.empty:
+            return "<p>No rows.</p>"
+        rows = [
+            "<table><thead><tr>"
+            + "".join(f"<th>{html.escape(col)}</th>" for col in columns)
+            + "</tr></thead><tbody>"
+        ]
+        for _, row in frame.iterrows():
+            rows.append("<tr>")
+            for col in columns:
+                value = row[col] if col in row.index else ""
+                if isinstance(value, float):
+                    text = _fmt(value, 3)
+                else:
+                    text = str(value)
+                rows.append(f"<td>{html.escape(text)}</td>")
+            rows.append("</tr>")
+        rows.append("</tbody></table>")
+        return "".join(rows)
+
+    range_label = f"{min_shanten}..{max_shanten}"
+    corr_iqr = corr.quantile(0.75) - corr.quantile(0.25) if not corr.empty else float("nan")
+    negative_columns = [
+        "player_name",
+        "table_affiliation",
+        "n",
+        "hanchan_count",
+        "spearman_shanten_vs_log1p_thinking_s",
+        "median_s_1_minus_3_s",
+        "median_s_1_minus_2_s",
+        "median_s_2_minus_3_s",
+        "thinking_median_s",
+        "median_s_by_shanten_json",
+    ]
+    variable_columns = [
+        "player_name",
+        "table_affiliation",
+        "n",
+        "hanchan_count",
+        "median_s_range_across_shanten",
+        "median_s_cv_across_shanten",
+        "median_s_1_minus_3_s",
+        "spearman_shanten_vs_log1p_thinking_s",
+        "median_s_by_shanten_json",
+    ]
+
+    lightbox_css = _report_lightbox_css()
+    lightbox_html = _report_lightbox_html()
+
+    html_text = f"""<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>思考時間 x シャンテン数 プレイヤー別分析</title>
+  <style>
+    body {{ font-family: "Yu Gothic UI", Meiryo, system-ui, sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }}
+    h1 {{ font-size: 24px; margin: 0 0 12px; }}
+    h2 {{ font-size: 18px; margin: 28px 0 10px; }}
+    p, li {{ line-height: 1.6; }}
+    .note {{ color: #475569; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; align-items: start; }}
+    figure {{ margin: 0; padding: 12px; background: white; border: 1px solid #dbe3ef; border-radius: 8px; }}
+    figcaption {{ color: #475569; font-size: 13px; margin-top: 8px; }}
+    img {{ display: block; max-width: 100%; height: auto; }}
+    table {{ border-collapse: collapse; background: white; margin: 8px 0 20px; font-size: 13px; }}
+    th, td {{ border: 1px solid #d1d5db; padding: 6px 8px; text-align: right; }}
+    th {{ background: #e2e8f0; }}
+    td:first-child, th:first-child {{ text-align: left; }}
+    code {{ font-family: Consolas, monospace; background: #eef2ff; padding: 1px 4px; border-radius: 4px; }}
+{lightbox_css}
+  </style>
+</head>
+<body>
+  <h1>思考時間 x シャンテン数 プレイヤー別分析</h1>
+  <p class="note">source_files={html.escape(', '.join(source_files))} / hanchan_master=csv_db/hanchan_master.csv / all_rows={all_rows} / analyzed_rows={valid_rows} / qualified_players={len(summary)} / min_samples={min_samples} / shanten={range_label}</p>
+
+  <h2>今回の見方</h2>
+  <ul>
+    <li>0シャンテンは待ち選択やテンパイ後の処理で少し短くなりやすい例外なので、相関・ランキング・グラフから除外しました。</li>
+    <li>分析対象は <code>shanten_after_discard</code> が 1, 2, 3 の行だけです。相関は <code>log1p(thinking seconds)</code> との Spearman ρ で見ています。</li>
+    <li>ρ が負なら「1シャンテン側ほど長考」、正なら「3シャンテン側ほど長考」です。<code>median_s_1_minus_3_s</code> は 1シャンテン中央値から3シャンテン中央値を引いた秒数です。</li>
+    <li>プレイヤー別比較は、分析範囲内のサンプルが {min_samples} 件以上、かつ 1,2,3 の3種類すべてにデータがあるプレイヤーだけです。</li>
+  </ul>
+
+  <h2>全体サマリ</h2>
+  <ul>
+    <li>プレイヤー別 Spearman ρ: mean={_fmt(corr.mean())}, sd={_fmt(corr.std(ddof=0))}, min={_fmt(corr.min())}, median={_fmt(corr.median())}, max={_fmt(corr.max())}</li>
+    <li>ρ のIQR: {_fmt(corr_iqr)}</li>
+  </ul>
+
+  <div class="grid">
+    <figure><img src="player_correlation_ranking.png" alt="Player correlation ranking"><figcaption>1〜3シャンテンだけで見たプレイヤー別相関。左に長いほど1シャンテン側で長考しやすい。</figcaption></figure>
+    <figure><img src="player_shanten_median_heatmap.png" alt="Player shanten median heatmap"><figcaption>サンプル上位プレイヤーの1〜3シャンテン別中央値秒。</figcaption></figure>
+    <figure><img src="player_shanten_profile_lines.png" alt="Player shanten profile lines"><figcaption>プレイヤーごとの中央値ライン。太い黒線はプレイヤー中央値の中央値。</figcaption></figure>
+    <figure><img src="player_variability_boxplot.png" alt="Player variability boxplot"><figcaption>1〜3シャンテン別に見たプレイヤー間の中央値のバラつき。</figcaption></figure>
+    <figure><img src="player_sample_balance.png" alt="Player sample balance"><figcaption>分析対象になったプレイヤーのサンプル数。ログスケール。</figcaption></figure>
+  </div>
+
+  <h2>1シャンテン側で長考しやすいプレイヤー</h2>
+  {table_html(strongest_negative, negative_columns)}
+  <h2>3シャンテン側で長考しやすいプレイヤー</h2>
+  {table_html(strongest_positive, negative_columns)}
+  <h2>1〜3シャンテン間の起伏が大きいプレイヤー</h2>
+  {table_html(most_variable, variable_columns)}
+  <h2>プレイヤー間のバラつき</h2>
+  {table_html(variability, ["shanten_after_discard", "player_count", "player_median_of_medians_s", "player_sd_of_medians_s", "player_iqr_of_medians_s", "player_min_median_s", "player_max_median_s"])}
+{lightbox_html}
 </body>
 </html>
 """
@@ -647,15 +913,18 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=_repo_root() / "reports" / "player_shanten_thinking")
     parser.add_argument("--min-samples", type=int, default=80)
     parser.add_argument("--min-bins", type=int, default=3)
-    parser.add_argument("--max-shanten", type=int, default=4)
+    parser.add_argument("--min-shanten", type=int, default=1)
+    parser.add_argument("--max-shanten", type=int, default=3)
     args = parser.parse_args()
+    if args.min_shanten > args.max_shanten:
+        parser.error("--min-shanten must be <= --max-shanten")
 
     _set_plot_style()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     raw = _read_discard_facts(args.csv_dir)
     hanchan_master = _read_hanchan_master(args.csv_dir)
-    valid = _prepare_valid_rows(raw, max_shanten=args.max_shanten)
+    valid = _prepare_valid_rows(raw, min_shanten=args.min_shanten, max_shanten=args.max_shanten)
     summary = _player_summary(valid, min_samples=args.min_samples, min_bins=args.min_bins)
     summary = _attach_player_table_affiliations(summary, hanchan_master)
     medians = _player_shanten_medians(valid, summary) if not summary.empty else pd.DataFrame()
@@ -686,12 +955,16 @@ def main() -> None:
         all_rows=int(len(raw)),
         valid_rows=int(len(valid)),
         min_samples=int(args.min_samples),
+        min_shanten=int(args.min_shanten),
         max_shanten=int(args.max_shanten),
         summary=summary,
         variability=variability,
     )
     print(f"wrote {args.out_dir}")
-    print(f"raw_rows={len(raw)} valid_rows={len(valid)} qualified_players={len(summary)}")
+    print(
+        f"raw_rows={len(raw)} analyzed_rows={len(valid)} "
+        f"qualified_players={len(summary)} shanten={args.min_shanten}..{args.max_shanten}"
+    )
 
 
 if __name__ == "__main__":

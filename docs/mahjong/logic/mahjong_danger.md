@@ -271,10 +271,10 @@
 - `Push` also triggers when a player's latest discard is a discard-only shonpai honor tile on that player's `8巡目` or later, even if the normal percentage/remain threshold path does not trigger.
 
 ## 2026-04-11 River / UI Addendum
-- River marker legend is now: called discard `red frame`, post-call tedashi `yellow frame`, lag `blue L`, pon-lag-likely `green Pl`, `3-visible` `pink marker`, awaseuchi `yellow marker`, push `purple P`, and peak thinking-time discard `red diamond`.
+- River marker legend is now: called discard `yellow frame`, post-call tedashi `yellow frame`, lag `blue L`, pon-lag-likely `green Pl`, `3-visible` `pink marker`, awaseuchi `yellow 合`, push `purple P`, and peak thinking-time discard `red diamond`.
 - In mahjong terms, awaseuchi means matching the same 34-kind tile immediately after another player's discard.
-- This project's yellow awaseuchi marker intentionally uses a broader trigger: if the tile discarded now gained public visible-count increases after that player's previous discard and before the current discard, the current discard receives the marker. Public visible-count increases include discards, newly exposed meld tiles, and dora-indicator reveals.
-- Private information such as haipai and self draws is excluded. A seat's own discard or self-exposed meld tiles also do not arm that same seat, because those tiles were already known on that seat's side before the public action completed.
+- This project's display rule uses the retained global river history: another seat's tedashi arms its tile34 for the next five discard increases, and a matching target discard receives the awaseuchi flag.
+- A tsumogiri does not arm a source. The target may be tedashi or tsumogiri. Meld and dora events neither arm a source nor consume the five-discard window.
 - Red-tint discard highlighting is continuous after any of these trigger points per player: suited tedashi after `Remain(no-temp) < 13`, suited tedashi from the first `inner -> outer` tedashi onward, or any tedashi from the first post-call tedashi (`thinking_time_source == "call"`) onward. River-tint priority is `4-visible purple > brown blocked-sequence > red`.
 - `brown` no longer requires prior red-highlight membership. It now means: `tedashi` and the tile belongs to at least one suited `123..789` sequence that is physically denied by `4-visible`. If the tile itself is `4-visible`, purple still wins.
 - In the right-side `Visible x3 / x4` detail lists, suited `3..7` tiles are additionally framed (`pink` for `x3`, `purple` for `x4`) so visible central tiles can be spotted without reading the whole row.
@@ -307,7 +307,7 @@
 - river tint は引き続き `purple > brown > red` だが、`purple` / `brown` は renderer 側の tedashi-only projection であり、red-latch への所属を要求しない。
 - `purple` は `tedashi` かつその牌自体が `4-visible`。
 - `brown` は `tedashi` かつ、3スーツ x `123..789` の `21` 通りのうち、`4-visible` で物理否定された 3 連形にその牌が含まれている状態。
-- river marker の現行表記は丸ではなく文字寄りで、lag は `L`, pon-lag-likely は `Pl`, push は `P` を使う。
+- river marker の現行表記は丸ではなく文字寄りで、lag は `L`, pon-lag-likely は `Pl`, push は `P`, 合わせ打ちは `合` を使う。
 
 ## 2026-04-11 見え枚数 / 合わせ打ち / 河 tint 補足
 
@@ -317,13 +317,13 @@
   - 捨てられた牌自身が `3見え` なら、その牌に対応する跨ぎ筋は `0.8本` として扱う。
   - 赤5を切った場合の跨ぎ筋 `3-6` と `4-7` は、それぞれ `0.25本` 扱いとする。
 - 本来の合わせ打ちは、他家の打牌に対して直後の打牌で同じ 34 種系の牌を切ることを指す。
-- ただしこのアプリの黄丸 marker は、それより広く「あるプレイヤーの前回打牌から今回打牌までの間に visible count が増えた牌を今回切ったか」で付ける。
-- visible count 増加の対象には、公開情報として増えた他家打牌、副露で新たに晒された牌、ドラ表で増えた牌を含む。
-- 配牌や自分のツモ牌のような private 情報は含めない。
-- 自分自身の打牌では自分自身の flag を立てず、自分自身の副露で晒した牌でも self flag は立てない。
-- ただし、鳴きで食った牌は相手打牌由来なので、その相手打牌の時点で caller 側の flag 候補になりうる。
-- 各プレイヤーの flag はそのプレイヤーの次打牌完了時に判定し、hit / miss を問わずそこで消す。
-- 手出し / ツモ切りの別は見ず、interval 内に visible increase があったかだけで判定する。
+- 現行アプリは `LiveRiverStore` 由来の全席捨て牌履歴をglobal discard順で保持し、他家の手出しだけを起点にする。
+- 起点からその後5回以内の捨て牌増加で同じ34種牌が切られた場合、target slotへ表示用フラグを付ける。
+- 途中にtarget seat自身の別打牌があっても、5打牌窓内なら起点は有効である。
+- target側は手出し/ツモ切りを問わないが、起点側のツモ切りは対象外とする。
+- 副露公開とドラ表示は起点にせず、5打牌窓も消費しない。
+- 牌種比較は34種で行うため、赤5と通常5は同牌種として扱う。
+- 合わせ打ちフラグはactual visible / inferred visibleを書き換えず、analysis overlayで対象牌画像上へ黄色の `合` を重ねる。
 - `門前 N` の詳細ルール:
   - panel の対象プレイヤー `seat` に対して、score source は `kamicha = (seat - 1) % 4` の捨て牌列だけを使う。
   - `called=True` の捨て牌、鳴かれ確定ラグ、未鳴きラグは数えない。つまり no-lag の捨て牌だけを使う。
@@ -357,10 +357,10 @@
   - その牌を synthetic self-hand `1 枚` とみなして、他 seat からの final danger percent を引く。
   - self seat `0` を含む各 target seat のうち、少なくとも 1 人で current `Remain <= 13.0` を満たし、通常は `danger >= 9.0%`、リーチ target だけは `danger >= 6.0%` なら `Push`。
   - 追加例外として、そのプレイヤーの打牌数が `8` 以上で、最新打牌が字牌かつ、それ以前の全河に同牌が 1 枚も無いなら `Push`。
-  - 河の `P` と panel の `Push` は同じ起点条件を使い、panel 側だけ保持 / `Push解除` を加える。
+  - 河の `P` と panel の `Push` は同じ起点条件と global discard index を使う。ただし河 `P` だけは各席の1段目（seat-local index 0〜5）を表示せず、2段目以降に描画する。panel 側だけ保持 / `Push解除` を加える。
   - `Push` は `3巡 = 12 global discards` 保持する。
   - 保持中 `Push` の target seat 集合と、後続最新打牌の exact-safe target seat 集合が交差し、その後続打牌が手出しなら `Push解除` に変換する。
-  - `Push` と `Push解除` はどちらも無音。
+  - `Push` 音声は河 `P` の表示対象と同じく各席の2段目以降を対象にし、3巡保持へ入った最初のタイミングだけ鳴らす。`Push解除` は無音。
 - 河の赤み対象牌は、各プレイヤーごとに次のいずれかを満たした手出し:
   - `内牌 -> 外牌` が出たあとの数牌手出し全体。
   - `一時無筋免除を除いた Remain` が `13未満` になったあとの数牌手出し全体。

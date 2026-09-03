@@ -17,6 +17,7 @@
 - `panel.detail.content` は共有詳細表示領域であり、複数ビューを同時常設しない。
 - `hand.ai_top3.panel` はフローティング表示とし、`hand.self` の横幅基準を押し広げない。
 - `hand.danger_bars` は `上家 / 対面 / 下家` の順序と色対応を維持する。
+- 同一局の heavy suji / 危険度計算中は、`panel.player.*`、`hand.danger_bars`、関連する analysis overlay の直前完了表示を空にしない。手牌 danger は同じ牌と同牌内の出現順で現在手牌へ対応付け、対応元のない牌へ stale な棒を転用しない。初回計算と新局は保持対象外とする。
 - `round.dora.indicators` と `round.info.text` は `panel.round_center` の中に閉じ込める。
 
 ## 3. 差分運用不変条件
@@ -25,4 +26,5 @@
 - `Style Fix Mode` では矩形配置や表示順を変えない。
 - `Structural Refactor Mode` を除き、新しい region id を勝手に増やさない。
 - 非対象に書かれた region/component は、見た目改善目的でも変更しない。
+- heavy analysis の完了反映は async-only partial refresh とし、base river / table frame を再描画しない。計算中に保持する stale 値は表示専用で、自動打牌や alert 音声の新規判定へ流さない。
 - 修正後は、変更した id と変更しなかった主要 id を要約する。

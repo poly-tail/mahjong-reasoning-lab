@@ -515,6 +515,65 @@ class BridgeShortcutHelperTests(unittest.TestCase):
         self.assertEqual(canvas.bridge_table_snapshot_retry_job, "retry-job")
         self.assertEqual(scheduled_jobs[0][0], table_renderer.BRIDGE_TABLE_SNAPSHOT_READY_RETRY_MS)
 
+    def test_drain_bridge_background_result_queue_reinits_live_snapshot_after_map_success(self) -> None:
+        cancelled_jobs: list[str] = []
+        reinit_calls: list[str] = []
+        redraw_calls: list[str] = []
+        bell_calls: list[str] = []
+
+        def reinit_live_snapshot() -> tuple[int, int]:
+            reinit_calls.append("reinit")
+            return (9, 1)
+
+        canvas = SimpleNamespace(
+            bridge_background_result_queue=queue.Queue(),
+            bridge_feedback_text="",
+            bridge_feedback_is_error=False,
+            bridge_feedback_expires_monotonic_s=0.0,
+            bridge_table_snapshot_retry_count=2,
+            bridge_table_snapshot_retry_job="old-retry",
+            bridge_table_snapshot_in_flight=True,
+            bridge_toggle_active_overrides={},
+            table_snapshot_reinit_action=reinit_live_snapshot,
+            current_refresh_token=(1, 0),
+            bridge_snapshot_source_refresh_token=(1, 0),
+            last_refresh_token_change_monotonic_s=0.0,
+            redraw_action=lambda: redraw_calls.append("redraw"),
+            bell=lambda: bell_calls.append("bell"),
+            after_cancel=lambda job: cancelled_jobs.append(job),
+        )
+        canvas.bridge_background_result_queue.put(
+            {
+                "kind": "map",
+                "ok": True,
+                "result_payload": {
+                    "result": {
+                        "ok": True,
+                        "mappedHandTileCount": 14,
+                        "mappedDiscardCountTotal": 4,
+                    },
+                },
+            }
+        )
+
+        with patch("ui.table_renderer.time.monotonic", return_value=75.0), patch(
+            "ui.table_renderer.winsound",
+            None,
+        ):
+            changed = _drain_bridge_background_result_queue(canvas)
+
+        self.assertTrue(changed)
+        self.assertFalse(canvas.bridge_table_snapshot_in_flight)
+        self.assertEqual(cancelled_jobs, ["old-retry"])
+        self.assertEqual(canvas.bridge_table_snapshot_retry_count, 0)
+        self.assertIsNone(canvas.bridge_table_snapshot_retry_job)
+        self.assertEqual(reinit_calls, ["reinit"])
+        self.assertEqual(canvas.current_refresh_token, (9, 1))
+        self.assertEqual(canvas.bridge_snapshot_source_refresh_token, (9, 1))
+        self.assertEqual(canvas.last_refresh_token_change_monotonic_s, 75.0)
+        self.assertEqual(redraw_calls, ["redraw"])
+        self.assertEqual(bell_calls, ["bell"])
+
     def test_request_bridge_table_snapshot_resets_ready_retry_state(self) -> None:
         cancelled_jobs: list[str] = []
         canvas = SimpleNamespace(

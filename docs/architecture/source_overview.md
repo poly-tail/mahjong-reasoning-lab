@@ -13,6 +13,7 @@ updated: `2026-05-24`
 ## `src/capture/`
 
 - `state.py`: `CaptureState`, `RoundState`, `Discard`, `Meld`。
+- `live_river_store.py`: `RoundState` の寿命から独立した live base river 正史。
 - `fragment_parser.py`: live / replay / XML tag を state に反映。
 - `tshark_capture.py`, `pcap_replay.py`: 入力経路。
 - `storage.py`: CSV DB 永続化、legacy CSV 補完、hanchan metadata cache。

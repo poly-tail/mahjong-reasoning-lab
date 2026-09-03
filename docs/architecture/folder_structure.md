@@ -17,7 +17,8 @@ tenhou_hojo/
 │  │  ├─ folder_structure.md
 │  │  ├─ project_guide.md
 │  │  ├─ source_overview.md
-│  │  └─ src_call_graph.md
+│  │  ├─ src_call_graph.md
+│  │  └─ adr/
 │  ├─ mahjong/
 │  │  ├─ README.md
 │  │  ├─ theory/
@@ -51,6 +52,8 @@ tenhou_hojo/
 │  │  └─ tile_representation.md
 │  ├─ operations/
 │  │  ├─ README.md
+│  │  ├─ code_review.md
+│  │  ├─ regression_checklist.md
 │  │  ├─ rollback_log.md
 │  │  └─ troubleshooting/
 │  │     └─ live_capture.md
@@ -76,6 +79,7 @@ tenhou_hojo/
 
 ## docs 配置方針
 - `docs/architecture/`: プロジェクト全体の構成、責務分離、呼び出し関係、保守ルール
+  - `docs/architecture/adr/`: 互換性や責務境界に関わる設計判断
 - `docs/mahjong/`: 麻雀ドメイン文書の親フォルダ
   - `docs/mahjong/theory/`: 牌効率、手組み、鳴き効率などの学習用セオリー
   - `docs/mahjong/logic/`: 実装に接続する危険度、シャンテン、読みなどの判断ロジック
@@ -84,12 +88,14 @@ tenhou_hojo/
 - `docs/integrations/`: 外部サイト、外部 UI、packet capture、bridge など実装連携の説明
 - `docs/reference/`: 牌 ID、DB 列、固定用語のような静的参照資料
 - `docs/operations/`: トラブルシュート、復旧手順、rollback メモ
+  - `docs/operations/regression_checklist.md`: capture / DB / UI / 配布を横断する回帰確認
+  - `docs/operations/code_review.md`: review 観点、重大度、確度分類
 - `docs/analysis/`: DB 分析や検証用の補助文書
 - `docs/requirements/`, `docs/specs/`, `docs/screen_specs/`: 版管理された正式仕様
 
 ## src 配置方針
 - `src/app/`: 起動分岐、mock 選択、ウィンドウ設定、AI 連携、Tenhou UI Bridge transport
-- `src/capture/`: live `tshark`、`.pcapng` replay、HTML/XML 断片解析、面子デコード、state 更新、CSV DB 保存
+- `src/capture/`: live `tshark`、`.pcapng` replay、HTML/XML 断片解析、面子デコード、state 更新、live base river store、CSV DB 保存
 - `src/logic/`: 実コードとしての麻雀判断ロジック
 - `src/ui/`: 卓面描画、牌画像、layout tuning、detail UI
 - `src/old/`: 廃止予定または旧試作
@@ -99,6 +105,7 @@ tenhou_hojo/
 - `docs/architecture/project_guide.md`: 全体像と主要データ構造
 - `docs/architecture/source_overview.md`: `src/` の責務一覧
 - `docs/architecture/src_call_graph.md`: 関数 / モジュールの主経路
+- `docs/architecture/adr/README.md`: ADR の入口
 - `docs/mahjong/theory/README.md`: 牌効率・手組み理論の入口
 - `docs/mahjong/logic/mahjong_danger.md`: 危険度ロジックの正本
 - `docs/mahjong/logic/hand_analysis.md`: シャンテン / 待ち牌ロジックの正本
@@ -108,6 +115,8 @@ tenhou_hojo/
 - `docs/integrations/tenhou_ui_bridge.md`: local app と Chrome Extension の責務分離
 - `docs/reference/csv_db_design.md`: CSV DB schema と列説明
 - `docs/operations/troubleshooting/live_capture.md`: live capture の復旧手順
+- `docs/operations/regression_checklist.md`: 横断回帰チェックリスト
+- `docs/operations/code_review.md`: コードレビュー規則
 
 ## 保守ルール
 - 新規文書を追加するときは、まず置き場所を `architecture / mahjong / integrations / reference / operations / analysis` のどれに属するかで決める

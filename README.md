@@ -9,17 +9,19 @@
 - [仕様書 現行版](docs/specs/current.md)
 - [画面仕様書 現行版](docs/screen_specs/current.md)
 - [変更履歴](docs/changelog.md)
+- [Codex / agent 作業ルール](AGENTS.md)
 
 ## 最近の主な仕様
 
 - 河は差分描画。変わった捨て牌だけ更新し、`P` マーク追加も対象牌だけ差し替える。
 - 河の赤/茶/紫/思考時間色は通常牌画像 + Canvas overlay で描画する。
 - プレイヤーパネルの `SUMMARY` と `ALERT` は remain 色基準を統一する。
-- `Push` 音声と河 `P` は同じ更新で反映する。
+- 河の Push `P` は各席の1段目（捨て牌 local index 0〜5）には表示せず、2段目以降だけ表示する。
+- 各席の2段目以降では、`Push` 音声と河 `P` を同じ更新で反映する。
 - panel に出ない自分側 alert は音声対象にしない。
 - Nodocchi `STATUS` は和了率・副露率・リーチ率だけ赤字、その他は白字。
 - 南2以降は下部に NAGA 段位ポイント分析の主要 pt 変化を自動表示する。
-- DB分析でプレイヤー別の思考時間 x シャンテン相関と所属卓を出力する。
+- DB分析でプレイヤー別の 1〜3 シャンテン思考時間相関と所属卓を出力する。
 
 ## セットアップ
 
@@ -56,6 +58,14 @@ python scripts/analyze_player_shanten_thinking.py
 $env:PYTHONPATH='src'
 python -m pytest tests -q
 ```
+
+## source ZIP
+
+```powershell
+python scripts/package_workspace.py
+```
+
+既定の `source` profile は、秘密情報、ログ、runtime CSV DB、pcap、分析出力、既存ZIPを除外する。runtime data の退避は `--profile runtime-backup --include-runtime-data <path>` で明示する。
 
 ## 関連
 

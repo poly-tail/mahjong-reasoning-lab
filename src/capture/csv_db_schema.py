@@ -65,6 +65,10 @@ KYOKU_MASTER_COLUMNS: Final[tuple[str, ...]] = (
     "oya_rel",
     *RELATIVE_SEAT_NAME_COLUMNS,
     "oya_player_name",
+    "seat0_first_row_avg_thinking_time_ms",
+    "seat1_first_row_avg_thinking_time_ms",
+    "seat2_first_row_avg_thinking_time_ms",
+    "seat3_first_row_avg_thinking_time_ms",
 )
 
 # DISCARD_FACT_COLUMNS の並びを定義する。

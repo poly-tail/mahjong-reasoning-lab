@@ -1,6 +1,6 @@
 # データ構造
 
-updated: `2026-05-10`
+updated: `2026-09-03`
 
 この文書は、現行 runtime data structure の正本です。
 
@@ -239,7 +239,8 @@ owner: `src/app/main.py`
 
 意味:
 
-- UI redraw 1 回ぶんの一貫した snapshot
+- UI redraw 1 回ぶんの表示 snapshot
+- 現在局面の構造 payload と、同一局で最後に完了した heavy suji / 危険度 bundle を持てる。新入力の計算中は後者が表示専用の stale fallback になり得る
 
 主な payload:
 
@@ -250,6 +251,7 @@ owner: `src/app/main.py`
 - hand recommendation panel
 - round events
 - bridge status inputs
+- `suji_analysis_is_current`: snapshot に載せた heavy bundle が現在 input の完了値なら `True`。同一局の表示 fallback、fast snapshot、初回 loading は `False` とし、自動打牌 / alert 音声の新規判定 gate に使う
 
 ### `DetailPanelState`
 
@@ -312,9 +314,12 @@ main owner: `src/app/main.py` and `src/ui/table_renderer.py`
 - `bridge_snapshot_pending_force`
 - thread notice active-count map
 
+`LiveSujiAsyncState.completed_bundle` は同一局で最後に完了した `hand_tiles` と panel / hand danger / Push payload 一式を保持する。pending / in-flight job があっても表示用 completed bundle を空にせず、手牌 danger は保存した `hand_tiles` から現在手牌へ牌 ID と同牌内の出現順で再対応付けし、次 bundle 完了時に一式で置き換える。stale bundle は自動打牌や alert 音声の新規判定には使わず、新局では破棄する。
+
 ## 8. Rules
 
 - actual visible と inferred visible は別物
+- heavy suji / 危険度の計算中表示と、現在入力に対する判定結果は別物。前者の stale fallback は表示専用とする
 - popup manual count は inferred 側だけを増やす
 - `LiveTableSnapshot` は DB row ではない
 - `HandRecommendationSnapshot` は service 側

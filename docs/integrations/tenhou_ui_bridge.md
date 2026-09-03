@@ -1,6 +1,6 @@
 # Tenhou UI Bridge 連携
 
-更新日: `2026-04-15`
+更新日: `2026-06-30`
 
 ## 1. 役割
 
@@ -25,6 +25,9 @@
 - poll と action 後 follow-up snapshot を持つ
 - action 直後の visible control 変化を拾うために follow-up を入れる
 - snapshot 起動は coalescing し、`1 in-flight + pending 1` に抑える
+- `ui_snapshot` の `riverEntriesBySeat` は現在ブラウザに表示されている河の lossy projection であり、アプリ側の同一局 `round_state.discards[seat]` full history ではない
+- アプリ側 import は、`current_round` が既にある場合 `metadata_only` として player names / scores / dora / self hand などだけを更新する。`riverEntriesBySeat` は `RoundState.browser_visible_river_projection` に別保管し、`round_state.discards` や `state.tracker` を reset / rebuild / merge しない
+- `current_round` が無い起動直後だけ、browser river から partial round を bootstrap できる。この bootstrap 後の再同期では、以後の `riverEntriesBySeat` は projection として扱う
 
 ## 5. 現在のブラウザ操作動作
 

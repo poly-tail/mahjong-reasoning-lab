@@ -1,10 +1,10 @@
-# プレイヤー別シャンテン思考時間分析
+# プレイヤー別シャンテン数・思考時間分析
 
 更新日: `2026-05-24`
 
 ## 目的
 
-DB の `discard_fact_*.csv` から、プレイヤーごとに「打牌後シャンテン数」と「思考時間」の関係を見る。相関だけでなく、シャンテン別中央値のばらつきも出し、プレイヤーごとの癖を比較する。
+DB の `discard_fact_*.csv` から、プレイヤーごとに「打牌後シャンテン数」と「思考時間」の関係を見る。0シャンテンは待ち選択やテンパイ後の処理で少し短くなりやすい例外として扱い、現在の標準レポートでは 1〜3シャンテンだけを相関・ランキング・グラフの対象にする。
 
 ## 実行
 
@@ -12,14 +12,15 @@ DB の `discard_fact_*.csv` から、プレイヤーごとに「打牌後シャ�
 python scripts/analyze_player_shanten_thinking.py
 ```
 
-主な option:
+標準設定:
 
 ```powershell
 python scripts/analyze_player_shanten_thinking.py `
   --csv-dir csv_db `
   --out-dir reports/player_shanten_thinking `
-  --min-samples 40 `
-  --max-shanten 4
+  --min-samples 80 `
+  --min-shanten 1 `
+  --max-shanten 3
 ```
 
 ## 入力
@@ -27,18 +28,15 @@ python scripts/analyze_player_shanten_thinking.py `
 - `csv_db/discard_fact_*.csv`
 - `csv_db/hanchan_master.csv`
 
-`discard_fact` から使う列:
+`discard_fact` から使う主な列:
 
-- `discard_id`
 - `hanchan_id`
 - `room_class_label`
-- `player_rel_seat`
 - `player_name`
-- `tsumogiri_flag`
 - `thinking_time_ms`
 - `shanten_after_discard`
 
-`hanchan_master` から使う列:
+`hanchan_master` から所属卓を補完する列:
 
 - `hanchan_id`
 - `room_class_label`
@@ -47,44 +45,34 @@ python scripts/analyze_player_shanten_thinking.py `
 - `seat2_player_name`
 - `seat3_player_name`
 
-## 所属卓
-
-所属卓は `hanchan_master` を正本にする。
-
-1. `seat0..3_player_name` を縦持ちに変換する。
-2. `player_name + hanchan_id` で重複除去する。
-3. `room_class_label` の件数を player ごとに集計する。
-4. 最頻卓を `table_affiliation` として出す。
-
-`hanchan_master` に情報がない場合だけ、`discard_fact` 側の `room_class_label` を fallback として使う。
-
 ## 指標
 
-- `spearman_shanten_vs_thinking_s`
-- `spearman_shanten_vs_log1p_thinking_s`
-- `pearson_shanten_vs_log1p_thinking_s`
-- `thinking_median_s`
-- `median_s_range_across_shanten`
-- `median_s_cv_across_shanten`
-- `near_ready_delta_s`
+- `spearman_shanten_vs_log1p_thinking_s`: 1〜3シャンテンと `log1p(thinking seconds)` の Spearman 相関。負なら1シャンテン側ほど長考しやすい。
+- `median_s_1_minus_3_s`: 1シャンテン中央値から3シャンテン中央値を引いた秒数。正なら1シャンテンの方が長い。
+- `median_s_1_minus_2_s`
+- `median_s_2_minus_3_s`
+- `median_s_range_across_shanten`: 1〜3シャンテンの中央値レンジ。
+- `median_s_cv_across_shanten`: 1〜3シャンテンの中央値の変動係数。
 - `median_s_by_shanten_json`
 - `p90_s_by_shanten_json`
 
 ## 出力
 
-- `player_shanten_thinking_summary.csv`
-- `player_shanten_thinking_report.html`
-- player 別 scatter / median line PNG
+- `reports/player_shanten_thinking/index.html`
+- `reports/player_shanten_thinking/player_shanten_thinking_summary.csv`
+- `reports/player_shanten_thinking/overall_shanten_thinking_summary.csv`
+- `reports/player_shanten_thinking/player_shanten_variability_summary.csv`
+- `reports/player_shanten_thinking/player_correlation_ranking.png`
+- `reports/player_shanten_thinking/player_shanten_median_heatmap.png`
+- `reports/player_shanten_thinking/player_shanten_profile_lines.png`
+- `reports/player_shanten_thinking/player_variability_boxplot.png`
+- `reports/player_shanten_thinking/player_sample_balance.png`
 
-HTML report には次を含める。
-
-- negative correlation が強い player
-- positive correlation が強い player
-- シャンテン別中央値のばらつきが大きい player
-- 所属卓と半荘数
+HTML レポート内の画像は、クリックまたは Enter/Space キーで拡大表示できる。拡大表示は画像クリック、背景クリック、閉じるボタン、Esc キーで閉じる。
 
 ## 注意
 
 - `thinking_time_ms < 0` は除外する。
-- `shanten_after_discard` が空、または `max_shanten` 外の行は除外する。
-- サンプル数とシャンテン bin 数が閾値未満の player はランキング対象外にする。
+- 標準では `shanten_after_discard` が 1〜3 以外の行を除外する。
+- プレイヤー別ランキングは、サンプル数が `--min-samples` 以上、かつ 1,2,3 の3種類すべてにデータがあるプレイヤーだけを対象にする。
+- 所属卓は `hanchan_master` を正本とし、欠けている場合だけ `discard_fact.room_class_label` を fallback にする。

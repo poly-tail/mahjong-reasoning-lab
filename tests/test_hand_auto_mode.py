@@ -29,6 +29,7 @@ from ui.table_renderer import (
     _render_table_using_cached_layout_if_possible,
     _redraw_live_async_regions_if_possible,
     _hand_recommendation_request_context_key,
+    _maybe_start_hand_auto_discard,
     _redraw_hand_response_controls_if_possible,
     _resolve_redraw_watchdog_thread_stall,
     _resolve_hand_response_panel_state_for_auto_mode,
@@ -45,6 +46,27 @@ from ui.table_renderer import (
 
 
 class HandAutoModeTest(unittest.TestCase):
+    def test_betaori_auto_waits_for_current_hand_danger_bundle(self) -> None:
+        canvas = SimpleNamespace(
+            hand_auto_mode_state=table_renderer.HandAutoModeState(
+                enabled=True,
+                mode=HAND_AUTO_MODE_KIND_BETAORI,
+                in_flight=False,
+            )
+        )
+
+        with patch("ui.table_renderer._bridge_status_snapshot") as bridge_status:
+            _maybe_start_hand_auto_discard(
+                canvas,
+                [1, 2, 3],
+                HandRecommendationPanelData(),
+                PystyleDisplayContext(round_token="east-1"),
+                [{1: {"percentage": 10.0}}] * 3,
+                hand_danger_percentages_are_current=False,
+            )
+
+        bridge_status.assert_not_called()
+
     def test_format_phase_timing_breakdown_sorts_by_elapsed_descending(self) -> None:
         self.assertEqual(
             _format_phase_timing_breakdown(
@@ -293,6 +315,7 @@ class HandAutoModeTest(unittest.TestCase):
         self.assertEqual(
             canvas.deleted_tags,
             [
+                "live_discard_analysis_overlay",
                 "live_async_default_status",
                 "live_async_side_panels",
                 "live_detail_overlays",
@@ -301,11 +324,11 @@ class HandAutoModeTest(unittest.TestCase):
             ],
         )
         draw_side_panels.assert_called_once()
-        draw_discards.assert_called_once()
+        draw_discards.assert_not_called()
         draw_table_situation_seat_panels.assert_called_once()
         draw_hand.assert_called_once()
 
-    def test_redraw_live_async_regions_uses_latest_discard_map_override(self) -> None:
+    def test_redraw_live_async_regions_keeps_render_state_discard_map(self) -> None:
         stale_discard = table_renderer.Discard(
             tile_id=1,
             draw_type=table_renderer.DrawType.TEDASHI,
@@ -319,7 +342,14 @@ class HandAutoModeTest(unittest.TestCase):
             def __init__(self) -> None:
                 self.live_async_render_state = LiveAsyncRenderState(
                     layout={"hand_rect": (10.0, 20.0, 40.0, 50.0)},
-                    discard_map={table_renderer.Player.KAMICHA: [stale_discard]},
+                    discard_map={
+                        player: (
+                            [stale_discard]
+                            if player is table_renderer.Player.KAMICHA
+                            else []
+                        )
+                        for player in table_renderer.Player
+                    },
                     melds_by_player={},
                     dora_indicator_tiles=(31,),
                     visible_summary=SimpleNamespace(three_visible_tiles=(), four_visible_tiles=()),
@@ -384,18 +414,12 @@ class HandAutoModeTest(unittest.TestCase):
                 )
             )
 
-        self.assertIs(
-            build_visible_summary.call_args.args[1][table_renderer.Player.KAMICHA][0],
-            latest_discard,
-        )
-        self.assertIs(
-            draw_discards.call_args.args[2][table_renderer.Player.KAMICHA][0],
-            latest_discard,
-        )
-        self.assertIs(
-            canvas.live_async_render_state.discard_map[table_renderer.Player.KAMICHA][0],
-            latest_discard,
-        )
+        visible_discards = build_visible_summary.call_args.args[1][table_renderer.Player.KAMICHA]
+        retained_discards = canvas.live_async_render_state.discard_map[table_renderer.Player.KAMICHA]
+        for discard_list in (visible_discards, retained_discards):
+            self.assertEqual(len(discard_list), 1)
+            self.assertIs(discard_list[0], stale_discard)
+        draw_discards.assert_not_called()
 
     def test_redraw_live_async_regions_uses_precomputed_table_situation_scores(self) -> None:
         class CanvasStub:
@@ -598,6 +622,7 @@ class HandAutoModeTest(unittest.TestCase):
         self.assertEqual(
             canvas.deleted_tags,
             [
+                "live_discard_analysis_overlay",
                 "live_async_default_status",
                 "live_detail_overlays",
                 "live_async_hand",
@@ -605,7 +630,7 @@ class HandAutoModeTest(unittest.TestCase):
             ],
         )
         draw_side_panels.assert_not_called()
-        draw_discards.assert_called_once()
+        draw_discards.assert_not_called()
         draw_table_situation_seat_panels.assert_called_once()
         draw_hand.assert_called_once()
         self.assertEqual(
@@ -1062,6 +1087,97 @@ class HandAutoModeTest(unittest.TestCase):
         self.assertTrue(reused)
         self.assertEqual(detail_rect, (1.0, 2.0, 3.0, 4.0))
         redraw_side_panels.assert_called_once()
+
+    def test_cached_layout_draws_discards_before_side_panels(self) -> None:
+        class CanvasStub:
+            def __init__(self) -> None:
+                self.redraw_in_progress = True
+                self.layout_drag_enabled = False
+                self.current_round_identity = ("east1", 0)
+                self.current_ui_scale = 1.0
+                self.last_render_layout = {
+                    "detail_content_rect": (1.0, 2.0, 3.0, 4.0),
+                    "hand_rect": (10.0, 20.0, 30.0, 40.0),
+                    "center_panel": (0.0, 0.0, 1.0, 1.0),
+                    "meld_rects": {
+                        player: (0.0, 0.0, 1.0, 1.0)
+                        for player in table_renderer.Player
+                    },
+                    "discard_rects": {
+                        player: (0.0, 0.0, 1.0, 1.0)
+                        for player in table_renderer.Player
+                    },
+                }
+                self.deleted_tags = []
+                self.center_panel_images = []
+
+            def winfo_exists(self) -> bool:
+                return True
+
+            def delete(self, tag: str) -> None:
+                self.deleted_tags.append(tag)
+
+            def find_all(self) -> tuple[int, ...]:
+                return ()
+
+            def addtag_withtag(self, _tag: str, _item_id: int) -> None:
+                return None
+
+        canvas = CanvasStub()
+        order: list[str] = []
+
+        with patch(
+            "ui.table_renderer._inferred_visible_runtime_enabled",
+            return_value=False,
+        ), patch(
+            "ui.table_renderer._build_visible_tile_inference_summary_for_canvas",
+            return_value=(SimpleNamespace(), ()),
+        ), patch(
+            "ui.table_renderer._draw_table_frame",
+            side_effect=lambda *_args, **_kwargs: order.append("table_frame"),
+        ), patch(
+            "ui.table_renderer._draw_discards",
+            side_effect=lambda *_args, **_kwargs: order.append("discards"),
+        ), patch(
+            "ui.table_renderer._redraw_side_panels_if_needed",
+            side_effect=lambda *_args, **_kwargs: order.append("side_panels") or True,
+        ), patch(
+            "ui.table_renderer._draw_table_situation_seat_panels",
+        ), patch(
+            "ui.table_renderer._draw_inferred_visible_sections",
+        ), patch(
+            "ui.table_renderer._draw_hand",
+        ), patch(
+            "ui.table_renderer._draw_naga_auto_panel",
+        ):
+            reused, detail_rect = _render_table_using_cached_layout_if_possible(
+                canvas,
+                img_table=object(),
+                discard_map={},
+                hand_tiles=[],
+                hand_draw_tile=None,
+                hand_recommendation_panel=HandRecommendationPanelData(),
+                hand_danger_percentages=[],
+                opponent_suji_panel_summaries={},
+                player_push_alert_percentages={},
+                push_marker_alert_percentages={},
+                player_alert_indicators_by_seat={},
+                player_score_diffs_by_seat={},
+                discard_red_tint_indices_by_seat={},
+                player_names_by_seat={},
+                meld_tiles=[],
+                dora_indicator_tiles=[],
+                round_events=(),
+                round_info_panel=SimpleNamespace(),
+                melds_by_player={},
+                visible_summary=SimpleNamespace(),
+                self_hand_value_alert=SelfHandValueAlertState(),
+            )
+
+        self.assertTrue(reused)
+        self.assertEqual(detail_rect, (1.0, 2.0, 3.0, 4.0))
+        self.assertLess(order.index("table_frame"), order.index("discards"))
+        self.assertLess(order.index("discards"), order.index("side_panels"))
 
     def test_cached_layout_reuses_unchanged_table_frame_tag(self) -> None:
         class CanvasStub:

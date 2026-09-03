@@ -60,6 +60,12 @@
   - `CaptureState`
   - `CaptureDiscard`
 
+### `src/capture/live_river_store.py`
+- `LiveRiverStore`
+- `RiverResetAuthority`
+- `RiverProjectionSource`
+- `RoundState` の寿命から独立した live base river 正史を保持する
+
 ### `src/capture/meld_decoder.py`
 - `decode_meld()`
 - `N` タグの面子コードを `Meld` に変換する
@@ -101,28 +107,42 @@
 - `build_tshark_command()`
 - `parse_tshark_output_line()`
 - `run_and_capture()`
+- timestamp を持たない tshark runtime output は packet として扱わず、`info` / `warning` / `error` に分類して diagnostics へ残す
+- 通常の `Capturing on ...` や packet count は `info`、権限・filter・keylog・process 失敗は `error` とする
 
 ### `src/capture/pcap_replay.py`
 - `build_pcap_tshark_command()`
 - `run_test_capture()`
 - `.pcapng` を `tshark -r` と `tls.keylog_file` で読み、tag packet を一定間隔で流す
+- replay も `parse_tshark_output_line()` を共有し、同じ tshark stdout line を事前フィルタと本parseで二重解析しない
 
 ## 状態更新の要点
 ### `INIT`
 - 新しい `RoundState` を生成する
 - `seed` から局番号、本場、供託、サイコロ、ドラ表示牌を反映する
 - `hai0..hai3` または `hai` から手牌を構築する
+- `INIT` は capture state の局開始境界として扱い、実際の `parse_init()` 経路だけが `allow_non_empty_clear=True` で非空 `LiveRiverStore` を reset + seed できる。INIT を取れない packet-first round は `LiveRiverStore` が空の場合だけ reset し、既存 base river がある場合は append-only にする
 
 ### `REINIT`
 - current round を再構築する
 - `m0..m3` を decode して副露状態を復元する
 - `kawa0..kawa3` は raw 配列を `reinit_kawa_raw` に保持する
 - `0..135` の値だけを `Discard` に展開する
+- `kawa0..kawa3` は packet snapshot 側の projection であり、同一局の `LiveRiverStore` full history を短縮しない
+- live `INIT` は復帰判定なしの authoritative full reset として扱い、既存 base river / tracker / stable discard map / round UI state を前局から引き継がない。DB async persist worker / queue は reset 対象ではなく、同一半荘の `game_id` / 卓種 / player metadata は保持する。
+- `current_round is None` でも `LiveRiverStore` に既存 discard がある場合は、その store を現局の base river 正史として扱う。REINIT / WGC / INITBYLOG の snapshot は同一局または key 不明なら projection-only とし、既存 base river を reset / seed しない。INITBYLOG / WGC の snapshot key が `LiveRiverStore.round_key` と明確に別 game / 別局を示す場合だけ、confirmed different round として reset + seed できる。
+- 既存 base river がある場合、parser は `INIT` / `REINIT` 以外の tag による `LiveRiverStore` reset / shorten を拒否する。副露 `N` では `LiveRiverStore` / `RoundState.discards` / `tracker.discards` の count 変更を禁止し、既存 discard の `called` / lag metadata と副露エリアだけ更新する。
+- 同一局または別局不明では parser が `LiveRiverStore` の履歴を正本として扱い、snapshot 由来の projection は `LiveRiverStore.store_projection_only()` へ別保管するだけで base river へ merge / append しない。非空 base river を消せるのは実際の `parse_init()`、「REINIT が明確に別局」と確認された `parse_reinit()`、または `INITBYLOG` / `WGC` snapshot が `log` / `id` や完全な `(kyoku, honba, kyotaku, oya)` tuple で明確に別 game / 別局を示す場合だけで、`allow_non_empty_clear=True` を明示する。bridge / packet-first / live resync は `INIT_NEW_ROUND` authority 名義でも非空 river を clear できない。
+- `MANUAL_USER_RESET` は live session metadata / tracker の再初期化用途であり、既存 base river が非空の場合は `LiveRiverStore` を消せない。UN / TAIKYOKU 由来の半荘・席ビュー再同期であっても、次の `INIT` または明確な別局 `REINIT` までは river を保持する。
+- 既存 discard が `LiveRiverStore` / `RoundState.discards` / `tracker.discards` のいずれかに残る場合、live `INIT` 以外の `reset_live_session()` は `current_round` / `rounds` / `tracker.discards` / `live_stable_discard_map` を消さない。tracker が必要な場合は `LiveRiverStore` から再構築し、短い `RoundState.discards` や visible projection から派生 view を短縮しない。
+- `tracker.discards` は guarded append-only map/list であり、通常処理では `clear` / `pop` / `del` / 短い代入を拒否する。許可される reset context は live `INIT` と明確な別局 `REINIT` だけ。
+- 同一局判定で `kawa0..kawa3` と現在河を比較するときは exact 136 ID ではなく tile34 牌種で比較する。REINIT / spectator snapshot は同じ牌種へ別 copy の 136ID を割り当てることがある。
+- browser / Bridge の `riverEntriesBySeat` は packet capture の `kawa` とは別の lossy projection であり、既存局の `live_river_store` / `round_state.discards` へ取り込まない
 - 再構築後に validation を走らせる
 
 ### draw / discard
 - draw は `current_hands_136` と `last_draw_tiles_136` を更新する
-- discard は `current_hands_136` から 1 枚削除し、`Discard` を追加する
+- discard は `current_hands_136` から 1 枚削除し、正史の `LiveRiverStore` と互換 mirror の `RoundState.discards` へ同じ `Discard` を append する
 - 通常打牌の思考時間は `draw -> discard`、鳴き後打牌の思考時間は `call -> discard` を `thinking_time_ms` に入れる
 - `REACH step=1` が打牌前に入った場合は、`draw/call -> REACH` を `thinking_time_before_reach_ms`、`REACH -> discard` を `thinking_time_ms` に分ける
 - `捨て牌 -> 鳴き(N)` の鳴き判断時間は打牌思考時間には入れず、ラグ側で扱う
@@ -138,18 +158,23 @@
 - `consumed_tile_ids` 分だけ手牌から削除する
 - open meld は鳴き元の捨て牌に `called=True` を立てる
 - open meld は鳴き元の捨て牌に `lagged = 2` も同期する
+- `called_tile_id` の exact 136 ID が既存 discard と一致しない場合も、同種牌の最後の未鳴き discard を metadata-only で `called=True` / `lagged = 2` にする。`round_state.discards` / tracker の削除や短縮はしない。
+- `N` 前後で `LiveRiverStore` / `RoundState.discards` / `tracker.discards` の count 不変条件が破れた場合は `called_discard_disappearance_guard` を `diagnostics` と `logs/live_capture.log` へ出し、原因分類、対象層、席、before/after count、raw tag、round identity、直前/発行 event を残す。
 - open meld に至る `捨て牌 -> call(N)` の時間は、鳴き思考時間として打牌思考時間ではなくラグ側で扱う
 - `kakan` は既存のポンを差し替える
 
 ## validation / diagnostics
 - `unknown_tags` は未対応 tag や parse 失敗を保持する
 - `diagnostics` は warning レベルの unknown / validation issue を保持する
+- 副露直後の捨て牌消失調査では、`called_discard_disappearance_guard` が count を変えた層を示す。UI 側だけで短い projection を受けた場合は `UI called discard short input` / `UI called discard stale delete` が `logs/live_capture.log` に出る。
 - `validate_round_state()` は牌 ID 範囲、meld 形状、open/closed 一致を検証する
 - `verify_reinit_round_state()` は `REINIT` payload と rebuilt state の一致を検証する
 - `validate_game_state()` は全局を横断して issues を集約する
 
 ## UI 連携
-- `GameState.tracker` が 4 人の捨て牌表示に使われる
+- `GameState.live_river_store` / `CaptureState.live_river_store` が 4 人の live base river 履歴の正本であり、`round_state.discards[seat]` と `tracker.discards` は互換 / 派生 view として扱う。live snapshot builder は `LiveRiverStore.snapshot_by_seat()` から renderer 用 `discard_map` を作り、tracker は必要時に store から再構築する。既存 discard が残るなら live `INIT` 以外の live session metadata reset では `tracker.discards` を消さず、短い `RoundState.discards` から再構築しない
+- live snapshot の round identity は `("river_epoch", LiveRiverStore.epoch, logical_round_identity)` であり、renderer cache は epoch が変わったら前局 river を保持しない。同一 epoch 内の短い projection だけを表示用に保持できる
+- `current_round is None` でも `LiveRiverStore` が非空なら `build_live_round_identity()` は `("river_epoch", epoch, live_river_store.round_key)` を返し、Bridge / spectator projection を新局 reset と誤認しない
 - `live_hand_tiles_136` が自家手牌の raw 正本として使われる
 - `RoundState.melds` が鳴き表示と visible 集計の副露 full 情報に使われる
 - `live_meld_tiles_136` が packet 側の副露寄与分 raw 正本として使われる
@@ -190,7 +215,7 @@
 - live websocket の tag 抽出は、完全な XML / JSON だけでなく、payload 内に埋め込まれた bare tag や不完全な `<INIT ...` / `<REINIT ...` のような xmlish start tag も拾う。
 - `INIT` は常に新局開始として扱い、current round を無条件で初期化する。
 - websocket text に `INIT` 系 tag 文字列が見えていれば、その packet を受けた時点で即座に局面初期化へ進む。
-- `REINIT` / `INITBYLOG` などの snapshot payload は、局キー一致だけで current round を再利用せず、`kawa0..kawa3` の visible discard 一致率がかなり高い場合にだけ再利用する。現実装の閾値は `80%`。
+- `REINIT` / `INITBYLOG` / spectator WGC などの snapshot payload は、局キーが current round と一致し result 前なら current round を再利用し、`kawa0..kawa3` は packet snapshot projection として `LiveRiverStore.store_projection_only()` へ別保管する。browser / Bridge projection も既存同一局の `live_river_store` / `round_state.discards` へ取り込まない。局キーが欠ける packet snapshot では、tile34 牌種で比較した visible discard の extension / snapshot prefix / `80%` 以上の一致率を同局再利用の条件にする。既存 base river がある場合、`INITBYLOG` / WGC は snapshot の `log` / `id` または完全な round tuple が明確に別 game / 別局を示す場合だけ reset + seed し、それ以外は projection-only にする。Bridge bootstrap / 新局扱いは非空 store を reset + seed しない。
 - `INIT` 系を受ける前の途中開始 packet でも live 可視化は継続するが、その局は `RoundState.started_from_init_like = False` のまま扱い、CSV DB には保存しない。
 - live capture は GUI とは別の background thread で動かし、tshark 1 行単位・fragment 単位の例外で thread 全体を止めない。
 - GUI の live 再描画は 500ms 固定ポーリングではなく、capture state の更新トークン変化を 16ms 間隔で監視して即時反映する。

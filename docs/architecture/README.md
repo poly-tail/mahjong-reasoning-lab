@@ -7,3 +7,4 @@
 - `source_overview.md`: `src/` の責務一覧
 - `folder_structure.md`: フォルダ配置方針
 - `src_call_graph.md`: 主要な呼び出し関係
+- `adr/`: 設計判断の記録
