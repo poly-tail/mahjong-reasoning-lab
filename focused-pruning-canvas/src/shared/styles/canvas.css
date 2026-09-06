@@ -1,0 +1,237 @@
+.canvas {
+  display: flex;
+  flex-direction: column;
+  background: #f5f6f0;
+  position: relative;
+}
+.canvas-heading {
+  min-height: 66px;
+  padding: 15px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #e4e8dd;
+  gap: 7px;
+}
+.canvas-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  margin-top: 3px;
+}
+.canvas-heading h2 svg {
+  color: #648672;
+}
+.quiet-badge {
+  display: inline-flex;
+  padding: 3px 7px;
+  background: #eef0e9;
+  border-radius: 4px;
+  color: #718074;
+  font-size: 10px;
+  white-space: normal;
+}
+.canvas-area {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.canvas-controls {
+  position: absolute;
+  bottom: 21px;
+  left: 17px;
+  display: flex;
+  box-shadow: 0 3px 12px #243d3312;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.canvas-controls button {
+  border: 0;
+  border-radius: 0;
+  padding: 7px;
+}
+.canvas-hint {
+  position: absolute;
+  bottom: 25px;
+  right: 16px;
+  font-size: 9px;
+  color: #929b90;
+  pointer-events: none;
+}
+.canvas-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 15px;
+  font-size: 9px;
+  color: #788473;
+  padding: 9px 16px;
+  background: #f5f7ef;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.canvas-legend > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.line-sample {
+  width: 24px;
+  height: 5px;
+  background: #7a9988;
+  border-radius: 3px;
+}
+.bar-sample {
+  width: 19px;
+  height: 6px;
+  background: #dce6d9;
+  border-left: 9px solid #769381;
+}
+.react-flow__handle {
+  width: 5px;
+  height: 5px;
+  background: #b1c3ad;
+  border: 1px solid #fff;
+}
+.react-flow__node {
+  cursor: pointer !important;
+}
+.question-node {
+  width: 192px;
+  padding: 16px 15px;
+  background: #eff3e8;
+  border: 1px solid #ccd7bf;
+  border-radius: 10px;
+  box-shadow: 0 2px 5px #48554407;
+}
+.question-node strong {
+  display: block;
+  margin: 10px 0;
+  font-size: 15px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.question-node small {
+  display: block;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.hypothesis-node {
+  width: 246px;
+  height: 106px;
+  padding: 10px 13px;
+  background: #fffefb;
+  border: 1px solid #cfd9c9;
+  border-radius: 8px;
+  box-shadow: 0 3px 8px #3f4b3c08;
+}
+.hypothesis-node.is-selected {
+  border: 2px solid #789b72;
+  padding: 9px 12px;
+  box-shadow: 0 0 0 4px #75986712;
+}
+.hypothesis-node.is-residual {
+  background: #f5f2e9;
+  border-style: dashed;
+  border-color: #bfb394;
+}
+.hypothesis-node.is-excluded {
+  background: #f0f0ec;
+  color: #7a7f75;
+  border-style: dashed;
+}
+.node-kicker {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 9px;
+  line-height: 1.25;
+  color: #77836e;
+  margin-bottom: 5px;
+}
+.node-kicker span {
+  max-width: 203px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.hypothesis-node > strong {
+  font-size: 13px;
+  line-height: 1.35;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.node-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  margin: 4px 0 5px;
+}
+.share-number {
+  font-size: 23px;
+  line-height: 1.1;
+  letter-spacing: -0.7px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.impact {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  color: #a48b5d;
+  font-size: 9px;
+}
+.share-track {
+  height: 4px;
+  background: #ebeee5;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.share-track > div {
+  height: 100%;
+  background: #769f78;
+  transition: width 0.2s;
+}
+.is-residual .share-track > div {
+  background: #a99b78;
+}
+.factor-node {
+  width: 205px;
+  height: 46px;
+  line-height: 1.25;
+  background: #fafbf7;
+  border: 1px solid #d9e0d2;
+  border-radius: 5px;
+  padding: 5px 9px;
+}
+.factor-node > div {
+  display: flex;
+  justify-content: space-between;
+  font-size: 8px;
+  color: #8a9686;
+  margin-bottom: 3px;
+}
+.factor-node small {
+  font-size: 8px;
+}
+.factor-node strong {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  font-weight: 500;
+}
+.factor-node.is-selected {
+  border: 2px solid #789b72;
+}
+.gate-node {
+  background: #f0eef5;
+  border-color: #d6d0e0;
+}
+.gate-node strong {
+  color: #7b6b91;
+}

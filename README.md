@@ -1,5 +1,20 @@
 # Mahjong Reasoning Lab
 
+## 試作UI（Focused Pruning Canvas）の起動
+
+Windows PowerShellで次を実行します。
+
+```powershell
+cd "C:\Users\weath\Documents\プルーニングUI\focused-pruning-canvas"
+npm start
+```
+
+ブラウザで **http://127.0.0.1:5174/** を開きます。起動中はPowerShellを開いたままにし、終了するときは `Ctrl+C` を押します。通常の起動で毎回 `npm install` は不要です。
+
+**`Port 5174 is already in use` が出た場合**は、まず上記URLを開いてください。Focused Pruning Canvasが表示されれば起動済みなので、そのまま使えます。再起動する場合は、先に起動したターミナルで `Ctrl+C` を押してから `npm start` を実行します。
+
+詳しい操作方法や初回セットアップは [試作アプリのREADME](focused-pruning-canvas/README.md) を参照してください。
+
 ## Project / Sheet 管理
 
 Workspace は複数の Project を持ち、Project は複数の Sheet を持ちます。既存の nodes / edges / cases / rules / saved views はtop-level配列として維持し、Sheet 側に `node_ids` / `edge_ids` / `case_ids` / `rule_ids` / `saved_view_ids` を持たせて所属を管理します。
@@ -22,7 +37,7 @@ Phase1の正式名称は **Reading Probability Core** です。完全自動推�
 
 Phase1は押し引き判断AI、牌選択AI、局収支EVエンジン、順位点EVエンジン、Action Recommendationではありません。4軸は読みの影響軸であり、押し引きや牌選択の最終判断軸ではありません。
 
-## 実行方法
+## 既存アプリの実行方法
 
 普段の起動はWindows PowerShellで次だけ実行します。
 

@@ -1,0 +1,12 @@
+:root {
+  --font:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Yu Gothic UI',
+    'Hiragino Kaku Gothic ProN', Meiryo, sans-serif;
+  --ink: #344536;
+  --muted: #8a9781;
+  --paper: #f5f6ef;
+  --white: #fffefa;
+  --line: #e0e5d8;
+  --tint: #edf2e6;
+  --green: #3c6b4e;
+}
